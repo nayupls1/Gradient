@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Issue, Label, Priority } from "./models.ts"
+import { Issue, Label, Priority, Project } from "./models.ts"
 
 export const IssuePatch = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
@@ -8,6 +8,7 @@ export const IssuePatch = Schema.Struct({
   priority: Schema.optionalKey(Priority),
   assigneeId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   labelIds: Schema.optionalKey(Schema.Array(Schema.String)),
+  projectId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   sortOrder: Schema.optionalKey(Schema.String)
 })
 export type IssuePatch = typeof IssuePatch.Type
@@ -20,6 +21,7 @@ export const Mutation = Schema.TaggedUnion({
   IssueCreate: {
     id: Schema.String,
     teamId: Schema.String,
+    projectId: Schema.NullOr(Schema.String),
     title: Schema.String,
     description: Schema.String,
     stateId: Schema.String,
@@ -32,13 +34,28 @@ export const Mutation = Schema.TaggedUnion({
   IssueArchive: { id: Schema.String },
   IssueUnarchive: { id: Schema.String },
   IssueDelete: { id: Schema.String },
-  LabelCreate: { id: Schema.String, teamId: Schema.String, name: Schema.String, color: Schema.String }
+  LabelCreate: { id: Schema.String, teamId: Schema.String, name: Schema.String, color: Schema.String },
+  ProjectCreate: { id: Schema.String, teamId: Schema.String, key: Schema.String, name: Schema.String, color: Schema.String },
+  ProjectUpdate: {
+    id: Schema.String,
+    patch: Schema.Struct({
+      name: Schema.optionalKey(Schema.String),
+      key: Schema.optionalKey(Schema.String),
+      color: Schema.optionalKey(Schema.String)
+    })
+  },
+  /** Its issues stay, without a project. A project with a linked repository must be unlinked first. */
+  ProjectDelete: { id: Schema.String }
 })
 export type Mutation = typeof Mutation.Type
 
 /** Ids of the issues a mutation touches, used to recompute optimistic state. */
 export const touchedIssueId = (m: Mutation): string | undefined =>
-  m._tag === "LabelCreate" ? undefined : m.id
+  m._tag.startsWith("Issue") ? (m as { id: string }).id : undefined
+
+/** Id of the project a mutation creates, changes or deletes. */
+export const touchedProjectId = (m: Mutation): string | undefined =>
+  m._tag === "ProjectCreate" || m._tag === "ProjectUpdate" || m._tag === "ProjectDelete" ? m.id : undefined
 
 const pickPatch = (patch: IssuePatch): Partial<Issue> => {
   const out: { -readonly [K in keyof Issue]?: Issue[K] } = {}
@@ -48,6 +65,7 @@ const pickPatch = (patch: IssuePatch): Partial<Issue> => {
   if (patch.priority !== undefined) out.priority = patch.priority
   if (patch.assigneeId !== undefined) out.assigneeId = patch.assigneeId
   if (patch.labelIds !== undefined) out.labelIds = patch.labelIds
+  if (patch.projectId !== undefined) out.projectId = patch.projectId
   if (patch.sortOrder !== undefined) out.sortOrder = patch.sortOrder
   return out
 }
@@ -67,6 +85,7 @@ export const applyIssueMutation = (
       return {
         id: m.id,
         teamId: m.teamId,
+        projectId: m.projectId,
         number: ctx.number ?? 0,
         title: m.title,
         description: m.description,
@@ -89,10 +108,33 @@ export const applyIssueMutation = (
       return current && { ...current, archivedAt: null, updatedAt: ctx.now }
     case "IssueDelete":
       return null
-    case "LabelCreate":
+    default:
       return current
   }
 }
 
 export const applyLabelMutation = (m: Mutation): Label | undefined =>
   m._tag === "LabelCreate" ? { id: m.id, teamId: m.teamId, name: m.name, color: m.color } : undefined
+
+/** Applies a project mutation, like applyIssueMutation. `null` means deleted. */
+export const applyProjectMutation = (
+  current: Project | undefined,
+  m: Mutation,
+  ctx: { readonly now: number }
+): Project | null | undefined => {
+  switch (m._tag) {
+    case "ProjectCreate":
+      return { id: m.id, teamId: m.teamId, key: m.key, name: m.name, color: m.color, createdAt: ctx.now }
+    case "ProjectUpdate":
+      return current && {
+        ...current,
+        ...(m.patch.name !== undefined ? { name: m.patch.name } : {}),
+        ...(m.patch.key !== undefined ? { key: m.patch.key } : {}),
+        ...(m.patch.color !== undefined ? { color: m.patch.color } : {})
+      }
+    case "ProjectDelete":
+      return null
+    default:
+      return current
+  }
+}

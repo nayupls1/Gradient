@@ -5,6 +5,7 @@ import Archive from "@lucide/solid/icons/archive"
 import ArchiveRestore from "@lucide/solid/icons/archive-arrow-up"
 import ArrowUpRight from "@lucide/solid/icons/arrow-up-right"
 import Bot from "@lucide/solid/icons/bot"
+import Box from "@lucide/solid/icons/box"
 import Check from "@lucide/solid/icons/check"
 import ChevronDown from "@lucide/solid/icons/chevron-down"
 import ChevronRight from "@lucide/solid/icons/chevron-right"
@@ -22,7 +23,9 @@ import Monitor from "@lucide/solid/icons/monitor"
 import Moon from "@lucide/solid/icons/moon"
 import OctagonAlert from "@lucide/solid/icons/octagon-exclamation-point"
 import Palette from "@lucide/solid/icons/palette"
+import Pencil from "@lucide/solid/icons/pencil"
 import Plus from "@lucide/solid/icons/plus"
+import RefreshCw from "@lucide/solid/icons/refresh-cw"
 import Search from "@lucide/solid/icons/search"
 import Settings from "@lucide/solid/icons/settings"
 import SignalHigh from "@lucide/solid/icons/signal-high"
@@ -31,6 +34,7 @@ import SignalMedium from "@lucide/solid/icons/signal-medium"
 import Sun from "@lucide/solid/icons/sun"
 import Tag from "@lucide/solid/icons/tag"
 import Trash from "@lucide/solid/icons/trash"
+import Unlink from "@lucide/solid/icons/unlink"
 import UserRound from "@lucide/solid/icons/user-round"
 import X from "@lucide/solid/icons/x"
 
@@ -101,6 +105,10 @@ export const SunIcon = wrap(Sun)
 export const MoonIcon = wrap(Moon)
 export const MonitorIcon = wrap(Monitor)
 export const ExternalIcon = wrap(ArrowUpRight)
+export const PencilIcon = wrap(Pencil)
+export const RefreshIcon = wrap(RefreshCw)
+export const UnlinkIcon = wrap(Unlink)
+export const ProjectIcon = wrap(Box)
 
 /** GitHub's mark (Primer Octicons, MIT). Brand icons are not part of Lucide. */
 export const GithubIcon = (p: IconProps) => (

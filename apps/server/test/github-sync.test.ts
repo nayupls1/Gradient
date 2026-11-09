@@ -25,6 +25,8 @@ const setup = () => {
       token: Option.some("test-token"),
       tokenSource: "env",
       apiUrl: fake.url,
+      webUrl: fake.url,
+      app: { clientId: "test-client", slug: "gradient-test" },
       webhookSecret: Option.some(SECRET),
       pollIntervalSeconds: 3600
     }
@@ -52,7 +54,7 @@ const states = (teamId: string) => ctx.run(Effect.flatMap(Effect.service(Db), (d
 const link = async (pushExisting = false) => {
   const t = await team()
   return ctx.run(
-    Effect.flatMap(Effect.service(GithubSync), (s) => s.linkRepo({ teamId: t.id, owner: "acme", name: "widgets", pushExisting }))
+    Effect.flatMap(Effect.service(GithubSync), (s) => s.linkRepo({ teamId: t.id, projectId: null, owner: "acme", name: "widgets", pushExisting }))
   )
 }
 const repoId = () => ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.githubRepos).pipe(Effect.map((r) => r[0]!.id)))
@@ -72,7 +74,7 @@ describe("GitHub sync", () => {
     ctx.fake.seed({ title: "A pull request", pull_request: { url: "x" } })
 
     const result = await link()
-    expect(result).toEqual({ imported: 3, pushed: 0 })
+    expect(result).toMatchObject({ imported: 3, pushed: 0 })
 
     const t = await team()
     const byName = new Map((await states(t.id)).map((s) => [s.id, s]))
@@ -142,7 +144,7 @@ describe("GitHub sync", () => {
   })
 
   test("a new Gradient issue is created on GitHub, closed when its state is done", async () => {
-    await link()
+    const { projectId } = await link()
     const t = await team()
     const done = (await states(t.id)).find((s) => s.type === "completed")!
     const id = Bun.randomUUIDv7()
@@ -150,6 +152,7 @@ describe("GitHub sync", () => {
       _tag: "IssueCreate",
       id,
       teamId: t.id,
+      projectId,
       title: "Made in Gradient",
       description: "hello",
       stateId: done.id,
@@ -263,5 +266,106 @@ describe("GitHub sync", () => {
     const header = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
     expect(await verifySignature("It's a Secret to Everybody", "Hello, World!", header)).toBe(true)
     expect(await verifySignature("wrong", "Hello, World!", header)).toBe(false)
+  })
+})
+
+describe("projects and repositories", () => {
+  const linkTo = async (name: string, options: { projectId?: string | null; projectName?: string } = {}) => {
+    const t = await team()
+    return ctx.run(
+      Effect.flatMap(Effect.service(GithubSync), (s) =>
+        s.linkRepo({
+          teamId: t.id,
+          projectId: options.projectId ?? null,
+          ...(options.projectName ? { projectName: options.projectName } : {}),
+          owner: "acme",
+          name,
+          pushExisting: false
+        }))
+    )
+  }
+  const projects = () => ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.projects))
+  const flush = () => ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.flushOutbox))
+  const newIssue = async (title: string, projectId: string | null) => {
+    const t = await team()
+    const todo = (await states(t.id)).find((s) => s.type === "unstarted")!
+    const id = Bun.randomUUIDv7()
+    await mutate([{
+      _tag: "IssueCreate",
+      id,
+      teamId: t.id,
+      projectId,
+      title,
+      description: "",
+      stateId: todo.id,
+      priority: 0,
+      assigneeId: null,
+      labelIds: [],
+      sortOrder: "a0"
+    }])
+    return id
+  }
+  const gadgets = { owner: "acme", name: "gadgets" }
+
+  test("each project syncs with its own repository", async () => {
+    ctx.fake.addRepo("acme", "gadgets")
+    ctx.fake.seed({ title: "Widget bug" })
+    ctx.fake.seed({ title: "Gadget idea" }, gadgets)
+
+    const widgets = await linkTo("widgets")
+    const gadgetsLink = await linkTo("gadgets", { projectName: "Gadgets" })
+    expect((await projects()).map((p) => [p.name, p.key]).sort()).toEqual([["Gadgets", "GAD"], ["widgets", "WID"]])
+    const all = await issues()
+    expect(all.find((i) => i.title === "Widget bug")!.projectId).toBe(widgets.projectId)
+    expect(all.find((i) => i.title === "Gadget idea")!.projectId).toBe(gadgetsLink.projectId)
+
+    await newIssue("Made for gadgets", gadgetsLink.projectId)
+    await newIssue("No project, stays local", null)
+    await flush()
+    expect(ctx.fake.issuesOf(gadgets).map((i) => i.title)).toEqual(["Gadget idea", "Made for gadgets"])
+    expect(ctx.fake.issues.map((i) => i.title)).toEqual(["Widget bug"])
+
+    await expect(linkTo("widgets")).rejects.toThrow(/already linked to the project "widgets"/)
+  })
+
+  test("linking reuses an unlinked project of the same name; a project takes one repository", async () => {
+    ctx.fake.addRepo("acme", "gadgets")
+    const t = await team()
+    const id = Bun.randomUUIDv7()
+    await mutate([{ _tag: "ProjectCreate", id, teamId: t.id, key: "WID", name: "Widgets", color: "#0090ff" }])
+    const linked = await linkTo("widgets")
+    expect(linked.projectId).toBe(id)
+    await expect(linkTo("gadgets", { projectId: id })).rejects.toThrow(/already syncs/)
+    await expect(mutate([{ _tag: "ProjectCreate", id: Bun.randomUUIDv7(), teamId: t.id, key: "WI2", name: "widgets", color: "#000" }]))
+      .rejects.toThrow(/already exists/)
+    // Keys are unique in the team, distinct from the team key, and well-formed.
+    const create = (key: string) =>
+      mutate([{ _tag: "ProjectCreate", id: Bun.randomUUIDv7(), teamId: t.id, key, name: `P ${key}`, color: "#000" }])
+    await expect(create("WID")).rejects.toThrow(/taken by the project "Widgets"/)
+    await expect(create("GRD")).rejects.toThrow(/team's own key/)
+    await expect(create("w-1")).rejects.toThrow(/not a valid key/)
+  })
+
+  test("moving an issue into a linked project creates it on that repository", async () => {
+    const { projectId } = await linkTo("widgets")
+    const id = await newIssue("Was loose", null)
+    await flush()
+    expect(ctx.fake.issues).toHaveLength(0)
+    await mutate([{ _tag: "IssueUpdate", id, patch: { projectId } }])
+    await flush()
+    expect(ctx.fake.issues.map((i) => i.title)).toEqual(["Was loose"])
+  })
+
+  test("a project with a repository must be unlinked before it is deleted; its issues stay", async () => {
+    ctx.fake.seed({ title: "Imported" })
+    const { projectId } = await linkTo("widgets")
+    await expect(mutate([{ _tag: "ProjectDelete", id: projectId }])).rejects.toThrow(/Unlink acme\/widgets/)
+    const repo = await repoId()
+    await ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.unlinkRepo(repo)))
+    await mutate([{ _tag: "ProjectDelete", id: projectId }])
+    expect(await projects()).toHaveLength(0)
+    const imported = (await issues()).find((i) => i.title === "Imported")!
+    expect(imported.projectId).toBeNull()
+    expect(imported.github).toBeNull()
   })
 })

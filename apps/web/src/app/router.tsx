@@ -7,6 +7,7 @@ export const Router = createRouter({
   routes: [
     { path: "/", component: IssuesPage },
     { path: "/issue/:ref", component: IssuePage },
+    { path: "/project/:id", component: IssuesPage },
     { path: "/settings", component: SettingsPage },
     { path: "*404", component: IssuesPage }
   ]

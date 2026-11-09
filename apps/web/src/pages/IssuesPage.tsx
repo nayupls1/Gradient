@@ -1,15 +1,29 @@
 import type { Issue, WorkflowState } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
-import { useNavigate } from "@solidjs/router"
+import { useNavigate, useParams } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, Show, untrack, useContext } from "solid-js"
-import { ComposerContext, Sync } from "../app/context.ts"
+import { ComposerContext, ProjectDialogsContext, Sync } from "../app/context.ts"
+import { github } from "../app/github.ts"
+import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, PriorityPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
 import { Shortcut, useCommands, useScope } from "../keys/solid.tsx"
-import { compareIssues, firstTeam, formatDate, issueHref, issueKey, teamStates } from "../lib/select.ts"
+import { compareIssues, firstTeam, formatDate, formatRelative, issueHref, issueKey, projectRepo, teamStates } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { ChevronDownIcon, ChevronRightIcon, GithubIcon, PlusIcon, StateIcon } from "../ui/icons.tsx"
-import { Button } from "../ui/kit.tsx"
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  GithubIcon,
+  MoreIcon,
+  PencilIcon,
+  PlusIcon,
+  ProjectIcon,
+  RefreshIcon,
+  StateIcon,
+  TrashIcon,
+  UnlinkIcon
+} from "../ui/icons.tsx"
+import { Button, Popover } from "../ui/kit.tsx"
 import { PageHeader } from "./Header.tsx"
 
 const s = stylex.create({
@@ -112,6 +126,53 @@ const s = stylex.create({
     color: color.fgMuted,
     fontSize: font.md
   },
+  projectChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    flexShrink: 0,
+    maxWidth: 140,
+    color: color.fgMuted,
+    fontSize: font.sm,
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    textOverflow: "ellipsis"
+  },
+  repoChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    height: 26,
+    paddingInline: 8,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: color.border,
+    color: color.fgMuted,
+    fontSize: font.sm,
+    textDecoration: "none"
+  },
+  repoDot: { width: 6, height: 6, borderRadius: "50%" },
+  repoOk: { backgroundColor: "#46a758" },
+  repoBad: { backgroundColor: color.danger },
+  menu: { display: "flex", flexDirection: "column", padding: 4, minWidth: 200 },
+  menuItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    height: 30,
+    paddingInline: 8,
+    borderWidth: 0,
+    borderRadius: radius.sm,
+    backgroundColor: { default: "transparent", ":hover": color.hover },
+    color: color.fg,
+    fontFamily: "inherit",
+    fontSize: font.md,
+    textAlign: "left",
+    cursor: "pointer"
+  },
+  menuDanger: { color: color.danger },
+  menuNote: { paddingInline: 8, paddingBlock: 4, color: color.fgSubtle, fontSize: font.sm },
   headerCount: {
     color: color.fgSubtle,
     fontWeight: 400,
@@ -123,6 +184,7 @@ const s = stylex.create({
 
 const IssueRow = (props: {
   issue: Issue
+  showProject: boolean
   focused: boolean
   onFocus: () => void
   apis: (apis: PickerApis) => void
@@ -175,6 +237,14 @@ const IssueRow = (props: {
           )}
         </For>
       </div>
+      <Show when={props.showProject && props.issue.projectId ? sync.state.projects[props.issue.projectId] : undefined}>
+        {(p) => (
+          <span {...stylex.attrs(s.projectChip)} title={`Project: ${p().name}`}>
+            <ProjectIcon size={12} color={p().color} />
+            {p().name}
+          </span>
+        )}
+      </Show>
       <Show when={props.issue.github}>
         {(gh) => (
           <span {...stylex.attrs(s.gh)} title={`${gh().owner}/${gh().repo}#${gh().number}`}>
@@ -196,6 +266,7 @@ const IssueRow = (props: {
 const Group = (props: {
   state: WorkflowState
   issues: ReadonlyArray<Issue>
+  showProject: boolean
   collapsed: boolean
   onToggle: () => void
   focusedId: string | null
@@ -226,6 +297,7 @@ const Group = (props: {
           {(issue) => (
             <IssueRow
               issue={issue}
+              showProject={props.showProject}
               focused={props.focusedId === issue.id}
               onFocus={() => props.onFocus(issue.id)}
               apis={(apis) => props.registerApis(issue.id, apis)}
@@ -237,10 +309,144 @@ const Group = (props: {
   )
 }
 
+/** The repository a project syncs with: link one from a dropdown, or see its state and unlink. */
+const ProjectRepo = (props: { projectId: string }) => {
+  const sync = useContext(Sync)
+  const repo = () => projectRepo(sync.state, props.projectId)
+  const [busy, setBusy] = createSignal(false)
+  const report = (e: unknown) => alert((e as { message?: string }).message ?? String(e))
+
+  const link = async (owner: string, name: string) => {
+    const project = sync.state.projects[props.projectId]
+    if (!project) return
+    const loose = Object.values(sync.state.issues).filter(
+      (i) => i.projectId === project.id && i.github === null && i.archivedAt === null
+    ).length
+    const pushExisting = loose > 0 &&
+      confirm(`Also create this project's ${loose} existing issue${loose === 1 ? "" : "s"} on ${owner}/${name}?`)
+    setBusy(true)
+    try {
+      await github.linkRepo(sync, { teamId: project.teamId, projectId: project.id, owner, name, pushExisting })
+    } catch (e) {
+      report(e)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Show
+      when={repo()}
+      fallback={
+        <GithubRepoPicker
+          align="end"
+          onPick={(r) => void link(r.owner, r.name)}
+          trigger={(attrs) => (
+            <Button size="sm" variant="ghost" disabled={busy()} {...attrs}>
+              <GithubIcon size={13} />
+              {busy() ? "Importing…" : "Link GitHub repo"}
+            </Button>
+          )}
+        />
+      }
+    >
+      {(r) => (
+        <a
+          href={`https://github.com/${r().owner}/${r().name}`}
+          target="_blank"
+          rel="noreferrer"
+          title={r().lastError ?? (r().lastSyncedAt ? `Synced ${formatRelative(r().lastSyncedAt!)}` : "Not synced yet")}
+          {...stylex.attrs(s.repoChip)}
+        >
+          <span {...stylex.attrs(s.repoDot, r().lastError ? s.repoBad : s.repoOk)} />
+          <GithubIcon size={13} />
+          {r().owner}/{r().name}
+        </a>
+      )}
+    </Show>
+  )
+}
+
+/** Rename, sync, unlink or delete the project. */
+const ProjectMenu = (props: { projectId: string }) => {
+  const sync = useContext(Sync)
+  const dialogs = useContext(ProjectDialogsContext)
+  const navigate = useNavigate()
+  const repo = () => projectRepo(sync.state, props.projectId)
+  const call = (work: () => Promise<unknown>) =>
+    work().catch((e) => alert((e as { message?: string }).message ?? String(e)))
+  return (
+    <Popover
+      align="end"
+      trigger={(attrs) => (
+        <Button variant="ghost" size="icon-sm" title="Project actions" {...attrs}>
+          <MoreIcon size={15} />
+        </Button>
+      )}
+    >
+      {(api) => (
+        <div {...stylex.attrs(s.menu)}>
+          <button type="button" {...stylex.attrs(s.menuItem)} onClick={() => (api.close(), dialogs.edit(props.projectId))}>
+            <PencilIcon size={14} /> Rename or recolor…
+          </button>
+          <Show when={repo()}>
+            {(r) => (
+              <>
+                <button
+                  type="button"
+                  {...stylex.attrs(s.menuItem)}
+                  onClick={() => (api.close(), void call(() => sync.call((c) => c.GithubSyncNow({ repoId: r().id }))))}
+                >
+                  <RefreshIcon size={14} /> Sync with GitHub now
+                </button>
+                <button
+                  type="button"
+                  {...stylex.attrs(s.menuItem)}
+                  onClick={() => {
+                    api.close()
+                    if (confirm(`Unlink ${r().owner}/${r().name}? Issues stay in the project.`)) {
+                      void call(() => sync.call((c) => c.GithubUnlinkRepo({ repoId: r().id })))
+                    }
+                  }}
+                >
+                  <UnlinkIcon size={14} /> Unlink {r().owner}/{r().name}
+                </button>
+              </>
+            )}
+          </Show>
+          <Show
+            when={!repo()}
+            fallback={<div {...stylex.attrs(s.menuNote)}>Unlink the repository to delete the project.</div>}
+          >
+            <button
+              type="button"
+              {...stylex.attrs(s.menuItem, s.menuDanger)}
+              onClick={() => {
+                api.close()
+                const project = sync.state.projects[props.projectId]
+                if (project && confirm(`Delete the project "${project.name}"? Its issues stay, without a project.`)) {
+                  sync.mutate({ _tag: "ProjectDelete", id: project.id })
+                  navigate("/")
+                }
+              }}
+            >
+              <TrashIcon size={14} /> Delete project
+            </button>
+          </Show>
+        </div>
+      )}
+    </Popover>
+  )
+}
+
 export const IssuesPage = () => {
   const sync = useContext(Sync)
   const composer = useContext(ComposerContext)
   const navigate = useNavigate()
+  const params = useParams()
+  /** The project this page shows, or undefined for all issues. */
+  const projectId = () => params.id
+  const project = () => (projectId() ? sync.state.projects[projectId()!] : undefined)
   const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
   const [focusTarget, setFocusedId] = createSignal<string | null>(null)
   const apis = new Map<string, PickerApis>()
@@ -248,7 +454,10 @@ export const IssuesPage = () => {
   const groups = createMemo(() => {
     const team = firstTeam(sync.state)
     if (!team) return []
-    const visible = Object.values(sync.state.issues).filter((i) => i.teamId === team.id && i.archivedAt === null)
+    const only = projectId()
+    const visible = Object.values(sync.state.issues).filter(
+      (i) => i.teamId === team.id && i.archivedAt === null && (!only || i.projectId === only)
+    )
     return teamStates(sync.state, team.id)
       .map((state) => ({ state, issues: visible.filter((i) => i.stateId === state.id).sort(compareIssues) }))
       .filter((g) => g.issues.length > 0)
@@ -316,25 +525,44 @@ export const IssuesPage = () => {
     <>
       <PageHeader
         title={
-          <>
-            Issues
-            <span {...stylex.attrs(s.headerCount)}>{total()}</span>
-          </>
+          <Show when={project()} fallback={<>All issues<span {...stylex.attrs(s.headerCount)}>{total()}</span></>}>
+            {(p) => (
+              <>
+                <ProjectIcon size={15} color={p().color} />
+                {p().name}
+                <span {...stylex.attrs(s.headerCount)}>{total()}</span>
+              </>
+            )}
+          </Show>
         }
         actions={
-          <Button size="sm" onClick={() => composer.open()}>
-            <PlusIcon size={13} />
-            New issue
-            <Shortcut binding="c" />
-          </Button>
+          <>
+            <Show when={project()}>
+              {(p) => (
+                <>
+                  <ProjectRepo projectId={p().id} />
+                  <ProjectMenu projectId={p().id} />
+                </>
+              )}
+            </Show>
+            <Button size="sm" onClick={() => composer.open()}>
+              <PlusIcon size={13} />
+              New issue
+              <Shortcut binding="c" />
+            </Button>
+          </>
         }
       />
       <div {...stylex.attrs(s.list)}>
         <Show
+          when={!projectId() || project()}
+          fallback={<div {...stylex.attrs(s.empty)}>This project does not exist, or was deleted.</div>}
+        >
+        <Show
           when={groups().length > 0}
           fallback={
             <div {...stylex.attrs(s.empty)}>
-              No issues yet.
+              {project() ? `No issues in ${project()!.name} yet.` : "No issues yet."}
               <Button variant="primary" onClick={() => composer.open()}>Create an issue</Button>
             </div>
           }
@@ -344,6 +572,7 @@ export const IssuesPage = () => {
               <Group
                 state={g().state}
                 issues={g().issues}
+                showProject={!projectId()}
                 collapsed={collapsed().has(g().state.id)}
                 onToggle={() =>
                   setCollapsed((c) => {
@@ -359,6 +588,7 @@ export const IssuesPage = () => {
               />
             )}
           </For>
+        </Show>
         </Show>
       </div>
     </>

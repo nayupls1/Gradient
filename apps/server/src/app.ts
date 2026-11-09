@@ -6,6 +6,7 @@ import { RpcSerialization, RpcServer } from "effect/rpc"
 import { existsSync } from "node:fs"
 import { ServerConfig } from "./config.ts"
 import { DbLive } from "./db/Db.ts"
+import { GithubAuth } from "./github/GithubAuth.ts"
 import { GithubClient } from "./github/GithubClient.ts"
 import { GithubSync } from "./github/GithubSync.ts"
 import { WebhookRoute } from "./github/webhook.ts"
@@ -39,6 +40,7 @@ const Seed = Layer.effectDiscard(seed)
 export const AppServices = Layer.mergeAll(Seed, Layer.empty).pipe(
   Layer.provideMerge(GithubSync.layer),
   Layer.provideMerge(GithubClient.layer),
+  Layer.provideMerge(GithubAuth.layer),
   Layer.provideMerge(Mutations.layer),
   Layer.provideMerge(Hub.layer),
   Layer.provideMerge(DbLive)

@@ -1,4 +1,4 @@
-import { identifier, type Issue, type WorkflowState } from "@gradient/domain"
+import { identifier, type Issue, parseIdentifier, projectKeyFor, type WorkflowState } from "@gradient/domain"
 import type { SyncState } from "../sync/engine.ts"
 
 export const firstTeam = (state: SyncState) => Object.values(state.teams)[0]
@@ -13,26 +13,54 @@ export const teamLabels = (state: SyncState, teamId: string) =>
     .filter((l) => l.teamId === teamId)
     .sort((a, b) => a.name.localeCompare(b.name))
 
+export const teamProjects = (state: SyncState, teamId: string) =>
+  Object.values(state.projects)
+    .filter((p) => p.teamId === teamId)
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+/** The GitHub repository a project syncs with, if any. */
+export const projectRepo = (state: SyncState, projectId: string | null | undefined) =>
+  projectId ? Object.values(state.githubRepos).find((r) => r.projectId === projectId) : undefined
+
+export const projectHref = (projectId: string) => `/project/${projectId}`
+
+/** The project shown by the current URL, if any. */
+export const projectIdFromPath = (path: string) => path.match(/^\/project\/([^/]+)/)?.[1]
+
 export const users = (state: SyncState) => Object.values(state.users).sort((a, b) => a.name.localeCompare(b.name))
 
+/** TES-12 for an issue in the project TES, GRD-12 for one without a project. */
 export const issueKey = (state: SyncState, issue: Issue) => {
   const team = state.teams[issue.teamId]
-  return team ? identifier(team, issue) : "…"
+  const project = issue.projectId ? state.projects[issue.projectId] : undefined
+  return team ? identifier(team, issue, project) : "…"
 }
 
-/** Resolve a URL ref: an identifier like GRD-12, or a raw id for issues still being created. */
+/**
+ * Resolve a URL ref: an identifier, or a raw id for issues still being created.
+ * Any key of the team or its projects works with the team-wide number, so old
+ * links survive moving an issue to another project or renaming a key.
+ */
 export const findIssue = (state: SyncState, ref: string): Issue | undefined => {
-  const match = ref.match(/^([A-Za-z]+)-(\d+)$/)
-  if (match) {
-    const team = Object.values(state.teams).find((t) => t.key.toLowerCase() === match[1]!.toLowerCase())
+  const parsed = parseIdentifier(ref)
+  if (parsed) {
+    const team =
+      Object.values(state.teams).find((t) => t.key.toUpperCase() === parsed.key) ??
+      state.teams[Object.values(state.projects).find((p) => p.key === parsed.key)?.teamId ?? ""]
     if (team) {
-      const n = Number(match[2])
-      const found = Object.values(state.issues).find((i) => i.teamId === team.id && i.number === n)
+      const found = Object.values(state.issues).find((i) => i.teamId === team.id && i.number === parsed.number)
       if (found) return found
     }
   }
   return state.issues[ref]
 }
+
+/** A free key for a new project in this team, from its name. */
+export const suggestProjectKey = (state: SyncState, teamId: string, name: string, exceptProjectId?: string) =>
+  projectKeyFor(name, [
+    state.teams[teamId]?.key ?? "",
+    ...Object.values(state.projects).filter((p) => p.teamId === teamId && p.id !== exceptProjectId).map((p) => p.key)
+  ])
 
 export const issueHref = (state: SyncState, issue: Issue) =>
   `/issue/${issue.number > 0 ? issueKey(state, issue) : issue.id}`

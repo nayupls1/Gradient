@@ -1,11 +1,11 @@
 import type { Issue, Priority } from "@gradient/domain"
-import { uuidv7 } from "@gradient/domain"
+import { PROJECT_COLORS, uuidv7 } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { For, Show, useContext } from "solid-js"
 import type { JSX } from "@solidjs/web"
-import { teamLabels, teamStates, users } from "../lib/select.ts"
+import { projectRepo, suggestProjectKey, teamLabels, teamProjects, teamStates, users } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { PriorityIcon, priorityLabel, StateIcon, TagIcon, UserIcon } from "../ui/icons.tsx"
+import { PriorityIcon, priorityLabel, ProjectIcon, StateIcon, TagIcon, UserIcon } from "../ui/icons.tsx"
 import { Avatar, Picker, type PopoverApi, type TriggerAttrs } from "../ui/kit.tsx"
 import { Sync } from "./context.ts"
 
@@ -208,6 +208,54 @@ export const LabelPicker = (props: {
   )
 }
 
+export const ProjectPicker = (props: {
+  teamId: string
+  value: string | null
+  onChange: (id: string | null) => void
+  variant: Variant
+  apiRef?: (api: PopoverApi) => void
+}) => {
+  const sync = useContext(Sync)
+  const current = () => (props.value ? sync.state.projects[props.value] : undefined)
+  return (
+    <Picker<string | null>
+      {...(props.apiRef ? { apiRef: props.apiRef } : {})}
+      placeholder="Move to project…"
+      items={[
+        { value: null, label: "No project", icon: () => <ProjectIcon size={14} color="currentColor" /> },
+        ...teamProjects(sync.state, props.teamId).map((p) => {
+          const repo = projectRepo(sync.state, p.id)
+          return {
+            value: p.id,
+            label: p.name,
+            icon: () => <ProjectIcon size={14} color={p.color} />,
+            keywords: p.key,
+            hint: repo ? `${p.key} · ${repo.owner}/${repo.name}` : p.key
+          }
+        })
+      ]}
+      selected={[props.value]}
+      onPick={props.onChange}
+      onCreate={(name) => {
+        const id = uuidv7()
+        const color = PROJECT_COLORS[teamProjects(sync.state, props.teamId).length % PROJECT_COLORS.length]!
+        sync.mutate({ _tag: "ProjectCreate", id, teamId: props.teamId, key: suggestProjectKey(sync.state, props.teamId, name), name, color })
+        props.onChange(id)
+      }}
+      trigger={(attrs) => (
+        <Trigger variant={props.variant} attrs={attrs} title={`Project: ${current()?.name ?? "none"}`}>
+          <ProjectIcon size={14} color={current()?.color ?? "currentColor"} />
+          <Show when={props.variant !== "icon"}>
+            <span {...stylex.attrs(s.text, props.value === null && s.muted)}>
+              {current()?.name ?? (props.variant === "chip" ? "Project" : "No project")}
+            </span>
+          </Show>
+        </Trigger>
+      )}
+    />
+  )
+}
+
 /** Shorthand for issue property edits from any view. */
 export const useIssueActions = () => {
   const sync = useContext(Sync)
@@ -224,4 +272,5 @@ const updatePatch = (patch: {
   priority?: Priority
   assigneeId?: string | null
   labelIds?: ReadonlyArray<string>
+  projectId?: string | null
 }) => patch

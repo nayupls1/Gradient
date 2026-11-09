@@ -10,6 +10,7 @@ export interface PickerApis {
   priority?: PopoverApi
   assignee?: PopoverApi
   labels?: PopoverApi
+  project?: PopoverApi
 }
 
 /**
@@ -26,6 +27,7 @@ export const useIssueCommands = (opts: { scope: string; issue: () => Issue | und
     { id: "issue.priority", title: "Set priority", group, keys: ["p"], scope: opts.scope, when: has, run: () => opts.apis()?.priority?.open() },
     { id: "issue.assignee", title: "Assign", group, keys: ["a"], scope: opts.scope, when: has, run: () => opts.apis()?.assignee?.open() },
     { id: "issue.labels", title: "Edit labels", group, keys: ["l"], scope: opts.scope, when: has, run: () => opts.apis()?.labels?.open() },
+    { id: "issue.project", title: "Move to project", group, keys: ["shift+p"], scope: opts.scope, when: has, run: () => opts.apis()?.project?.open() },
     {
       id: "issue.assignToMe",
       title: "Assign to me",

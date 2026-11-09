@@ -44,6 +44,25 @@ export const Label = Schema.Struct({
 })
 export type Label = typeof Label.Type
 
+/**
+ * A group of issues inside a team, such as one product or repository. An issue
+ * belongs to at most one project. A project can link one GitHub repository;
+ * its issues sync there.
+ */
+export const Project = Schema.Struct({
+  id: Schema.String,
+  teamId: Schema.String,
+  /** Prefix of its issues' identifiers ("TES" → TES-12). Unique in the team, distinct from the team key. */
+  key: Schema.String,
+  name: Schema.String,
+  color: Schema.String,
+  createdAt: Millis
+})
+export type Project = typeof Project.Type
+
+/** Colors handed to new projects in turn. Readable on light and dark surfaces. */
+export const PROJECT_COLORS = ["#0090ff", "#46a758", "#8e4ec6", "#f76b15", "#d6409f", "#12a594", "#e5484d", "#ffc53d"]
+
 export const IssueGithubRef = Schema.Struct({
   owner: Schema.String,
   repo: Schema.String,
@@ -55,6 +74,7 @@ export type IssueGithubRef = typeof IssueGithubRef.Type
 export const Issue = Schema.Struct({
   id: Schema.String,
   teamId: Schema.String,
+  projectId: Schema.NullOr(Schema.String),
   /** Assigned by the server. 0 while an optimistic create is in flight. */
   number: Schema.Int,
   title: Schema.String,
@@ -76,6 +96,8 @@ export type Issue = typeof Issue.Type
 export const GithubRepo = Schema.Struct({
   id: Schema.String,
   teamId: Schema.String,
+  /** The project whose issues sync with this repository. */
+  projectId: Schema.String,
   owner: Schema.String,
   name: Schema.String,
   /** When the last successful sync from GitHub finished. */
@@ -85,7 +107,7 @@ export const GithubRepo = Schema.Struct({
 })
 export type GithubRepo = typeof GithubRepo.Type
 
-export const ModelName = Schema.Literals(["team", "user", "workflowState", "label", "issue", "githubRepo"])
+export const ModelName = Schema.Literals(["team", "user", "workflowState", "label", "project", "issue", "githubRepo"])
 export type ModelName = typeof ModelName.Type
 
 /** One synced record, tagged by model, so clients can route it to the right table. */
@@ -94,10 +116,47 @@ export const Entity = Schema.Union([
   Schema.Struct({ model: Schema.Literal("user"), value: User }),
   Schema.Struct({ model: Schema.Literal("workflowState"), value: WorkflowState }),
   Schema.Struct({ model: Schema.Literal("label"), value: Label }),
+  Schema.Struct({ model: Schema.Literal("project"), value: Project }),
   Schema.Struct({ model: Schema.Literal("issue"), value: Issue }),
   Schema.Struct({ model: Schema.Literal("githubRepo"), value: GithubRepo })
 ])
 export type Entity = typeof Entity.Type
 
-export const identifier = (team: Pick<Team, "key">, issue: Pick<Issue, "number">) =>
-  issue.number > 0 ? `${team.key}-${issue.number}` : `${team.key}-…`
+/**
+ * An issue's human identifier: its project's key, or the team's when it has no
+ * project, then its number. Numbers are unique per team, so moving an issue to
+ * another project changes only the prefix, and any known prefix still finds it.
+ */
+export const identifier = (
+  team: Pick<Team, "key">,
+  issue: Pick<Issue, "number">,
+  project?: Pick<Project, "key"> | null
+) => {
+  const key = project?.key ?? team.key
+  return issue.number > 0 ? `${key}-${issue.number}` : `${key}-…`
+}
+
+/** "TES-12" → { key: "TES", number: 12 }. */
+export const parseIdentifier = (ref: string): { key: string; number: number } | null => {
+  const match = ref.trim().match(/^([A-Za-z][A-Za-z0-9]*)-(\d+)$/)
+  return match ? { key: match[1]!.toUpperCase(), number: Number(match[2]) } : null
+}
+
+export const isValidProjectKey = (key: string) => /^[A-Z][A-Z0-9]{1,4}$/.test(key)
+
+/**
+ * A key for a new project: the first three letters of its name, uppercased
+ * ("test" → "TES", "Issue project" → "ISS"). When taken, the third character
+ * becomes a digit ("IS2").
+ */
+export const projectKeyFor = (name: string, taken: Iterable<string>): string => {
+  const used = new Set([...taken].map((k) => k.toUpperCase()))
+  const cleaned = name.normalize("NFKD").replace(/[^A-Za-z0-9]/g, "").toUpperCase().replace(/^[0-9]+/, "")
+  const base = cleaned.length >= 2 ? cleaned.slice(0, 3) : "PRJ"
+  if (!used.has(base)) return base
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${base.slice(0, n < 10 ? 2 : 1)}${n}`
+    if (!used.has(candidate)) return candidate
+  }
+  return `${base.slice(0, 1)}${Date.now() % 10000}`
+}

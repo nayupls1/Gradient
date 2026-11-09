@@ -47,7 +47,7 @@ an older RC. The kit is ours instead: `apps/web/src/ui/kit.tsx`.
 
 ```
 packages/domain/src
-  models.ts            Team, User, WorkflowState, Label, Issue, GithubRepo, Entity
+  models.ts            Team, User, WorkflowState, Label, Project, Issue, GithubRepo, Entity
   mutations.ts         Mutation union + applyIssueMutation (shared optimistic logic)
   sync.ts              Delta, SyncEvent, Snapshot
   rpc.ts               GradientRpcs: Bootstrap, Subscribe, Mutate, Github*
@@ -58,7 +58,7 @@ apps/server/src
   sync/Mutations.ts    the single write path: validate, write, log, broadcast, queue outbox
   sync/Hub.ts          PubSub fan-out of committed deltas
   sync/Rpc.ts          RPC handlers; Subscribe = catch-up from log, then live
-  github/              client, field mapping, GithubSync (import/poll/push), webhook route
+  github/              auth (device-flow sign-in), client, field mapping, GithubSync (import/poll/push), webhook route
   mcp/                 MCP tools (names in, names out), instructions, the gradient skill
   http/guard.ts        local-only guard: refuses foreign browser origins and rebound hosts
   seed.ts, app.ts, main.ts
@@ -74,7 +74,8 @@ apps/web/src
 
 ## Data model
 
-`team`, `user`, `workflow_state`, `label`, `issue` (label ids stored as JSON),
+`team`, `user`, `workflow_state`, `label`, `project`, `issue` (label ids stored
+as JSON, optional `project_id`),
 `sync_log`, plus `github_repo`, `github_issue_link` (with the shadow),
 `github_outbox` and `github_delivery`. Timestamps are epoch milliseconds.
 
@@ -102,8 +103,30 @@ Conflicts: last write wins per field, in server arrival order.
 
 ## GitHub two-way sync
 
-Token auth for now: `GITHUB_TOKEN`, or the GitHub CLI's token. The client is
-behind one service, so GitHub App auth can replace it later.
+**Identifiers** are `<key>-<number>`: the project's key (unique in the team,
+derived from its name, `projectKeyFor`) or the team key without a project. The
+number is team-wide (`team.issue_counter`), so lookups accept any key of the
+team and moving an issue only changes the prefix.
+
+**Projects carry the repository.** A project groups issues inside a team, and
+links at most one repository (`github_repo.project_id`, unique). Imported
+issues join the repo's project. An issue pushes to the repo it is already
+linked to, else to its project's repo (`Db.repoForIssue`); issues without a
+project stay local. Linking without a project creates one named after the repo
+(or reuses an unlinked project of that name). A project with a repo must be
+unlinked before it is deleted; deleting a project leaves its issues without one.
+The repo picker lists `/user/repos` for a token, or the app's installations for
+an app sign-in.
+
+**Auth** (`github/GithubAuth.ts`): "Sign in with GitHub" runs the device flow
+of the Gradient GitHub App, which needs only its public client id. The server
+polls github.com for the token, stores it in `github_auth`, and links the local
+user to the GitHub login. The token acts as the user, limited to repositories
+the app is installed on (listed via `/user/installations`). It wins over
+`GITHUB_TOKEN` and the gh CLI token, which remain as fallbacks. `GithubClient`
+reads the token per request, so sign-in and sign-out apply without a restart;
+a 401 drops an expired or revoked sign-in. Webhooks to the app would need a
+public URL, so a local install keeps polling.
 
 | Gradient | GitHub |
 |---|---|
@@ -177,6 +200,7 @@ localStorage.
 - Issue search in ⌘K, filters, more views (deliberately left to the user's design).
 - Markdown rendering for descriptions.
 - Offline cache of the store in IndexedDB.
-- Real auth (GitHub login), then multiple users; GitHub App instead of a token.
-- Projects and cycles.
+- Multiple users with sessions, and a hosted relay for app webhooks and
+  installation tokens (the private key cannot ship in a local app).
+- Cycles; project descriptions, leads and target dates.
 - Postgres if it outgrows SQLite (the SQL layer is Effect's, so the queries stay).

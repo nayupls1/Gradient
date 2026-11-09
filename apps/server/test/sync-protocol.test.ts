@@ -20,6 +20,8 @@ const server = ManagedRuntime.make(
         token: Option.none(),
         tokenSource: null,
         apiUrl: "http://127.0.0.1:1",
+        webUrl: "http://127.0.0.1:1",
+        app: { clientId: null, slug: null },
         webhookSecret: Option.none(),
         pollIntervalSeconds: 3600
       }

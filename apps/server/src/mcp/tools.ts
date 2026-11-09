@@ -7,12 +7,17 @@ import { Tool, Toolkit } from "effect/ai"
  * Call describe_workspace first to learn the valid names.
  */
 
-const IssueRef = Schema.String.annotate({ description: "Issue identifier, e.g. \"GRD-12\"." })
+const IssueRef = Schema.String.annotate({
+  description: "Issue identifier: project key (or team key) and number, e.g. \"TES-12\" or \"GRD-12\"."
+})
 const StateName = Schema.String.annotate({
   description: "Workflow state name (e.g. \"In Progress\") or type: backlog, unstarted, started, completed, canceled."
 })
 const PriorityName = Schema.Literals(["none", "urgent", "high", "medium", "low"]).annotate({
   description: "Priority."
+})
+const ProjectName = Schema.String.annotate({
+  description: "Project name from describe_workspace. Use \"none\" for no project."
 })
 const Person = Schema.String.annotate({
   description: "\"me\", a person's name, or a GitHub login. Use \"none\" to unassign."
@@ -25,6 +30,7 @@ export const IssueSummary = Schema.Struct({
   priority: Schema.String,
   assignee: Schema.NullOr(Schema.String),
   labels: Schema.Array(Schema.String),
+  project: Schema.NullOr(Schema.String),
   github: Schema.NullOr(Schema.String),
   updated: Schema.String
 })
@@ -46,14 +52,19 @@ export class ToolError extends Schema.TaggedError<ToolError>()("ToolError", {
 
 export const DescribeWorkspace = Tool.make("describe_workspace", {
   description:
-    "The team, its workflow states in order, labels, people and the linked GitHub repo. Call this first to learn valid names for other tools.",
+    "The team, its workflow states in order, labels, people, and projects with the GitHub repo each syncs with. Call this first to learn valid names for other tools.",
   success: Schema.Struct({
     team: Schema.Struct({ key: Schema.String, name: Schema.String }),
     you: Schema.String,
     states: Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String })),
     labels: Schema.Array(Schema.String),
     people: Schema.Array(Schema.Struct({ name: Schema.String, githubLogin: Schema.NullOr(Schema.String) })),
-    githubRepo: Schema.NullOr(Schema.String),
+    projects: Schema.Array(Schema.Struct({
+      name: Schema.String,
+      key: Schema.String,
+      githubRepo: Schema.NullOr(Schema.String),
+      openIssues: Schema.Int
+    })),
     openIssues: Schema.Int
   }),
   failure: ToolError,
@@ -72,6 +83,7 @@ export const ListIssues = Tool.make("list_issues", {
     })),
     assignee: Schema.optionalKey(Person),
     label: Schema.optionalKey(Schema.String.annotate({ description: "Label name." })),
+    project: Schema.optionalKey(ProjectName),
     query: Schema.optionalKey(Schema.String.annotate({ description: "Text to find in the title or description." })),
     include_archived: Schema.optionalKey(Schema.Boolean),
     limit: Schema.optionalKey(Schema.Int.annotate({ description: "Default 50, max 200." }))
@@ -97,14 +109,15 @@ export const GetIssue = Tool.make("get_issue", {
 
 export const CreateIssue = Tool.make("create_issue", {
   description:
-    "Create an issue. It appears live in the app and, when the team has a linked repo, on GitHub. Returns the new issue with its identifier.",
+    "Create an issue. It appears live in the app and, when its project has a linked repo, on GitHub. Returns the new issue with its identifier.",
   parameters: Schema.Struct({
     title: Schema.String,
     description: Schema.optionalKey(Schema.String.annotate({ description: "Markdown." })),
     state: Schema.optionalKey(StateName),
     priority: Schema.optionalKey(PriorityName),
     assignee: Schema.optionalKey(Person),
-    labels: Schema.optionalKey(Schema.Array(Schema.String).annotate({ description: "Existing label names." }))
+    labels: Schema.optionalKey(Schema.Array(Schema.String).annotate({ description: "Existing label names." })),
+    project: Schema.optionalKey(ProjectName)
   }),
   success: IssueDetail,
   failure: ToolError,
@@ -126,6 +139,7 @@ export const UpdateIssue = Tool.make("update_issue", {
     labels: Schema.optionalKey(Schema.Array(Schema.String).annotate({ description: "Replace all labels." })),
     add_labels: Schema.optionalKey(Schema.Array(Schema.String)),
     remove_labels: Schema.optionalKey(Schema.Array(Schema.String)),
+    project: Schema.optionalKey(ProjectName),
     archived: Schema.optionalKey(Schema.Boolean.annotate({ description: "Archive (true) or restore (false)." }))
   }),
   success: IssueDetail,
@@ -136,4 +150,65 @@ export const UpdateIssue = Tool.make("update_issue", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false)
 
-export const GradientToolkit = Toolkit.make(DescribeWorkspace, ListIssues, GetIssue, CreateIssue, UpdateIssue)
+export const GithubConnection = Tool.make("github_status", {
+  description:
+    "Whether Gradient is connected to GitHub, as whom, and which repo each project syncs with. Check this before relying on GitHub sync.",
+  success: Schema.Struct({
+    connected: Schema.Boolean,
+    login: Schema.NullOr(Schema.String),
+    via: Schema.NullOr(Schema.String),
+    repos: Schema.Array(Schema.Struct({ repo: Schema.String, project: Schema.String })),
+    sign_in_available: Schema.Boolean,
+    pending_code: Schema.NullOr(Schema.String),
+    hint: Schema.String
+  }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, false)
+
+export const GithubSignIn = Tool.make("github_sign_in", {
+  description:
+    "Start \"Sign in with GitHub\". Returns a short code and a URL: show both to the user and ask them to enter the code there. " +
+    "Gradient finishes the sign-in on its own once they approve; call github_status to confirm.",
+  success: Schema.Struct({
+    user_code: Schema.String,
+    url: Schema.String,
+    expires_in_minutes: Schema.Int,
+    instructions: Schema.String
+  }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+
+export const CreateProject = Tool.make("create_project", {
+  description:
+    "Create a project to group issues. Pass github_repo (\"owner/name\") to link a repository: its issues are imported into the project and sync both ways.",
+  parameters: Schema.Struct({
+    name: Schema.optionalKey(Schema.String.annotate({ description: "Defaults to the repository name." })),
+    key: Schema.optionalKey(Schema.String.annotate({
+      description: "Identifier prefix, 2–5 capitals (\"WEB\" → WEB-12). Defaults to the first three letters of the name."
+    })),
+    github_repo: Schema.optionalKey(Schema.String.annotate({ description: "\"owner/name\" of a GitHub repository." }))
+  }),
+  success: Schema.Struct({ name: Schema.String, github_repo: Schema.NullOr(Schema.String), imported: Schema.Int }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+
+export const GradientToolkit = Toolkit.make(
+  DescribeWorkspace,
+  ListIssues,
+  GetIssue,
+  CreateIssue,
+  UpdateIssue,
+  CreateProject,
+  GithubConnection,
+  GithubSignIn
+)

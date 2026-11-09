@@ -1,7 +1,8 @@
 import { GithubError } from "@gradient/domain"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ServerConfig } from "../config.ts"
+import { GithubAuth } from "./GithubAuth.ts"
 
 const GhLabel = Schema.Union([
   Schema.String,
@@ -9,6 +10,28 @@ const GhLabel = Schema.Union([
 ])
 
 const GhUser = Schema.Struct({ login: Schema.String, avatar_url: Schema.optionalKey(Schema.NullOr(Schema.String)) })
+
+const GhInstallations = Schema.Struct({ installations: Schema.Array(Schema.Struct({ id: Schema.Int })) })
+const GhRepo = Schema.Struct({
+  name: Schema.String,
+  private: Schema.Boolean,
+  description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  owner: Schema.Struct({ login: Schema.String })
+})
+const GhInstallationRepos = Schema.Struct({ repositories: Schema.Array(GhRepo) })
+
+export interface AvailableRepo {
+  readonly owner: string
+  readonly name: string
+  readonly private: boolean
+  readonly description: string | null
+}
+const toAvailable = (r: typeof GhRepo.Type): AvailableRepo => ({
+  owner: r.owner.login,
+  name: r.name,
+  private: r.private,
+  description: r.description ?? null
+})
 
 export const GhIssue = Schema.Struct({
   number: Schema.Int,
@@ -46,8 +69,14 @@ const toError = (context: string) => (cause: unknown) =>
 
 /** A small hand-written GitHub REST client: only the calls Gradient needs. */
 export class GithubClient extends Context.Service<GithubClient, {
-  readonly enabled: boolean
-  readonly viewer: Effect.Effect<{ login: string; avatarUrl: string | null }, GithubError>
+  /** True while there is a token to call GitHub with (it can change at runtime). */
+  ready(): boolean
+  /**
+   * Repositories the connected account can link. With an app sign-in, the ones
+   * the app is installed on (alphabetical); with a token, every repository it
+   * can see, most recently pushed first.
+   */
+  readonly availableRepos: Effect.Effect<ReadonlyArray<AvailableRepo>, GithubError>
   getRepo(owner: string, repo: string): Effect.Effect<void, GithubError>
   listIssues(owner: string, repo: string, options: {
     readonly since: string | null
@@ -61,10 +90,12 @@ export class GithubClient extends Context.Service<GithubClient, {
     GithubClient,
     Effect.gen(function*() {
       const config = (yield* ServerConfig).github
-      const token = Option.getOrNull(config.token)
+      const auth = yield* GithubAuth
       const client = (yield* HttpClient.HttpClient).pipe(
-        HttpClient.mapRequest((req) =>
-          req.pipe(
+        HttpClient.mapRequest((req) => {
+          // Read per request, so a sign-in or sign-out applies to the next call.
+          const token = auth.tokenUnsafe()
+          return req.pipe(
             HttpClientRequest.prependUrl(config.apiUrl),
             HttpClientRequest.setHeaders({
               accept: "application/vnd.github+json",
@@ -73,24 +104,66 @@ export class GithubClient extends Context.Service<GithubClient, {
             }),
             token ? HttpClientRequest.bearerToken(token) : (r) => r
           )
-        )
+        }),
+        // An expired or revoked sign-in: drop it, so the UI asks to sign in again.
+        HttpClient.tap((res) => {
+          const sent = res.request.headers["authorization"]?.replace(/^Bearer /, "")
+          return res.status === 401 && sent ? auth.rejected(sent) : Effect.void
+        })
       )
       const ok = HttpClient.filterStatusOk(client)
       const disabled = Effect.fail(
-        new GithubError({ message: "GitHub is not configured. Set GITHUB_TOKEN or run `gh auth login`." })
+        new GithubError({
+          message: "GitHub is not connected. Sign in with GitHub in Settings, set GITHUB_TOKEN, or run `gh auth login`."
+        })
       )
-      const guard = <A>(effect: Effect.Effect<A, GithubError>) => (config.enabled ? effect : disabled)
+      const ready = () => config.enabled && auth.tokenUnsafe() !== null
+      const guard = <A>(effect: Effect.Effect<A, GithubError>) => Effect.suspend(() => (ready() ? effect : disabled))
+
+      /** Follow `Link: rel="next"` pages of one endpoint. */
+      const pages = <A>(
+        path: string,
+        decode: (res: HttpClientResponse.HttpClientResponse) => Effect.Effect<ReadonlyArray<A>, unknown>,
+        params: Record<string, string> = {}
+      ) =>
+        Effect.gen(function*() {
+          const all: Array<A> = []
+          for (let page = 1; page <= 20; page++) {
+            const res = yield* ok.execute(
+              HttpClientRequest.get(path).pipe(
+                HttpClientRequest.setUrlParams({ ...params, per_page: "100", page: String(page) })
+              )
+            )
+            all.push(...(yield* decode(res)))
+            if (!/rel="next"/.test(res.headers["link"] ?? "")) break
+          }
+          return all
+        })
 
       const decodeIssue = HttpClientResponse.schemaBodyJson(GhIssue)
 
       return GithubClient.of({
-        enabled: config.enabled,
-        viewer: guard(
-          ok.get("/user").pipe(
-            Effect.flatMap(HttpClientResponse.schemaBodyJson(GhUser)),
-            Effect.map((u) => ({ login: u.login, avatarUrl: u.avatar_url ?? null })),
-            Effect.mapError(toError("Reading the GitHub user failed"))
-          )
+        ready,
+        availableRepos: guard(
+          Effect.gen(function*() {
+            if ((yield* auth.source) !== "app") {
+              const repos = yield* pages("/user/repos", HttpClientResponse.schemaBodyJson(Schema.Array(GhRepo)), {
+                affiliation: "owner,collaborator,organization_member",
+                sort: "pushed"
+              })
+              return repos.map(toAvailable)
+            }
+            // A user token from the app sees only what the app is installed on.
+            const installations = yield* pages("/user/installations", (res) =>
+              HttpClientResponse.schemaBodyJson(GhInstallations)(res).pipe(Effect.map((b) => b.installations)))
+            const repos: Array<AvailableRepo> = []
+            for (const installation of installations) {
+              const list = yield* pages(`/user/installations/${installation.id}/repositories`, (res) =>
+                HttpClientResponse.schemaBodyJson(GhInstallationRepos)(res).pipe(Effect.map((b) => b.repositories)))
+              repos.push(...list.map(toAvailable))
+            }
+            return repos.sort((a, b) => `${a.owner}/${a.name}`.localeCompare(`${b.owner}/${b.name}`))
+          }).pipe(Effect.mapError(toError("Listing your GitHub repositories failed")))
         ),
         getRepo: (owner, repo) =>
           guard(
@@ -100,7 +173,7 @@ export class GithubClient extends Context.Service<GithubClient, {
                   ? Effect.void
                   : Effect.fail(new GithubError({
                     message: res.status === 404
-                      ? `Repository ${owner}/${repo} was not found, or the token cannot see it.`
+                      ? `Repository ${owner}/${repo} was not found, or Gradient cannot see it. If you signed in with GitHub, install the app on it.`
                       : `GitHub answered ${res.status} for ${owner}/${repo}.`
                   }))
               ),

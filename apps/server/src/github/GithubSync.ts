@@ -1,9 +1,19 @@
-import { type GithubRepo, GithubError, type GithubStatus, type Issue, keyBetween } from "@gradient/domain"
-import { Context, Effect, Layer, Option, Queue, Schedule, Semaphore } from "effect"
+import {
+  type GithubAvailableRepo,
+  GithubError,
+  type GithubRepo,
+  type GithubStatus,
+  type Issue,
+  keyBetween,
+  PROJECT_COLORS,
+  projectKeyFor
+} from "@gradient/domain"
+import { Context, Effect, Layer, Option, Queue, Schedule, Semaphore, Stream } from "effect"
 import type { SqlError } from "effect/sql"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
 import { Mutations, type TxContext } from "../sync/Mutations.ts"
+import { GithubAuth, type Viewer } from "./GithubAuth.ts"
 import { type GhIssue, GithubClient, type IssueWrite, labelColor, labelName } from "./GithubClient.ts"
 import { diff, fromGithub, fromIssue, resolveState, type Shadow } from "./mapping.ts"
 
@@ -19,12 +29,16 @@ const fallbackColors = ["#8b8d98", "#e5484d", "#f76b15", "#ffc53d", "#46a758", "
 
 export class GithubSync extends Context.Service<GithubSync, {
   readonly status: Effect.Effect<GithubStatus>
+  /** Link a repo to a project (or to a new project named after it) and import its issues. */
   linkRepo(input: {
     teamId: string
+    projectId: string | null
+    projectName?: string | undefined
+    projectKey?: string | undefined
     owner: string
     name: string
     pushExisting: boolean
-  }): Effect.Effect<{ imported: number; pushed: number }, GithubError>
+  }): Effect.Effect<{ projectId: string; imported: number; pushed: number }, GithubError>
   unlinkRepo(repoId: string): Effect.Effect<void, GithubError>
   /** Pull changes for one repo now, then push anything queued. */
   syncNow(repoId: string): Effect.Effect<void, GithubError>
@@ -32,6 +46,8 @@ export class GithubSync extends Context.Service<GithubSync, {
   ingest(repo: GithubRepo, gh: GhIssue): Effect.Effect<"created" | "updated" | "unchanged" | "skipped">
   /** Push every due outbox entry to GitHub. */
   readonly flushOutbox: Effect.Effect<number>
+  /** Repositories the connected account can link, for the repo picker. */
+  readonly availableRepos: Effect.Effect<ReadonlyArray<GithubAvailableRepo>, GithubError>
 }>()("gradient/GithubSync") {
   static readonly layer = Layer.effect(
     GithubSync,
@@ -39,9 +55,9 @@ export class GithubSync extends Context.Service<GithubSync, {
       const config = yield* ServerConfig
       const db = yield* Db
       const gh = yield* GithubClient
+      const auth = yield* GithubAuth
       const mutations = yield* Mutations
       const sql = db.sql
-      let viewerLogin: string | null = null
       // One flush at a time: two concurrent pushes of a new issue would create it twice on GitHub.
       const flushLock = yield* Semaphore.make(1)
 
@@ -120,6 +136,7 @@ export class GithubSync extends Context.Service<GithubSync, {
                 const created: Issue = {
                   id,
                   teamId: repo.teamId,
+                  projectId: repo.projectId,
                   number,
                   title: incoming.title,
                   description: incoming.body,
@@ -183,7 +200,7 @@ export class GithubSync extends Context.Service<GithubSync, {
         Effect.gen(function*() {
           const issue = yield* db.getIssue(issueId)
           if (!issue) return
-          const repo = yield* db.repoForTeam(issue.teamId)
+          const repo = yield* db.repoForIssue(issue)
           if (!repo) return
           const state = (yield* db.getState(issue.stateId))!
           const labels = yield* db.labelsForTeam(issue.teamId)
@@ -304,24 +321,26 @@ export class GithubSync extends Context.Service<GithubSync, {
         }
       })
 
-      if (gh.enabled) {
-        // Link the local user to the token's GitHub account, so assignees map both ways.
-        const viewer = yield* Effect.option(gh.viewer)
-        if (Option.isSome(viewer)) {
-          viewerLogin = viewer.value.login
-          yield* mutations.transact({ origin: "system", actorId: null }, (tx) =>
-            Effect.gen(function*() {
-              const viewerId = yield* db.getMeta("viewer_id")
-              const me = viewerId ? yield* db.getUser(viewerId) : undefined
-              const taken = yield* db.getUserByLogin(viewer.value.login)
-              if (me && !me.githubLogin && !taken) {
-                yield* db.putUser({ ...me, githubLogin: viewer.value.login, avatarUrl: viewer.value.avatarUrl })
-                tx.touch("user", me.id)
-              }
-            }))
-        } else {
-          yield* Effect.logWarning("GitHub token found but /user failed; sync will retry on each poll")
-        }
+      /** Link the local user to the GitHub account in use, so assignees map both ways. */
+      const adoptViewer = (viewer: Viewer) =>
+        mutations.transact({ origin: "system", actorId: null }, (tx) =>
+          Effect.gen(function*() {
+            const viewerId = yield* db.getMeta("viewer_id")
+            const me = viewerId ? yield* db.getUser(viewerId) : undefined
+            if (!me || me.githubLogin?.toLowerCase() === viewer.login.toLowerCase()) return
+            // Someone else already has this login (an assignee imported earlier): leave both alone.
+            if (yield* db.getUserByLogin(viewer.login)) return
+            yield* db.putUser({ ...me, githubLogin: viewer.login, avatarUrl: viewer.avatarUrl ?? me.avatarUrl })
+            tx.touch("user", me.id)
+          })).pipe(Effect.asVoid, Effect.orDie)
+
+      const adoptCurrentViewer = Effect.gen(function*() {
+        const viewer = yield* auth.viewer
+        if (viewer) yield* adoptViewer(viewer)
+      })
+
+      if (config.github.enabled) {
+        yield* adoptCurrentViewer
 
         // Outbound worker: wakes on each queued change, and every few seconds for retries.
         yield* Effect.forkScoped(
@@ -329,32 +348,100 @@ export class GithubSync extends Context.Service<GithubSync, {
             Effect.gen(function*() {
               yield* Effect.race(Queue.take(mutations.outboxSignal), Effect.sleep("5 seconds"))
               yield* Effect.sleep("150 millis") // coalesce bursts of edits into one PATCH
-              yield* flushOutbox
+              // Without a token, queued changes wait for a sign-in instead of burning retries.
+              if (gh.ready()) yield* flushOutbox
             })
           )
         )
         // Inbound poller: the safety net when webhooks are not forwarded.
         yield* Effect.forkScoped(
-          pollAll.pipe(Effect.repeat(Schedule.spaced(`${config.github.pollIntervalSeconds} seconds`)))
+          Effect.suspend(() => (gh.ready() ? pollAll : Effect.void)).pipe(
+            Effect.repeat(Schedule.spaced(`${config.github.pollIntervalSeconds} seconds`))
+          )
+        )
+        // After a sign-in: link the account, catch up on GitHub, and push what waited.
+        yield* Effect.forkScoped(
+          Stream.fromPubSub(auth.changes).pipe(
+            Stream.runForEach(() =>
+              Effect.gen(function*() {
+                yield* adoptCurrentViewer
+                if (!gh.ready()) return
+                yield* pollAll
+                yield* flushOutbox
+              })
+            )
+          )
         )
       }
 
-      const linkRepo = (input: { teamId: string; owner: string; name: string; pushExisting: boolean }) =>
+      /** The project a repo links to: the given one, an unlinked one with the same name, or a new one. */
+      const projectFor = (input: {
+        teamId: string
+        projectId: string | null
+        projectName?: string | undefined
+        projectKey?: string | undefined
+        name: string
+      }) =>
+        Effect.gen(function*() {
+          const projects = yield* db.projectsForTeam(input.teamId)
+          if (input.projectId) {
+            const project = projects.find((p) => p.id === input.projectId)
+            if (!project) return yield* new GithubError({ message: "Unknown project." })
+            return project.id
+          }
+          const wanted = (input.projectName?.trim() || input.name).trim()
+          const same = projects.find((p) => p.name.toLowerCase() === wanted.toLowerCase())
+          if (same) {
+            if (yield* db.repoForProject(same.id)) {
+              return yield* new GithubError({ message: `Project "${same.name}" already syncs with another repository.` })
+            }
+            return same.id
+          }
+          const id = Bun.randomUUIDv7()
+          const team = yield* db.getTeam(input.teamId)
+          yield* mutations.apply({ origin: "system", actorId: null }, [{
+            _tag: "ProjectCreate",
+            id,
+            teamId: input.teamId,
+            key: input.projectKey?.trim().toUpperCase() ||
+              projectKeyFor(wanted, [team?.key ?? "", ...projects.map((p) => p.key)]),
+            name: wanted,
+            color: PROJECT_COLORS[projects.length % PROJECT_COLORS.length]!
+          }]).pipe(Effect.mapError((e) => new GithubError({ message: e.message })))
+          return id
+        })
+
+      const linkRepo = (input: {
+        teamId: string
+        projectId: string | null
+        projectName?: string | undefined
+        projectKey?: string | undefined
+        owner: string
+        name: string
+        pushExisting: boolean
+      }) =>
         Effect.gen(function*() {
           const owner = input.owner.trim()
           const name = input.name.trim()
-          if (yield* db.repoForTeam(input.teamId)) {
-            return yield* new GithubError({ message: "This team is already linked to a repository." })
+          if (!(yield* db.getTeam(input.teamId))) return yield* new GithubError({ message: "Unknown team." })
+          const existing = yield* db.repoByName(owner, name)
+          if (existing) {
+            const project = yield* db.getProject(existing.projectId)
+            return yield* new GithubError({
+              message: `${owner}/${name} is already linked${project ? ` to the project "${project.name}"` : ""}.`
+            })
           }
-          if (yield* db.repoByName(owner, name)) {
-            return yield* new GithubError({ message: `${owner}/${name} is already linked.` })
+          if (input.projectId && (yield* db.repoForProject(input.projectId))) {
+            return yield* new GithubError({ message: "This project already syncs with a repository. Unlink it first." })
           }
+          // Check the repo before creating anything.
           yield* gh.getRepo(owner, name)
+          const projectId = yield* projectFor({ ...input, name })
           const id = Bun.randomUUIDv7()
           yield* mutations.transact({ origin: "system", actorId: null }, (tx) =>
             Effect.gen(function*() {
-              yield* sql`INSERT INTO github_repo (id, team_id, owner, name, created_at)
-                         VALUES (${id}, ${input.teamId}, ${owner}, ${name}, ${tx.now})`
+              yield* sql`INSERT INTO github_repo (id, team_id, project_id, owner, name, created_at)
+                         VALUES (${id}, ${input.teamId}, ${projectId}, ${owner}, ${name}, ${tx.now})`
               tx.touch("githubRepo", id)
             }))
           const repo = (yield* db.getRepo(id))!
@@ -363,14 +450,14 @@ export class GithubSync extends Context.Service<GithubSync, {
           if (input.pushExisting) {
             const now = Date.now()
             const unlinked = yield* sql`SELECT i.id FROM issue i LEFT JOIN github_issue_link l ON l.issue_id = i.id
-                                        WHERE i.team_id = ${input.teamId} AND l.issue_id IS NULL AND i.archived_at IS NULL`
+                                        WHERE i.project_id = ${projectId} AND l.issue_id IS NULL AND i.archived_at IS NULL`
             for (const row of unlinked) {
               yield* sql`INSERT OR IGNORE INTO github_outbox (issue_id, enqueued_at, next_attempt_at)
                          VALUES (${row.id as string}, ${now}, ${now})`
             }
             pushed = yield* flushOutbox
           }
-          return { imported: created, pushed }
+          return { projectId, imported: created, pushed }
         }).pipe(Effect.catchTag("SqlError", Effect.die))
 
       const unlinkRepo = (repoId: string) =>
@@ -379,8 +466,10 @@ export class GithubSync extends Context.Service<GithubSync, {
             const repo = yield* db.getRepo(repoId)
             if (!repo) return
             const linked = yield* sql`SELECT issue_id FROM github_issue_link WHERE repo_id = ${repoId}`
+            yield* sql`DELETE FROM github_outbox WHERE issue_id IN (
+                         SELECT issue_id FROM github_issue_link WHERE repo_id = ${repoId}
+                         UNION SELECT id FROM issue WHERE project_id = ${repo.projectId})`
             yield* sql`DELETE FROM github_issue_link WHERE repo_id = ${repoId}`
-            yield* sql`DELETE FROM github_outbox WHERE issue_id IN (SELECT id FROM issue WHERE team_id = ${repo.teamId})`
             yield* sql`DELETE FROM github_repo WHERE id = ${repoId}`
             tx.touch("githubRepo", repoId, "delete")
             for (const row of linked) tx.touch("issue", row.issue_id as string)
@@ -395,17 +484,28 @@ export class GithubSync extends Context.Service<GithubSync, {
         })
 
       return GithubSync.of({
-        status: Effect.sync(() => ({
-          tokenSource: config.github.tokenSource,
-          login: viewerLogin,
-          webhookSecretSet: Option.isSome(config.github.webhookSecret),
-          pollIntervalSeconds: config.github.pollIntervalSeconds
-        })),
+        status: Effect.gen(function*() {
+          const viewer = yield* auth.viewer
+          return {
+            tokenSource: yield* auth.source,
+            login: viewer?.login ?? null,
+            avatarUrl: viewer?.avatarUrl ?? null,
+            signIn: {
+              available: auth.signInAvailable,
+              installUrl: auth.installUrl,
+              pending: yield* auth.pending
+            },
+            notice: yield* auth.notice,
+            webhookSecretSet: Option.isSome(config.github.webhookSecret),
+            pollIntervalSeconds: config.github.pollIntervalSeconds
+          }
+        }),
         linkRepo,
         unlinkRepo,
         syncNow,
         ingest,
-        flushOutbox
+        flushOutbox,
+        availableRepos: Effect.suspend(() => gh.availableRepos)
       })
     })
   )

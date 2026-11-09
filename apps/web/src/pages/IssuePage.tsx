@@ -3,9 +3,9 @@ import { useNavigate, useParams } from "@solidjs/router"
 import { createSignal, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
-import { AssigneePicker, LabelPicker, PriorityPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
+import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
 import { useCommands, useScope } from "../keys/solid.tsx"
-import { findIssue, formatRelative, issueKey } from "../lib/select.ts"
+import { findIssue, formatRelative, issueKey, projectHref } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
 import { ArchiveIcon, ChevronRightIcon, GithubIcon, MoreIcon, RestoreIcon, TrashIcon } from "../ui/icons.tsx"
 import { AutoTextarea, Avatar, Button, PickerList, Popover } from "../ui/kit.tsx"
@@ -112,6 +112,14 @@ export const IssuePage = () => {
               <>
                 <a href="/" {...stylex.attrs(s.crumb)}>{sync.state.teams[current().teamId]?.name}</a>
                 <span {...stylex.attrs(s.crumbSep)}><ChevronRightIcon size={12} /></span>
+                <Show when={current().projectId ? sync.state.projects[current().projectId!] : undefined}>
+                  {(p) => (
+                    <>
+                      <a href={projectHref(p().id)} {...stylex.attrs(s.crumb)}>{p().name}</a>
+                      <span {...stylex.attrs(s.crumbSep)}><ChevronRightIcon size={12} /></span>
+                    </>
+                  )}
+                </Show>
                 <span>{issueKey(sync.state, current())}</span>
               </>
             }
@@ -196,6 +204,10 @@ export const IssuePage = () => {
               <div {...stylex.attrs(s.prop)}>
                 <span {...stylex.attrs(s.propLabel)}>Assignee</span>
                 <AssigneePicker apiRef={(a) => (apis.assignee = a)} variant="row" value={current().assigneeId} onChange={(assigneeId) => actions.update(current(), { assigneeId })} />
+              </div>
+              <div {...stylex.attrs(s.prop)}>
+                <span {...stylex.attrs(s.propLabel)}>Project</span>
+                <ProjectPicker apiRef={(a) => (apis.project = a)} variant="row" teamId={current().teamId} value={current().projectId} onChange={(projectId) => actions.update(current(), { projectId })} />
               </div>
               <div {...stylex.attrs(s.prop)}>
                 <span {...stylex.attrs(s.propLabel)}>Labels</span>

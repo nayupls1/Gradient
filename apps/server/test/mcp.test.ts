@@ -19,6 +19,8 @@ const server = ManagedRuntime.make(
         token: Option.none(),
         tokenSource: null,
         apiUrl: "http://127.0.0.1:1",
+        webUrl: "http://127.0.0.1:1",
+        app: { clientId: null, slug: null },
         webhookSecret: Option.none(),
         pollIntervalSeconds: 3600
       }
@@ -65,7 +67,17 @@ describe("MCP", () => {
   test("lists the tools with read-only hints", async () => {
     const { result } = await rpc("tools/list")
     const tools = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
-    expect(Object.keys(tools).sort()).toEqual(["create_issue", "describe_workspace", "get_issue", "list_issues", "update_issue"])
+    expect(Object.keys(tools).sort()).toEqual([
+      "create_issue",
+      "create_project",
+      "describe_workspace",
+      "get_issue",
+      "github_sign_in",
+      "github_status",
+      "list_issues",
+      "update_issue"
+    ])
+    expect(tools.github_status.annotations.readOnlyHint).toBe(true)
     expect(tools.list_issues.annotations.readOnlyHint).toBe(true)
     expect(tools.create_issue.annotations.destructiveHint).toBe(false)
   })
@@ -75,6 +87,32 @@ describe("MCP", () => {
     expect(data.team.key).toBe("GRD")
     expect(data.states.map((s: any) => s.name)).toContain("In Progress")
     expect(data.labels).toContain("Bug")
+    expect(data.projects.map((p: any) => p.name).sort()).toEqual(["App", "Sync engine"])
+    expect(data.projects.every((p: any) => p.githubRepo === null)).toBe(true)
+  })
+
+  test("projects: create one, file issues into it, filter by it, move issues out", async () => {
+    const project = await call("create_project", { name: "Agents" })
+    expect(project.data).toMatchObject({ name: "Agents", github_repo: null })
+    const dup = await call("create_project", { name: "agents" })
+    expect(dup.isError).toBe(true)
+    expect(dup.text).toContain("already exists")
+
+    const created = await call("create_issue", { title: "Teach agents about projects", project: "Agents" })
+    expect(created.data.project).toBe("Agents")
+    // The identifier carries the project's key; the team key with the same number still finds it.
+    expect(created.data.id).toMatch(/^AGE-\d+$/)
+    const number = created.data.id.split("-")[1]
+    expect((await call("get_issue", { id: `GRD-${number}` })).data.title).toBe("Teach agents about projects")
+    const listed = await call("list_issues", { project: "agents" })
+    expect(listed.data.issues.map((i: any) => i.title)).toEqual(["Teach agents about projects"])
+
+    const moved = await call("update_issue", { id: created.data.id, project: "none" })
+    expect(moved.data.project).toBeNull()
+    expect(moved.data.id).toBe(`GRD-${number}`)
+    const unknown = await call("list_issues", { project: "Nope" })
+    expect(unknown.isError).toBe(true)
+    expect(unknown.text).toContain("Agents")
   })
 
   test("create, update and read back an issue through the shared write path", async () => {
@@ -115,6 +153,18 @@ describe("MCP", () => {
     expect(JSON.stringify(result)).toContain("In Progress")
     const missing = await call("get_issue", { id: "GRD-999" })
     expect(missing.isError).toBe(true)
+  })
+})
+
+describe("GitHub tools", () => {
+  test("github_status explains how to connect, and sign-in errors say what is missing", async () => {
+    const status = await call("github_status")
+    expect(status.data.connected).toBe(false)
+    expect(status.data.sign_in_available).toBe(false)
+    expect(status.data.hint).toContain("GITHUB_TOKEN")
+    const signIn = await call("github_sign_in")
+    expect(signIn.isError).toBe(true)
+    expect(signIn.text).toContain("disabled")
   })
 })
 

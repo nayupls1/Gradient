@@ -1,14 +1,17 @@
 import type { GithubStatus } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
-import { createMemo, createSignal, For, Show, useContext } from "solid-js"
+import { useNavigate } from "@solidjs/router"
+import { createMemo, createSignal, For, onSettled, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
-import { firstTeam, formatRelative } from "../lib/select.ts"
+import { github } from "../app/github.ts"
+import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
+import { firstTeam, formatRelative, projectHref } from "../lib/select.ts"
 import type { JSX } from "@solidjs/web"
 import { type ColorTokens, paletteById, palettes } from "../theme/presets.ts"
 import { activeScheme, type Mode, resolveColors, theme, updateTheme } from "../theme/theme.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { BotIcon, CheckIcon, CopyIcon, GithubIcon, MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "../ui/icons.tsx"
-import { Button, Input } from "../ui/kit.tsx"
+import { BotIcon, CheckIcon, CopyIcon, ExternalIcon, GithubIcon, ProjectIcon, MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "../ui/icons.tsx"
+import { Avatar, Button, Input } from "../ui/kit.tsx"
 import { PageHeader } from "./Header.tsx"
 
 const s = stylex.create({
@@ -143,6 +146,56 @@ const s = stylex.create({
   },
   checkboxLabel: { display: "flex", alignItems: "center", gap: 8, fontSize: font.md, color: color.fgMuted },
   grow: { flexGrow: 1, minWidth: 200 },
+  account: { display: "flex", alignItems: "center", gap: 10 },
+  accountName: { fontSize: font.md, fontWeight: 600 },
+  divider: { height: 1, backgroundColor: color.border, marginInline: -16 },
+  device: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    padding: 12,
+    borderRadius: radius.md,
+    backgroundColor: color.subtle
+  },
+  userCode: { fontFamily: font.mono, fontSize: 20, fontWeight: 600, letterSpacing: "0.12em", color: color.fg },
+  repoList: {
+    display: "flex",
+    flexDirection: "column",
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: color.border,
+    maxHeight: 240,
+    overflowY: "auto"
+  },
+  repoRowStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    borderTopWidth: { default: 1, ":first-child": 0 },
+    borderTopStyle: "solid",
+    borderTopColor: color.border
+  },
+  projectLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    color: color.fgMuted,
+    fontSize: font.sm,
+    textDecoration: "none",
+    whiteSpace: "nowrap"
+  },
+  nowrap: { whiteSpace: "nowrap", flexShrink: 0 },
+  repoName: { fontWeight: 600, fontSize: font.md, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 },
+  spacer: { flexGrow: 1 },
+  repoRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    paddingBlock: 6,
+    paddingInline: 10
+  },
+  link: { display: "inline-flex", alignItems: "center", gap: 4, color: color.accent, fontSize: font.md, textDecoration: "none" },
   repoInput: { flexGrow: 1, flexBasis: 0, width: "auto", minWidth: 200 }
 })
 
@@ -312,25 +365,125 @@ const Agents = () => {
           )}
         </For>
         <div {...stylex.attrs(s.subtle)}>
-          Tools: list, get, create and update issues, and describe the workspace (states, labels, people). The server also publishes a Gradient skill with the conventions agents should follow.
+          Tools: list, get, create and update issues, create projects (optionally from a GitHub repo), describe the workspace, and check or start the GitHub sign-in. The server also publishes a Gradient skill with the conventions agents should follow.
         </div>
       </div>
     </section>
   )
 }
 
+const VIA: Record<NonNullable<GithubStatus["tokenSource"]>, string> = {
+  app: "Through the Gradient GitHub App. Gradient sees only the repositories you install it on.",
+  env: "Using the token from GITHUB_TOKEN.",
+  "gh-cli": "Using your GitHub CLI login."
+}
+
+const minutesLeft = (expiresAt: number) => Math.max(1, Math.round((expiresAt - Date.now()) / 60_000))
+
+/** The account Gradient talks to GitHub as, and the device-flow sign-in. */
+const GithubAccount = () => {
+  const sync = useContext(Sync)
+  const status = () => github.status()
+  const connected = () => status()?.tokenSource != null
+  const [copied, setCopied] = createSignal(false)
+  const copyCode = (code: string) => {
+    void navigator.clipboard?.writeText(code)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+  const description = () => {
+    const st = status()
+    if (!st) return "Checking the connection…"
+    if (st.tokenSource) {
+      return VIA[st.tokenSource] + (st.tokenSource !== "app" && st.signIn.available ? " Sign in to use the Gradient app instead." : "")
+    }
+    return st.signIn.available
+      ? "Sign in to sync issues with your repositories."
+      : "Set GITHUB_TOKEN or run gh auth login, then restart the server. Sign-in with GitHub needs GITHUB_APP_CLIENT_ID."
+  }
+
+  return (
+    <>
+      <div {...stylex.attrs(s.account)}>
+        <Show when={status()?.login} fallback={<span {...stylex.attrs(s.dot, s.off)} />}>
+          {(login) => <Avatar name={login()} src={status()?.avatarUrl ?? null} size={24} />}
+        </Show>
+        <div {...stylex.attrs(s.grow)}>
+          <div {...stylex.attrs(s.accountName)}>
+            <Show when={connected()} fallback="Not connected to GitHub">
+              {status()?.tokenSource === "app" ? "Signed in" : "Connected"}
+              {status()?.login ? ` as @${status()?.login}` : ""}
+            </Show>
+          </div>
+          <div {...stylex.attrs(s.subtle)}>{description()}</div>
+        </div>
+        <Show when={status()?.tokenSource === "app"}>
+          <Button size="sm" variant="ghost" onClick={() => void github.signOut(sync)}>Sign out</Button>
+        </Show>
+        <Show when={status()?.signIn.available && status()?.tokenSource !== "app" && !status()?.signIn.pending}>
+          <Button size="sm" variant={connected() ? "default" : "primary"} onClick={() => void github.signIn(sync)}>
+            <GithubIcon size={14} /> Sign in with GitHub
+          </Button>
+        </Show>
+      </div>
+      <Show when={status()?.signIn.pending}>
+        {(pending) => (
+          <div {...stylex.attrs(s.device)}>
+            <div {...stylex.attrs(s.subtle)}>Enter this code on GitHub to sign in</div>
+            <div {...stylex.attrs(s.row)}>
+              <code {...stylex.attrs(s.userCode)}>{pending().userCode}</code>
+              <Button size="icon" variant="ghost" title="Copy code" onClick={() => copyCode(pending().userCode)}>
+                <Show when={copied()} fallback={<CopyIcon size={14} />}><CheckIcon size={14} /></Show>
+              </Button>
+              <span {...stylex.attrs(s.grow)} />
+              <Button
+                variant="primary"
+                onClick={() => {
+                  copyCode(pending().userCode)
+                  window.open(pending().verificationUri, "_blank", "noopener")
+                }}
+              >
+                Copy code and open GitHub <ExternalIcon size={14} />
+              </Button>
+              <Button variant="ghost" onClick={() => void github.cancel(sync)}>Cancel</Button>
+            </div>
+            <div {...stylex.attrs(s.subtle)}>
+              Waiting for you to approve Gradient on GitHub. The code expires in {minutesLeft(pending().expiresAt)} min.
+            </div>
+          </div>
+        )}
+      </Show>
+      <Show when={github.error() ?? status()?.notice}>
+        {(text) => <div {...stylex.attrs(s.error)}>{text()}</div>}
+      </Show>
+    </>
+  )
+}
+
 const GithubSettings = () => {
   const sync = useContext(Sync)
+  const navigate = useNavigate()
   const url = useMcpUrl()
   const team = () => firstTeam(sync.state)
-  const repo = () => Object.values(sync.state.githubRepos).find((r) => r.teamId === team()?.id)
-  const [status, setStatus] = createSignal<GithubStatus | null>(null)
+  const repos = () => Object.values(sync.state.githubRepos).sort((a, b) => a.createdAt - b.createdAt)
+  const status = () => github.status()
+  const connected = () => status()?.tokenSource != null
   const [target, setTarget] = createSignal("")
-  const [pushExisting, setPushExisting] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
   const [message, setMessage] = createSignal<{ error: boolean; text: string } | null>(null)
 
-  sync.call((c) => c.GithubStatus()).then(setStatus, () => setStatus(null))
+  onSettled(() => {
+    // Pick up a sign-in that is already waiting (started by an agent, or before a reload),
+    // and refresh when coming back from installing the app on github.com.
+    const load = () =>
+      github.refresh(sync).then((current) => {
+        if (current?.signIn.pending) void github.wait(sync)
+        void github.loadRepos(sync, current)
+      })
+    void load()
+    window.addEventListener("focus", load)
+    return () => window.removeEventListener("focus", load)
+  })
 
   const run = async (work: () => Promise<string>) => {
     setBusy(true)
@@ -344,86 +497,127 @@ const GithubSettings = () => {
     }
   }
 
-  const link = () => {
-    const [owner, name] = target().trim().replace(/^https?:\/\/github\.com\//, "").split("/")
+  /** Link a repository into a new project named after it, then open that project. */
+  const linkRepo = (owner: string, name: string) => {
     const t = team()
-    if (!owner || !name || !t) return setMessage({ error: true, text: "Use the form owner/name." })
+    if (!t) return
     return run(async () => {
-      const result = await sync.call((c) => c.GithubLinkRepo({ teamId: t.id, owner, name, pushExisting: pushExisting() }))
+      const result = await github.linkRepo(sync, { teamId: t.id, projectId: null, owner, name, pushExisting: false })
       setTarget("")
-      return `Linked. Imported ${result.imported} issue${result.imported === 1 ? "" : "s"}${result.pushed ? `, created ${result.pushed} on GitHub` : ""}.`
+      navigate(projectHref(result.projectId))
+      return `Linked ${owner}/${name}. Imported ${result.imported} issue${result.imported === 1 ? "" : "s"}.`
     })
+  }
+  const linkTyped = () => {
+    const [owner, name] = target().trim().replace(/^https?:\/\/github\.com\//, "").split("/")
+    if (!owner || !name) return setMessage({ error: true, text: "Use the form owner/name." })
+    return linkRepo(owner, name)
   }
 
   return (
     <section {...stylex.attrs(s.section)}>
       <h2 {...stylex.attrs(s.h2)}><GithubIcon size={16} /> GitHub</h2>
       <p {...stylex.attrs(s.lede)}>
-        Link the team to one repository. Issues sync both ways: title, description, open/closed, labels and assignee.
+        Each project can sync with one repository: title, description, open/closed, labels and assignee, both ways.
       </p>
       <div {...stylex.attrs(s.panel)}>
-        <div {...stylex.attrs(s.statusRow)}>
-          <span {...stylex.attrs(s.dot, status()?.tokenSource ? s.ok : s.off)} />
-          <Show when={status()?.tokenSource} fallback={<span>No GitHub token. Set <code>GITHUB_TOKEN</code> or run <code>gh auth login</code>, then restart the server.</span>}>
-            <span>
-              Connected{status()?.login ? ` as @${status()?.login}` : ""} · token from {status()?.tokenSource === "env" ? "GITHUB_TOKEN" : "gh CLI"}
-            </span>
-          </Show>
-        </div>
+        <GithubAccount />
+        <div {...stylex.attrs(s.divider)} />
+        <div {...stylex.attrs(s.fieldLabel)}>Linked repositories</div>
         <Show
-          when={repo()}
-          fallback={
-            <>
-              <div {...stylex.attrs(s.row)}>
-                <Input
-                  placeholder="owner/repository"
-                  value={target()}
-                  onInput={(e) => setTarget(e.currentTarget.value)}
-                  onKeyDown={(e) => e.key === "Enter" && link()}
-                  sx={s.repoInput}
-                />
-                <Button variant="primary" disabled={busy() || !status()?.tokenSource} onClick={link}>
-                  {busy() ? "Linking…" : "Link repository"}
-                </Button>
-              </div>
-              <label {...stylex.attrs(s.checkboxLabel)}>
-                <input type="checkbox" checked={pushExisting()} onChange={(e) => setPushExisting(e.currentTarget.checked)} />
-                Also create this team's existing issues on GitHub
-              </label>
-            </>
-          }
+          when={repos().length > 0}
+          fallback={<div {...stylex.attrs(s.subtle)}>None yet. Link one below, or from a project's header.</div>}
         >
-          {(r) => (
-            <>
-              <div {...stylex.attrs(s.row)}>
-                <span {...stylex.attrs(s.dot, r().lastError ? s.bad : s.ok)} />
-                <a href={`https://github.com/${r().owner}/${r().name}`} target="_blank" rel="noreferrer" {...stylex.attrs(s.repo)}>
-                  {r().owner}/{r().name}
-                </a>
-                <span {...stylex.attrs(s.subtle)}>
-                  {r().lastSyncedAt ? `synced ${formatRelative(r().lastSyncedAt!)}` : "not synced yet"}
-                </span>
-                <span {...stylex.attrs(s.grow)} />
-                <Button size="sm" disabled={busy()} onClick={() => run(async () => (await sync.call((c) => c.GithubSyncNow({ repoId: r().id })), "Synced."))}>
-                  Sync now
-                </Button>
-                <Button size="sm" variant="danger" disabled={busy()} onClick={() => confirm(`Unlink ${r().owner}/${r().name}? Issues stay in Gradient.`) && run(async () => (await sync.call((c) => c.GithubUnlinkRepo({ repoId: r().id })), "Unlinked."))}>
-                  Unlink
-                </Button>
-              </div>
-              <Show when={r().lastError}>{(e) => <div {...stylex.attrs(s.error)}>{e()}</div>}</Show>
-              <div {...stylex.attrs(s.subtle)}>
-                Changes from GitHub arrive every {status()?.pollIntervalSeconds ?? 15}s. For instant updates, forward webhooks
-                {status()?.webhookSecretSet ? "" : " (set GITHUB_WEBHOOK_SECRET first)"}:
-              </div>
-              <code {...stylex.attrs(s.code)}>
-                gh webhook forward --repo={r().owner}/{r().name} --events=issues --url={url().replace(/\/mcp$/, "")}/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
-              </code>
-            </>
+          <div {...stylex.attrs(s.repoList)}>
+            <For each={repos()} keyed={(r) => r.id}>
+              {(r) => {
+                const project = () => sync.state.projects[r().projectId]
+                return (
+                  <div {...stylex.attrs(s.repoRowStack)}>
+                    <div {...stylex.attrs(s.repoRow)}>
+                      <span {...stylex.attrs(s.dot, r().lastError ? s.bad : s.ok)} />
+                      <a href={`https://github.com/${r().owner}/${r().name}`} target="_blank" rel="noreferrer" {...stylex.attrs(s.repoName)}>
+                        {r().owner}/{r().name}
+                      </a>
+                      <Show when={project()}>
+                        {(p) => (
+                          <a href={projectHref(p().id)} {...stylex.attrs(s.projectLink)}>
+                            <ProjectIcon size={13} color={p().color} />
+                            {p().name}
+                          </a>
+                        )}
+                      </Show>
+                      <span {...stylex.attrs(s.subtle, s.nowrap)}>
+                        {r().lastSyncedAt ? `synced ${formatRelative(r().lastSyncedAt!)}` : "not synced yet"}
+                      </span>
+                      <span {...stylex.attrs(s.spacer)} />
+                      <Button size="sm" variant="ghost" disabled={busy()} onClick={() => run(async () => (await sync.call((c) => c.GithubSyncNow({ repoId: r().id })), `Synced ${r().owner}/${r().name}.`))}>
+                        Sync now
+                      </Button>
+                      <Button size="sm" variant="danger" disabled={busy()} onClick={() => confirm(`Unlink ${r().owner}/${r().name}? Issues stay in their project.`) && run(async () => (await sync.call((c) => c.GithubUnlinkRepo({ repoId: r().id })), "Unlinked."))}>
+                        Unlink
+                      </Button>
+                    </div>
+                    <Show when={r().lastError}>{(e) => <div {...stylex.attrs(s.error)}>{e()}</div>}</Show>
+                  </div>
+                )
+              }}
+            </For>
+          </div>
+        </Show>
+
+        <div {...stylex.attrs(s.fieldLabel)}>Link a repository</div>
+        <div {...stylex.attrs(s.row)}>
+          <GithubRepoPicker
+            onPick={(r) => void linkRepo(r.owner, r.name)}
+            trigger={(attrs) => (
+              <Button variant="primary" disabled={busy() || !connected()} {...attrs}>
+                <GithubIcon size={14} /> {busy() ? "Importing…" : "Choose a repository"}
+              </Button>
+            )}
+          />
+          <span {...stylex.attrs(s.subtle)}>Creates a project named after it and imports its issues.</span>
+        </div>
+        <Show when={status()?.tokenSource === "app" && status()?.signIn.installUrl}>
+          {(href) => (
+            <div {...stylex.attrs(s.subtle)}>
+              Missing one? The Gradient app only sees repositories it is installed on.{" "}
+              <a href={href()} target="_blank" rel="noreferrer" {...stylex.attrs(s.link)}>
+                Install on more repositories <ExternalIcon size={13} />
+              </a>
+            </div>
           )}
         </Show>
+        <div {...stylex.attrs(s.row)}>
+          <Input
+            placeholder="or type owner/repository"
+            value={target()}
+            onInput={(e) => setTarget(e.currentTarget.value)}
+            onKeyDown={(e) => e.key === "Enter" && linkTyped()}
+            sx={s.repoInput}
+          />
+          <Button disabled={busy() || !connected() || !target().trim()} onClick={linkTyped}>Link</Button>
+        </div>
         <Show when={message()}>
           {(m) => <div {...stylex.attrs(m().error ? s.error : s.muted)}>{m().text}</div>}
+        </Show>
+
+        <Show when={repos().length > 0}>
+          <details>
+            <summary {...stylex.attrs(s.subtle)}>
+              Changes from GitHub arrive every {status()?.pollIntervalSeconds ?? 15}s. Instant updates with webhooks…
+            </summary>
+            <div {...stylex.attrs(s.subtle)}>
+              {status()?.webhookSecretSet ? "Forward each repository's webhooks:" : "Set GITHUB_WEBHOOK_SECRET, restart, then forward each repository's webhooks:"}
+            </div>
+            <For each={repos()} keyed={(r) => r.id}>
+              {(r) => (
+                <code {...stylex.attrs(s.code)}>
+                  gh webhook forward --repo={r().owner}/{r().name} --events=issues --url={url().replace(/\/mcp$/, "")}/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
+                </code>
+              )}
+            </For>
+          </details>
         </Show>
       </div>
     </section>

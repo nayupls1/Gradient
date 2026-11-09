@@ -1,6 +1,6 @@
 import { keyBetween, type Priority, uuidv7 } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
-import { createSignal, useContext } from "solid-js"
+import { createEffect, createSignal, Show, useContext } from "solid-js"
 import { firstTeam, teamStates } from "../lib/select.ts"
 import { color, font } from "../theme/tokens.stylex.ts"
 import { ChevronRightIcon } from "../ui/icons.tsx"
@@ -8,7 +8,7 @@ import { Shortcut, useCommands } from "../keys/solid.tsx"
 import { AutoTextarea, Button, Dialog } from "../ui/kit.tsx"
 import type { ComposerDefaults } from "./context.ts"
 import { Sync } from "./context.ts"
-import { AssigneePicker, LabelPicker, PriorityPicker, StatePicker } from "./properties.tsx"
+import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker } from "./properties.tsx"
 
 const s = stylex.create({
   header: {
@@ -63,6 +63,14 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
   const [priority, setPriority] = createSignal<Priority>(0)
   const [assigneeId, setAssigneeId] = createSignal<string | null>(null)
   const [labelIds, setLabelIds] = createSignal<ReadonlyArray<string>>([])
+  // Starts as the project of the page the composer opened from; the user can pick another.
+  const [projectId, setProjectId] = createSignal<string | null>(null)
+  createEffect(
+    () => props.open,
+    (open) => {
+      if (open) setProjectId(props.defaults.projectId ?? null)
+    }
+  )
 
   const reset = () => {
     setTitle("")
@@ -83,6 +91,7 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
       _tag: "IssueCreate",
       id: uuidv7(),
       teamId: t.id,
+      projectId: projectId() && sync.state.projects[projectId()!] ? projectId() : null,
       title: title().trim(),
       description: description(),
       stateId: stateId(),
@@ -108,8 +117,16 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
         }}
       >
         <div {...stylex.attrs(s.header)}>
-          <span {...stylex.attrs(s.teamKey)}>{team()?.key}</span>
+          <span {...stylex.attrs(s.teamKey)}>{(projectId() ? sync.state.projects[projectId()!]?.key : undefined) ?? team()?.key}</span>
           <ChevronRightIcon size={12} />
+          <Show when={projectId() ? sync.state.projects[projectId()!] : undefined}>
+            {(p) => (
+              <>
+                <span>{p().name}</span>
+                <ChevronRightIcon size={12} />
+              </>
+            )}
+          </Show>
           <span>New issue</span>
         </div>
         <div {...stylex.attrs(s.body)}>
@@ -132,6 +149,7 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
         </div>
         <div {...stylex.attrs(s.chips)}>
           <StatePicker teamId={team()?.id ?? ""} value={stateId()} onChange={setStateId} variant="chip" />
+          <ProjectPicker teamId={team()?.id ?? ""} value={projectId()} onChange={setProjectId} variant="chip" />
           <PriorityPicker value={priority()} onChange={setPriority} variant="chip" />
           <AssigneePicker value={assigneeId()} onChange={setAssigneeId} variant="chip" />
           <LabelPicker teamId={team()?.id ?? ""} value={labelIds()} onChange={setLabelIds} variant="chip" />
