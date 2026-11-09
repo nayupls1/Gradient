@@ -1,16 +1,17 @@
-# Gradient: architecture plan (draft)
+# Gradient: architecture
 
-Status: draft for review. Nothing here is built yet.
+Status: pass 1 is built. This document describes what exists and what comes
+next.
 
 Gradient is a Linear-style issue tracker. It syncs issues both ways with GitHub,
-as close to realtime as GitHub allows. It is written in Effect v4.
+as close to realtime as GitHub allows. It runs locally, for one user, for now.
 
 ## Principles
 
-- **Few dependencies.** Use Bun's built-ins (HTTP, WebSocket, SQLite, bundler,
-  test runner, `randomUUIDv7`) and Effect's single package (HTTP, RPC, SQL,
-  Schema, Socket, crypto) before anything else. Write small utilities ourselves
-  (fractional indexing, routing, keyboard shortcuts, HMAC checks, GitHub client).
+- **Few dependencies.** Use Bun's built-ins and Effect's single package first.
+  Write small utilities ourselves (fractional indexing, UUIDv7, hotkeys, the
+  GitHub client, webhook signature checks, the component kit). Add a package
+  when it carries real weight.
 - **One sync engine for everything.** The browser and GitHub are both clients
   of the same mutation pipeline. No special-case write paths.
 - **Server is the source of truth.** Clients are optimistic, but every change is
@@ -18,169 +19,129 @@ as close to realtime as GitHub allows. It is written in Effect v4.
 
 ## Stack
 
-| Concern | Choice | Dependency |
-|---|---|---|
-| Runtime | Bun | none (the runtime) |
-| Core | Effect 4.x (`effect`: Schema, http, rpc, sql, socket) | `effect` |
-| Bun adapter | HTTP server, WebSocket, runtime | `@effect/platform-bun` |
-| Database | SQLite through `bun:sqlite` (see open questions) | `@effect/sql-sqlite-bun` |
-| UI | React 19, plain CSS with custom properties | `react`, `react-dom` |
-| Frontend build | Bun HTML imports and bundler (no Vite) | none |
-| Tests | `bun test`, plus a small `it.effect` helper | none |
-| Dev only | `typescript`, `@types/bun`, `@types/react`, `@types/react-dom` | dev |
+| Concern | Choice |
+|---|---|
+| Runtime | Bun 1.4 |
+| Server core | `effect` 4.x: Schema, `effect/rpc`, `effect/sql`, `effect/http`, `effect/socket` |
+| Bun adapter | `@effect/platform-bun` |
+| Database | SQLite through `@effect/sql-sqlite-bun` |
+| Validation | Effect Schema (shared by client and server; no Zod, Valibot or TypeBox needed) |
+| UI | Solid 2 (RC) with `@solidjs/router` 2 |
+| Styles | StyleX, compiled by `@stylexjs/unplugin` |
+| Components | Hand-written kit with shadcn's API shape, on native `<dialog>` and the Popover API |
+| Font | Inter, bundled (`@fontsource-variable/inter`) |
+| Build | Vite 8 with `vite-plugin-solid` |
+| Tests | `bun test`, with a fake GitHub server |
 
-That is 5 runtime packages. No Tailwind, router library, state library, ORM,
-Zod, or date library.
+Runtime dependencies: server 3 (`effect`, `@effect/platform-bun`,
+`@effect/sql-sqlite-bun`); web 6 (`effect`, `solid-js`, `@solidjs/web`,
+`@solidjs/router`, `@stylexjs/stylex`, the font).
+
+Kobalte, which shadcn-solid builds on, only has an alpha for Solid 2 pinned to
+an older RC. The kit is ours instead: `apps/web/src/ui/kit.tsx`.
 
 ## Layout
 
-One package, split by folders. A workspace monorepo adds config without adding
-value at this size.
-
 ```
-src/
-  domain/        shared by server and client: pure, no IO
-    schema/      Issue, Team, WorkflowState, Label, User (Effect Schema)
-    rpc.ts       RPC group: Bootstrap, Subscribe, Mutate
-    mutation.ts  Mutation union (IssueCreate, IssueUpdate, IssueArchive, ...)
-    sync.ts      Delta and SyncPacket types
-    lib/         fractional-index.ts, ids.ts
-  server/
-    main.ts      Bun.serve plus Effect layers
-    db/          migrations, repos per model
-    sync/        MutationService, SyncLog, Hub (PubSub to WebSocket fan-out)
-    github/      App auth (JWT), client, webhooks, outbox worker, reconciler, mapper
-    http/        routes: /rpc (WebSocket), /webhooks/github, static
-  client/
-    index.html   Bun HTML entry
-    sync/        Store, TransactionQueue, connection, IndexedDB cache (later)
-    ui/          components, views (issue list, board, issue detail)
-    lib/         router.ts, hotkeys.ts, useStore.ts
+packages/domain/src
+  models.ts            Team, User, WorkflowState, Label, Issue, GithubRepo, Entity
+  mutations.ts         Mutation union + applyIssueMutation (shared optimistic logic)
+  sync.ts              Delta, SyncEvent, Snapshot
+  rpc.ts               GradientRpcs: Bootstrap, Subscribe, Mutate, Github*
+  fractional-index.ts  ordering keys
+apps/server/src
+  config.ts            env config; borrows `gh auth token` when GITHUB_TOKEN is unset
+  db/                  migrations, typed queries (Db)
+  sync/Mutations.ts    the single write path: validate, write, log, broadcast, queue outbox
+  sync/Hub.ts          PubSub fan-out of committed deltas
+  sync/Rpc.ts          RPC handlers; Subscribe = catch-up from log, then live
+  github/              client, field mapping, GithubSync (import/poll/push), webhook route
+  seed.ts, app.ts, main.ts
+apps/web/src
+  sync/engine.ts       client store: base + pending transactions, reconnect, resend
+  theme/               tokens (StyleX vars), presets, runtime theme switching
+  ui/                  kit (Button, Input, Dialog, Popover, Picker, Avatar, Toaster), icons
+  app/                 Shell (sidebar), Composer (new issue), property pickers, router
+  pages/               IssuesPage (list grouped by state), IssuePage, SettingsPage
 ```
 
-## Data model (first pass)
+## Data model
 
-- `team`: id, key (`GRD`), name, issue_counter
-- `user`: id, name, avatar_url, github_id, github_login
-- `workflow_state`: id, team_id, name, type
-  (`backlog | unstarted | started | completed | canceled`), position, color
-- `label`: id, team_id, name, color, github_label_id
-- `issue`: id (UUIDv7), team_id, number, title, description (markdown),
-  state_id, priority (0 to 4), assignee_id, creator_id, sort_order (fractional
-  index), created_at, updated_at, archived_at
-- `issue_label`: issue_id, label_id
-- `sync_log`: sync_id (autoincrement), model, model_id, action
-  (`insert | update | delete`), data (JSON), actor_id, origin
-  (`client | github | system`), client_tx_id, created_at
-
-GitHub tables (schema lands in pass 1, behavior in pass 2):
-
-- `github_installation`: installation_id, account_login
-- `github_repo_link`: team_id, repo_id, owner, name, installation_id
-- `github_issue_link`: issue_id, repo_id, gh_number, gh_node_id, shadow (JSON:
-  the last known GitHub version of each mapped field), gh_updated_at
-- `github_outbox`: id, issue_id, status, attempts, next_attempt_at, last_error
-- `github_delivery`: delivery_id (unique), received_at. This makes webhook
-  handling idempotent.
+`team`, `user`, `workflow_state`, `label`, `issue` (label ids stored as JSON),
+`sync_log`, plus `github_repo`, `github_issue_link` (with the shadow),
+`github_outbox` and `github_delivery`. Timestamps are epoch milliseconds.
 
 ## Sync engine
 
-This copies the shape of Linear's engine: bootstrap once, then stream ordered
-deltas.
+1. **Bootstrap.** The client gets a snapshot of every model plus `lastSyncId`,
+   read in one transaction.
+2. **Subscribe.** One WebSocket stream (Effect RPC). The server subscribes to
+   the hub first, replays `sync_log` after the cursor in pages, then streams
+   live deltas, skipping any it already replayed. A cursor ahead of the server
+   gets `ResetRequired`.
+3. **Mutate.** The client applies the change locally at once, tags it with a
+   `clientTxId`, and sends it. Network failures retry. The server dedupes on
+   `clientTxId`, so retries are safe.
+4. **Server apply.** `Mutations.transact` runs one SQL transaction behind a
+   semaphore (so syncIds publish in commit order): write rows, read back each
+   touched row, append it to `sync_log`, queue the GitHub outbox when the team
+   has a repo and origin is not `github`. After commit it publishes to the hub.
+5. **Confirm or roll back.** The client keeps confirmed state and pending
+   transactions apart, and shows confirmed + pending. A pending transaction
+   drops when its delta arrives. A rejected one is removed and the error shows
+   as a toast.
 
-1. **Bootstrap.** The client calls `Bootstrap` and gets a snapshot of the models
-   it can see, plus `lastSyncId`.
-2. **Subscribe.** The client opens `Subscribe({ since: lastSyncId })` over one
-   WebSocket (Effect RPC streaming). The server replays `sync_log` rows after
-   `since`, then streams live deltas. If the gap is too large, the server tells
-   the client to bootstrap again.
-3. **Mutate.** The client applies the change to its local store at once, tags
-   it with a `clientTxId`, and queues it. The queue sends batches through the
-   `Mutate` RPC.
-4. **Server apply.** In one SQL transaction, `MutationService` validates the
-   change, writes rows, appends `sync_log` rows, and, if the team is linked to a
-   repo and origin is not `github`, adds a `github_outbox` row. After commit it
-   publishes to an in-process `PubSub`.
-5. **Fan-out.** The hub pushes deltas to every subscriber that can see the
-   model.
-6. **Confirm.** When a client sees a delta carrying its own `clientTxId`, it
-   drops that optimistic change. If the server rejects a transaction, the
-   client rolls it back and shows an error.
-
-The client store keeps confirmed state and the pending transactions separately.
-The UI reads confirmed state with pending transactions applied on top. React
-reads it with `useSyncExternalStore`, so no state library is needed.
-
-Conflicts: the server applies changes in arrival order, field by field. The
-last write wins per field. That matches Linear and is enough for issues.
+Conflicts: last write wins per field, in server arrival order.
 
 ## GitHub two-way sync
 
-Use a **GitHub App**, not an OAuth app or a personal token. An App gets
-webhooks (realtime), installation tokens with fine-grained repo access, and
-higher rate limits. Its user auth can later be our login.
-
-Mapping, one linked repo per team for now:
+Token auth for now: `GITHUB_TOKEN`, or the GitHub CLI's token. The client is
+behind one service, so GitHub App auth can replace it later.
 
 | Gradient | GitHub |
 |---|---|
 | title, description | title, body |
 | state of type `completed` | closed, `state_reason: completed` |
 | state of type `canceled` | closed, `state_reason: not_planned` |
-| any other state | open. Reopening maps to the team's default `unstarted` state, and staying open keeps the Gradient state. |
-| labels | labels, created on demand |
-| assignee | assignees[0], matched by GitHub login |
-| priority, sort order | Gradient only for now |
+| any other state | open; reopening picks the first `unstarted` state, staying open keeps the current state |
+| labels | labels, created on demand on both sides |
+| assignee | first assignee, matched by GitHub login; unknown logins become users |
+| priority, sort order | Gradient only |
 
-**Shadow copies stop echo loops.** Each linked issue stores `shadow`, the last
-version of its mapped fields that we know GitHub has.
+**Shadows stop echo loops.** Each linked issue stores the last version of its
+mapped fields that GitHub is known to have.
 
-- **Inbound** (webhook `issues`, `label`): verify the HMAC signature, skip
-  delivery IDs we have seen, and diff the payload against the shadow. Apply only
-  the fields that changed as an `origin: github` mutation, then update the
-  shadow. The webhook that echoes our own push matches the shadow, so it does
-  nothing.
-- **Outbound** (outbox worker): diff the current Gradient issue against the
-  shadow, PATCH only the changed fields, then write GitHub's response into the
-  shadow. Several edits to one issue in the queue become one PATCH. Retries use
-  an Effect `Schedule` with backoff, and the worker respects rate-limit headers.
-- **Reconciler**: a periodic job lists issues with `since=<last run>` and runs
-  them through the inbound path. It catches missed webhooks, and in local dev it
-  can stand in for webhooks.
-- **Linking a repo** pages through its issues (skipping PRs, which the issues
-  API also returns) and imports them.
+- **Inbound** (poll, webhook, import): skip pull requests and events older than
+  the stored `updated_at`; diff the payload against the shadow; apply only the
+  changed fields as an `origin: github` write; store the new shadow. The echo
+  of our own push matches the shadow, so it does nothing.
+- **Outbound** (outbox worker): diff the issue against the shadow and send one
+  PATCH with only the changed fields, or create the issue when it has no link.
+  Store GitHub's response as the new shadow. Rapid edits coalesce; failures
+  back off up to 5 minutes; one flush runs at a time.
+- **Polling**: every 15s per repo, `since` the newest `updated_at` seen, with
+  ETags (304s are free).
+- **Webhooks**: `POST /webhooks/github`, HMAC-SHA256 verified, deduped by
+  delivery id. Locally, forward with `gh webhook forward`.
 
-Local dev needs a public webhook URL. Use `gh webhook forward` or smee.io, or
-run on the reconciler alone.
+Tested in `apps/server/test/github-sync.test.ts`: import, one-field PATCH with
+no echo, inbound edits not bounced back, concurrent edits to different fields
+both surviving, creating on GitHub, webhook signatures and dedupe.
 
-## Phases
+## Theming
 
-**Pass 1: architecture and issues (this pass)**
+Color tokens are StyleX variables. A theme is a preset, "system" (Paper or
+Graphite, following the OS), or custom colors on top of a preset. `theme.ts`
+writes the variables on `<html>` at runtime and saves the choice in
+localStorage. Presets: Paper, Graphite, Slate, Sand, Midnight, Moss.
 
-1. Scaffold: Bun, strict `tsconfig`, Effect, scripts (`dev`, `typecheck`,
-   `test`), CI workflow, and an `AGENTS.md` with Effect v4 conventions. Models
-   know v3 APIs better than v4, so this file matters.
-2. Domain schemas, RPC group, mutation union.
-3. SQLite migrations, repos, `MutationService`, `SyncLog`, hub.
-4. Client store, transaction queue, WebSocket connection, reconnect and catch-up.
-5. Issue UI: list grouped by state, create (`c`), detail view with editable
-   title and description, and pickers for state, priority, assignee, and
-   labels. Changes show live across tabs.
-6. Seed data and a dev user. No real auth yet.
+## Next
 
-**Pass 2: GitHub sync.** App setup docs, JWT and installation tokens, repo link
-and import, webhooks, outbox worker, reconciler, and an end-to-end test against
-a scratch repo.
-
-**Later:** GitHub login, comments (synced), board view, command palette,
-projects and cycles, offline cache in IndexedDB, Postgres if we outgrow SQLite.
-
-## Open questions
-
-1. SQLite (no infra, built into Bun) or Postgres (multi-instance, LISTEN/NOTIFY)?
-   The draft says SQLite.
-2. Should pass 1 already include GitHub sync, or only leave room for it? The
-   draft leaves room.
-3. Auth in pass 1: a stub dev user (draft) or GitHub login now?
-4. React (draft) or Solid/Preact for fewer, smaller deps?
-5. Where will it be hosted? SQLite needs a persistent volume.
+- Comments, synced with GitHub (`issue_comment` webhook + list/create/edit).
+- Board view, drag to reorder (the fractional `sortOrder` is already there).
+- Command palette, more shortcuts, search and filters.
+- Markdown rendering for descriptions.
+- Offline cache of the store in IndexedDB.
+- Real auth (GitHub login), then multiple users; GitHub App instead of a token.
+- Projects and cycles.
+- Postgres if it outgrows SQLite (the SQL layer is Effect's, so the queries stay).

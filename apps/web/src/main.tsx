@@ -1,13 +1,24 @@
+import "@fontsource-variable/inter"
 import "./global.css"
-import * as stylex from "@stylexjs/stylex"
-import { createSignal } from "solid-js"
+import "./theme/theme.ts"
 import { render } from "@solidjs/web"
-import { colors } from "./tokens.stylex.ts"
+import { onSettled } from "solid-js"
+import { Sync } from "./app/context.ts"
+import { Router } from "./app/router.tsx"
+import { Shell } from "./app/Shell.tsx"
+import { createSyncEngine } from "./sync/engine.ts"
 
-const s = stylex.create({ root: { color: colors.fg, backgroundColor: colors.bg, padding: 16 } })
-
-function App() {
-  const [n, setN] = createSignal(0)
-  return <div {...stylex.attrs(s.root)}><button onClick={() => setN((x) => x + 1)}>count {n()}</button><pre id="v">{String(colors.bg)}</pre></div>
+const App = () => {
+  const engine = createSyncEngine()
+  onSettled(() => {
+    engine.start()
+    return () => engine.dispose()
+  })
+  return (
+    <Sync value={engine}>
+      <Router>{(props) => <Shell>{props.children}</Shell>}</Router>
+    </Sync>
+  )
 }
+
 render(() => <App />, document.getElementById("root")!)

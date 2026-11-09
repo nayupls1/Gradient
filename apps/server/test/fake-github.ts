@@ -12,7 +12,7 @@ export interface FakeIssue {
   pull_request?: { url: string }
 }
 
-export const makeFakeGithub = (repo = { owner: "acme", name: "widgets" }) => {
+export const makeFakeGithub = (repo = { owner: "acme", name: "widgets" }, port = 0) => {
   const issues: Array<FakeIssue> = []
   const requests: Array<{ method: string; path: string; body: any }> = []
   let clock = Date.parse("2026-01-01T00:00:00Z")
@@ -41,7 +41,7 @@ export const makeFakeGithub = (repo = { owner: "acme", name: "widgets" }) => {
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
-    port: 0,
+    port,
     async fetch(req) {
       const url = new URL(req.url)
       const body = req.method === "GET" ? undefined : await req.json()
