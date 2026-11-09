@@ -501,6 +501,8 @@ export const PickerList = <V,>(props: {
   placeholder: string
   onPick: (value: V) => void
   onCreate?: (query: string) => void
+  /** Shown when nothing matches, e.g. "Loading…" while items are on their way. */
+  emptyText?: string
   close: () => void
 }) => {
   const [query, setQuery] = createSignal("")
@@ -586,7 +588,7 @@ export const PickerList = <V,>(props: {
         </button>
       </Show>
       <Show when={filtered().length === 0 && !canCreate()}>
-        <div {...stylex.attrs(s.empty)}>No results</div>
+        <div {...stylex.attrs(s.empty)}>{props.emptyText ?? "No results"}</div>
       </Show>
     </div>
   )
@@ -601,6 +603,7 @@ export const Picker = <V,>(props: {
   placeholder: string
   onPick: (value: V) => void
   onCreate?: (query: string) => void
+  emptyText?: string
   align?: "start" | "end"
   apiRef?: (api: PopoverApi) => void
 }) => {

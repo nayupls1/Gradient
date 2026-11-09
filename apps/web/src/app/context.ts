@@ -5,6 +5,7 @@ export const Sync = createContext<SyncEngine>()
 
 export interface ComposerDefaults {
   stateId?: string
+  projectId?: string | null
 }
 
 export interface Composer {
@@ -12,3 +13,11 @@ export interface Composer {
 }
 
 export const ComposerContext = createContext<Composer>()
+
+export interface ProjectDialogs {
+  /** Open "New project", optionally with a GitHub repository already picked. */
+  create(): void
+  edit(projectId: string): void
+}
+
+export const ProjectDialogsContext = createContext<ProjectDialogs>()

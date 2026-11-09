@@ -1,5 +1,5 @@
 import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-bun"
-import type { Entity, GithubRepo, Issue, Label, ModelName, Team, User, WorkflowState } from "@gradient/domain"
+import type { Entity, GithubRepo, Issue, Label, ModelName, Project, Team, User, WorkflowState } from "@gradient/domain"
 import { Context, Effect, Layer } from "effect"
 import { SqlClient, type SqlError } from "effect/sql"
 import { ServerConfig } from "../config.ts"
@@ -27,9 +27,17 @@ const toState = (r: Row): WorkflowState => ({
   color: str(r.color)
 })
 const toLabel = (r: Row): Label => ({ id: str(r.id), teamId: str(r.team_id), name: str(r.name), color: str(r.color) })
+const toProject = (r: Row): Project => ({
+  id: str(r.id),
+  teamId: str(r.team_id),
+  name: str(r.name),
+  color: str(r.color),
+  createdAt: num(r.created_at)
+})
 const toRepo = (r: Row): GithubRepo => ({
   id: str(r.id),
   teamId: str(r.team_id),
+  projectId: str(r.project_id),
   owner: str(r.owner),
   name: str(r.name),
   lastSyncedAt: numOrNull(r.last_synced_at),
@@ -39,6 +47,7 @@ const toRepo = (r: Row): GithubRepo => ({
 const toIssue = (r: Row): Issue => ({
   id: str(r.id),
   teamId: str(r.team_id),
+  projectId: strOrNull(r.project_id),
   number: num(r.number),
   title: str(r.title),
   description: str(r.description),
@@ -131,16 +140,27 @@ const makeDb = Effect.gen(function*() {
       sql`INSERT INTO label (id, team_id, name, color) VALUES (${l.id}, ${l.teamId}, ${l.name}, ${l.color})
           ON CONFLICT (id) DO UPDATE SET name = excluded.name, color = excluded.color`,
 
+    projects: all(sql`SELECT * FROM project ORDER BY name COLLATE NOCASE`, toProject),
+    getProject: (id: string) => one(sql`SELECT * FROM project WHERE id = ${id}`, toProject),
+    projectsForTeam: (teamId: string) =>
+      all(sql`SELECT * FROM project WHERE team_id = ${teamId} ORDER BY name COLLATE NOCASE`, toProject),
+    putProject: (p: Project) =>
+      sql`INSERT INTO project (id, team_id, name, color, created_at)
+          VALUES (${p.id}, ${p.teamId}, ${p.name}, ${p.color}, ${p.createdAt})
+          ON CONFLICT (id) DO UPDATE SET name = excluded.name, color = excluded.color`,
+    deleteProject: (id: string) => sql`DELETE FROM project WHERE id = ${id}`,
+
     issues: all(sql.unsafe(`${ISSUE_SELECT} ORDER BY i.sort_order DESC`), toIssue),
     getIssue: (id: string) => one(sql.unsafe(`${ISSUE_SELECT} WHERE i.id = ?`, [id]), toIssue),
     issuesForTeam: (teamId: string) => all(sql.unsafe(`${ISSUE_SELECT} WHERE i.team_id = ?`, [teamId]), toIssue),
     putIssue: (i: Issue) =>
-      sql`INSERT INTO issue (id, team_id, number, title, description, state_id, priority, assignee_id, creator_id,
-                             label_ids, sort_order, created_at, updated_at, archived_at)
-          VALUES (${i.id}, ${i.teamId}, ${i.number}, ${i.title}, ${i.description}, ${i.stateId}, ${i.priority},
-                  ${i.assigneeId}, ${i.creatorId}, ${JSON.stringify(i.labelIds)}, ${i.sortOrder}, ${i.createdAt},
-                  ${i.updatedAt}, ${i.archivedAt})
+      sql`INSERT INTO issue (id, team_id, project_id, number, title, description, state_id, priority, assignee_id,
+                             creator_id, label_ids, sort_order, created_at, updated_at, archived_at)
+          VALUES (${i.id}, ${i.teamId}, ${i.projectId}, ${i.number}, ${i.title}, ${i.description}, ${i.stateId},
+                  ${i.priority}, ${i.assigneeId}, ${i.creatorId}, ${JSON.stringify(i.labelIds)}, ${i.sortOrder},
+                  ${i.createdAt}, ${i.updatedAt}, ${i.archivedAt})
           ON CONFLICT (id) DO UPDATE SET
+            project_id = excluded.project_id,
             title = excluded.title, description = excluded.description, state_id = excluded.state_id,
             priority = excluded.priority, assignee_id = excluded.assignee_id, label_ids = excluded.label_ids,
             sort_order = excluded.sort_order, updated_at = excluded.updated_at, archived_at = excluded.archived_at`,
@@ -150,7 +170,18 @@ const makeDb = Effect.gen(function*() {
 
     githubRepos: all(sql`SELECT * FROM github_repo ORDER BY created_at`, toRepo),
     getRepo: (id: string) => one(sql`SELECT * FROM github_repo WHERE id = ${id}`, toRepo),
-    repoForTeam: (teamId: string) => one(sql`SELECT * FROM github_repo WHERE team_id = ${teamId} LIMIT 1`, toRepo),
+    repoForProject: (projectId: string) =>
+      one(sql`SELECT * FROM github_repo WHERE project_id = ${projectId} LIMIT 1`, toRepo),
+    /** Where an issue syncs: the repo it is already linked to, else its project's repo. */
+    repoForIssue: (issue: Pick<Issue, "id" | "projectId">) =>
+      one(
+        sql`SELECT r.* FROM github_repo r
+            WHERE r.id = (SELECT repo_id FROM github_issue_link WHERE issue_id = ${issue.id})
+               OR (r.project_id = ${issue.projectId} AND NOT EXISTS
+                    (SELECT 1 FROM github_issue_link WHERE issue_id = ${issue.id}))
+            LIMIT 1`,
+        toRepo
+      ),
     repoByName: (owner: string, name: string) =>
       one(sql`SELECT * FROM github_repo WHERE owner = ${owner} COLLATE NOCASE AND name = ${name} COLLATE NOCASE`, toRepo),
 
@@ -165,6 +196,8 @@ const makeDb = Effect.gen(function*() {
           return one(sql`SELECT * FROM workflow_state WHERE id = ${id}`, (r) => ({ model, value: toState(r) }))
         case "label":
           return one(sql`SELECT * FROM label WHERE id = ${id}`, (r) => ({ model, value: toLabel(r) }))
+        case "project":
+          return one(sql`SELECT * FROM project WHERE id = ${id}`, (r) => ({ model, value: toProject(r) }))
         case "issue":
           return one(sql.unsafe(`${ISSUE_SELECT} WHERE i.id = ?`, [id]), (r) => ({ model, value: toIssue(r) }))
         case "githubRepo":

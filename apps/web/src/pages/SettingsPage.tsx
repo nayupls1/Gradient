@@ -1,14 +1,16 @@
 import type { GithubStatus } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
+import { useNavigate } from "@solidjs/router"
 import { createMemo, createSignal, For, onSettled, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
 import { github } from "../app/github.ts"
-import { firstTeam, formatRelative } from "../lib/select.ts"
+import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
+import { firstTeam, formatRelative, projectHref } from "../lib/select.ts"
 import type { JSX } from "@solidjs/web"
 import { type ColorTokens, paletteById, palettes } from "../theme/presets.ts"
 import { activeScheme, type Mode, resolveColors, theme, updateTheme } from "../theme/theme.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { BotIcon, CheckIcon, CopyIcon, ExternalIcon, GithubIcon, MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "../ui/icons.tsx"
+import { BotIcon, CheckIcon, CopyIcon, ExternalIcon, GithubIcon, ProjectIcon, MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "../ui/icons.tsx"
 import { Avatar, Button, Input } from "../ui/kit.tsx"
 import { PageHeader } from "./Header.tsx"
 
@@ -166,15 +168,21 @@ const s = stylex.create({
     maxHeight: 240,
     overflowY: "auto"
   },
+  repoRowStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    borderTopWidth: { default: 1, ":first-child": 0 },
+    borderTopStyle: "solid",
+    borderTopColor: color.border
+  },
+  projectLink: { display: "inline-flex", alignItems: "center", gap: 4, color: color.fgMuted, fontSize: font.sm, textDecoration: "none" },
   repoRow: {
     display: "flex",
     alignItems: "center",
     gap: 8,
     paddingBlock: 6,
-    paddingInline: 10,
-    borderTopWidth: { default: 1, ":first-child": 0 },
-    borderTopStyle: "solid",
-    borderTopColor: color.border
+    paddingInline: 10
   },
   link: { display: "inline-flex", alignItems: "center", gap: 4, color: color.accent, fontSize: font.md, textDecoration: "none" },
   repoInput: { flexGrow: 1, flexBasis: 0, width: "auto", minWidth: 200 }
@@ -346,7 +354,7 @@ const Agents = () => {
           )}
         </For>
         <div {...stylex.attrs(s.subtle)}>
-          Tools: list, get, create and update issues, describe the workspace (states, labels, people), and check or start the GitHub sign-in. The server also publishes a Gradient skill with the conventions agents should follow.
+          Tools: list, get, create and update issues, create projects (optionally from a GitHub repo), describe the workspace, and check or start the GitHub sign-in. The server also publishes a Gradient skill with the conventions agents should follow.
         </div>
       </div>
     </section>
@@ -443,14 +451,13 @@ const GithubAccount = () => {
 
 const GithubSettings = () => {
   const sync = useContext(Sync)
+  const navigate = useNavigate()
   const url = useMcpUrl()
   const team = () => firstTeam(sync.state)
-  const repo = () => Object.values(sync.state.githubRepos).find((r) => r.teamId === team()?.id)
+  const repos = () => Object.values(sync.state.githubRepos).sort((a, b) => a.createdAt - b.createdAt)
   const status = () => github.status()
   const connected = () => status()?.tokenSource != null
-  const viaApp = () => status()?.tokenSource === "app"
   const [target, setTarget] = createSignal("")
-  const [pushExisting, setPushExisting] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
   const [message, setMessage] = createSignal<{ error: boolean; text: string } | null>(null)
 
@@ -479,13 +486,15 @@ const GithubSettings = () => {
     }
   }
 
+  /** Link a repository into a new project named after it, then open that project. */
   const linkRepo = (owner: string, name: string) => {
     const t = team()
     if (!t) return
     return run(async () => {
-      const result = await sync.call((c) => c.GithubLinkRepo({ teamId: t.id, owner, name, pushExisting: pushExisting() }))
+      const result = await github.linkRepo(sync, { teamId: t.id, projectId: null, owner, name, pushExisting: false })
       setTarget("")
-      return `Linked. Imported ${result.imported} issue${result.imported === 1 ? "" : "s"}${result.pushed ? `, created ${result.pushed} on GitHub` : ""}.`
+      navigate(projectHref(result.projectId))
+      return `Linked ${owner}/${name}. Imported ${result.imported} issue${result.imported === 1 ? "" : "s"}.`
     })
   }
   const linkTyped = () => {
@@ -498,107 +507,106 @@ const GithubSettings = () => {
     <section {...stylex.attrs(s.section)}>
       <h2 {...stylex.attrs(s.h2)}><GithubIcon size={16} /> GitHub</h2>
       <p {...stylex.attrs(s.lede)}>
-        Link the team to one repository. Issues sync both ways: title, description, open/closed, labels and assignee.
+        Each project can sync with one repository: title, description, open/closed, labels and assignee, both ways.
       </p>
       <div {...stylex.attrs(s.panel)}>
         <GithubAccount />
         <div {...stylex.attrs(s.divider)} />
+        <div {...stylex.attrs(s.fieldLabel)}>Linked repositories</div>
         <Show
-          when={repo()}
-          fallback={
-            <>
-              <Show when={viaApp()}>
-                <div {...stylex.attrs(s.fieldLabel)}>Repositories Gradient can access</div>
-                <Show
-                  when={github.repos()}
-                  fallback={<div {...stylex.attrs(github.reposError() ? s.error : s.subtle)}>{github.reposError() ?? "Loading…"}</div>}
-                >
-                  {(list) => (
-                    <Show
-                      when={list().length > 0}
-                      fallback={
-                        <div {...stylex.attrs(s.subtle)}>
-                          The Gradient app is not installed on any repository yet. Install it, then come back here.
-                        </div>
-                      }
-                    >
-                      <div {...stylex.attrs(s.repoList)}>
-                        <For each={list()} keyed={(r) => `${r.owner}/${r.name}`}>
-                          {(r) => (
-                            <div {...stylex.attrs(s.repoRow)}>
-                              <span {...stylex.attrs(s.repo)}>{r().owner}/{r().name}</span>
-                              <Show when={r().private}><span {...stylex.attrs(s.subtle)}>private</span></Show>
-                              <span {...stylex.attrs(s.grow)} />
-                              <Button size="sm" disabled={busy()} onClick={() => linkRepo(r().owner, r().name)}>Link</Button>
-                            </div>
-                          )}
-                        </For>
-                      </div>
-                    </Show>
-                  )}
-                </Show>
-                <div {...stylex.attrs(s.row)}>
-                  <Show when={status()?.signIn.installUrl}>
-                    {(href) => (
-                      <a href={href()} target="_blank" rel="noreferrer" {...stylex.attrs(s.link)}>
-                        Install on {github.repos()?.length ? "more " : ""}repositories <ExternalIcon size={13} />
-                      </a>
-                    )}
-                  </Show>
-                  <Button size="sm" variant="ghost" onClick={() => void github.loadRepos(sync)}>Refresh</Button>
-                </div>
-                <div {...stylex.attrs(s.fieldLabel)}>Or enter a repository</div>
-              </Show>
-              <div {...stylex.attrs(s.row)}>
-                <Input
-                  placeholder="owner/repository"
-                  value={target()}
-                  onInput={(e) => setTarget(e.currentTarget.value)}
-                  onKeyDown={(e) => e.key === "Enter" && linkTyped()}
-                  sx={s.repoInput}
-                />
-                <Button variant={viaApp() ? "default" : "primary"} disabled={busy() || !connected()} onClick={linkTyped}>
-                  {busy() ? "Linking…" : "Link repository"}
-                </Button>
-              </div>
-              <label {...stylex.attrs(s.checkboxLabel)}>
-                <input type="checkbox" checked={pushExisting()} onChange={(e) => setPushExisting(e.currentTarget.checked)} />
-                Also create this team's existing issues on GitHub
-              </label>
-            </>
-          }
+          when={repos().length > 0}
+          fallback={<div {...stylex.attrs(s.subtle)}>None yet. Link one below, or from a project's header.</div>}
         >
-          {(r) => (
-            <>
-              <div {...stylex.attrs(s.row)}>
-                <span {...stylex.attrs(s.dot, r().lastError ? s.bad : s.ok)} />
-                <a href={`https://github.com/${r().owner}/${r().name}`} target="_blank" rel="noreferrer" {...stylex.attrs(s.repo)}>
-                  {r().owner}/{r().name}
-                </a>
-                <span {...stylex.attrs(s.subtle)}>
-                  {r().lastSyncedAt ? `synced ${formatRelative(r().lastSyncedAt!)}` : "not synced yet"}
-                </span>
-                <span {...stylex.attrs(s.grow)} />
-                <Button size="sm" disabled={busy()} onClick={() => run(async () => (await sync.call((c) => c.GithubSyncNow({ repoId: r().id })), "Synced."))}>
-                  Sync now
-                </Button>
-                <Button size="sm" variant="danger" disabled={busy()} onClick={() => confirm(`Unlink ${r().owner}/${r().name}? Issues stay in Gradient.`) && run(async () => (await sync.call((c) => c.GithubUnlinkRepo({ repoId: r().id })), "Unlinked."))}>
-                  Unlink
-                </Button>
-              </div>
-              <Show when={r().lastError}>{(e) => <div {...stylex.attrs(s.error)}>{e()}</div>}</Show>
-              <div {...stylex.attrs(s.subtle)}>
-                Changes from GitHub arrive every {status()?.pollIntervalSeconds ?? 15}s. For instant updates, forward webhooks
-                {status()?.webhookSecretSet ? "" : " (set GITHUB_WEBHOOK_SECRET first)"}:
-              </div>
-              <code {...stylex.attrs(s.code)}>
-                gh webhook forward --repo={r().owner}/{r().name} --events=issues --url={url().replace(/\/mcp$/, "")}/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
-              </code>
-            </>
+          <div {...stylex.attrs(s.repoList)}>
+            <For each={repos()} keyed={(r) => r.id}>
+              {(r) => {
+                const project = () => sync.state.projects[r().projectId]
+                return (
+                  <div {...stylex.attrs(s.repoRowStack)}>
+                    <div {...stylex.attrs(s.repoRow)}>
+                      <span {...stylex.attrs(s.dot, r().lastError ? s.bad : s.ok)} />
+                      <a href={`https://github.com/${r().owner}/${r().name}`} target="_blank" rel="noreferrer" {...stylex.attrs(s.repo)}>
+                        {r().owner}/{r().name}
+                      </a>
+                      <Show when={project()}>
+                        {(p) => (
+                          <a href={projectHref(p().id)} {...stylex.attrs(s.projectLink)}>
+                            <ProjectIcon size={13} color={p().color} />
+                            {p().name}
+                          </a>
+                        )}
+                      </Show>
+                      <span {...stylex.attrs(s.subtle)}>
+                        {r().lastSyncedAt ? `synced ${formatRelative(r().lastSyncedAt!)}` : "not synced yet"}
+                      </span>
+                      <span {...stylex.attrs(s.grow)} />
+                      <Button size="sm" variant="ghost" disabled={busy()} onClick={() => run(async () => (await sync.call((c) => c.GithubSyncNow({ repoId: r().id })), `Synced ${r().owner}/${r().name}.`))}>
+                        Sync now
+                      </Button>
+                      <Button size="sm" variant="danger" disabled={busy()} onClick={() => confirm(`Unlink ${r().owner}/${r().name}? Issues stay in their project.`) && run(async () => (await sync.call((c) => c.GithubUnlinkRepo({ repoId: r().id })), "Unlinked."))}>
+                        Unlink
+                      </Button>
+                    </div>
+                    <Show when={r().lastError}>{(e) => <div {...stylex.attrs(s.error)}>{e()}</div>}</Show>
+                  </div>
+                )
+              }}
+            </For>
+          </div>
+        </Show>
+
+        <div {...stylex.attrs(s.fieldLabel)}>Link a repository</div>
+        <div {...stylex.attrs(s.row)}>
+          <GithubRepoPicker
+            onPick={(r) => void linkRepo(r.owner, r.name)}
+            trigger={(attrs) => (
+              <Button variant="primary" disabled={busy() || !connected()} {...attrs}>
+                <GithubIcon size={14} /> {busy() ? "Importing…" : "Choose a repository"}
+              </Button>
+            )}
+          />
+          <span {...stylex.attrs(s.subtle)}>Creates a project named after it and imports its issues.</span>
+        </div>
+        <Show when={status()?.tokenSource === "app" && status()?.signIn.installUrl}>
+          {(href) => (
+            <div {...stylex.attrs(s.subtle)}>
+              Missing one? The Gradient app only sees repositories it is installed on.{" "}
+              <a href={href()} target="_blank" rel="noreferrer" {...stylex.attrs(s.link)}>
+                Install on more repositories <ExternalIcon size={13} />
+              </a>
+            </div>
           )}
         </Show>
+        <div {...stylex.attrs(s.row)}>
+          <Input
+            placeholder="or type owner/repository"
+            value={target()}
+            onInput={(e) => setTarget(e.currentTarget.value)}
+            onKeyDown={(e) => e.key === "Enter" && linkTyped()}
+            sx={s.repoInput}
+          />
+          <Button disabled={busy() || !connected() || !target().trim()} onClick={linkTyped}>Link</Button>
+        </div>
         <Show when={message()}>
           {(m) => <div {...stylex.attrs(m().error ? s.error : s.muted)}>{m().text}</div>}
+        </Show>
+
+        <Show when={repos().length > 0}>
+          <details>
+            <summary {...stylex.attrs(s.subtle)}>
+              Changes from GitHub arrive every {status()?.pollIntervalSeconds ?? 15}s. Instant updates with webhooks…
+            </summary>
+            <div {...stylex.attrs(s.subtle)}>
+              {status()?.webhookSecretSet ? "Forward each repository's webhooks:" : "Set GITHUB_WEBHOOK_SECRET, restart, then forward each repository's webhooks:"}
+            </div>
+            <For each={repos()} keyed={(r) => r.id}>
+              {(r) => (
+                <code {...stylex.attrs(s.code)}>
+                  gh webhook forward --repo={r().owner}/{r().name} --events=issues --url={url().replace(/\/mcp$/, "")}/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
+                </code>
+              )}
+            </For>
+          </details>
         </Show>
       </div>
     </section>

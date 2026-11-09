@@ -13,7 +13,7 @@ codex mcp add gradient --url http://127.0.0.1:4100/mcp                          
 ```
 
 Agents get `describe_workspace`, `list_issues`, `get_issue`, `create_issue`,
-`update_issue`, `github_status` and `github_sign_in` (which hands the user a
+`update_issue`, `create_project` (optionally from a GitHub repo), `github_status` and `github_sign_in` (which hands the user a
 code to approve on github.com). They take human names ("In Progress", "me", "Bug", GRD-12),
 and every write goes through the same sync engine as the app, so it shows up
 live and syncs to GitHub. The server also publishes a `gradient` skill with
@@ -45,15 +45,24 @@ bun run --filter '@gradient/server' start   # http://localhost:4100
 1. Connect GitHub, one of:
    - **Sign in with GitHub** in Settings → GitHub (or ⌘K → "Sign in with
      GitHub"). Gradient shows a short code; enter it on github.com and approve.
-     Then install the Gradient GitHub App on the repositories you want, and
-     pick one from the list. Gradient only sees repositories you install it on.
+     Then install the Gradient GitHub App on the repositories you want.
+     Gradient only sees repositories you install it on.
    - Be logged in with the GitHub CLI (`gh auth login`), or set `GITHUB_TOKEN`
      (a fine-grained token with read/write access to Issues on the repo).
 
    A sign-in through the app takes precedence over the other two; signing out
    falls back to them.
-2. In Settings → GitHub, link a repository. Existing issues are imported.
-   Tick the box to also create the team's existing Gradient issues on GitHub.
+2. Link a repository to a project. Issues are grouped into projects (sidebar);
+   each project can sync with one repository, so several repos sync side by side.
+   - **New project from a repo**: the **+** next to Projects (or Shift+C), then
+     pick the repository from the dropdown. It lists every repository the
+     connected account can see. The repo's issues are imported into the project.
+   - **Existing project**: "Link GitHub repo" in the project's header. Gradient
+     offers to create the project's existing issues on GitHub too.
+   - Settings → GitHub lists linked repositories and links new ones.
+
+   New issues go to the repository of their project; issues without a project
+   stay local. Moving an issue into a linked project creates it there.
 
 From then on, title, description, open/closed (with reason), labels and the
 first assignee sync both ways. Priority and order stay in Gradient.
@@ -72,7 +81,7 @@ To try the sync UI without a real repo, run the fake GitHub API used by the test
 
 ```bash
 bun apps/server/test/dev-fake-github.ts
-GITHUB_API_URL=http://127.0.0.1:4300 GITHUB_TOKEN=fake bun run dev   # then link acme/widgets
+GITHUB_API_URL=http://127.0.0.1:4300 GITHUB_TOKEN=fake bun run dev   # then make projects from acme/*
 # or, to try "Sign in with GitHub" (the fake approves the code after 3 seconds):
 GITHUB_API_URL=http://127.0.0.1:4300 GITHUB_WEB_URL=http://127.0.0.1:4300 \
   GITHUB_APP_CLIENT_ID=fake GITHUB_APP_SLUG=gradient bun run dev

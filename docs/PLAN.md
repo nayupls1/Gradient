@@ -47,7 +47,7 @@ an older RC. The kit is ours instead: `apps/web/src/ui/kit.tsx`.
 
 ```
 packages/domain/src
-  models.ts            Team, User, WorkflowState, Label, Issue, GithubRepo, Entity
+  models.ts            Team, User, WorkflowState, Label, Project, Issue, GithubRepo, Entity
   mutations.ts         Mutation union + applyIssueMutation (shared optimistic logic)
   sync.ts              Delta, SyncEvent, Snapshot
   rpc.ts               GradientRpcs: Bootstrap, Subscribe, Mutate, Github*
@@ -74,7 +74,8 @@ apps/web/src
 
 ## Data model
 
-`team`, `user`, `workflow_state`, `label`, `issue` (label ids stored as JSON),
+`team`, `user`, `workflow_state`, `label`, `project`, `issue` (label ids stored
+as JSON, optional `project_id`),
 `sync_log`, plus `github_repo`, `github_issue_link` (with the shadow),
 `github_outbox` and `github_delivery`. Timestamps are epoch milliseconds.
 
@@ -101,6 +102,16 @@ apps/web/src
 Conflicts: last write wins per field, in server arrival order.
 
 ## GitHub two-way sync
+
+**Projects carry the repository.** A project groups issues inside a team, and
+links at most one repository (`github_repo.project_id`, unique). Imported
+issues join the repo's project. An issue pushes to the repo it is already
+linked to, else to its project's repo (`Db.repoForIssue`); issues without a
+project stay local. Linking without a project creates one named after the repo
+(or reuses an unlinked project of that name). A project with a repo must be
+unlinked before it is deleted; deleting a project leaves its issues without one.
+The repo picker lists `/user/repos` for a token, or the app's installations for
+an app sign-in.
 
 **Auth** (`github/GithubAuth.ts`): "Sign in with GitHub" runs the device flow
 of the Gradient GitHub App, which needs only its public client id. The server
@@ -186,5 +197,5 @@ localStorage.
 - Offline cache of the store in IndexedDB.
 - Multiple users with sessions, and a hosted relay for app webhooks and
   installation tokens (the private key cannot ship in a local app).
-- Projects and cycles.
+- Cycles; project descriptions, leads and target dates.
 - Postgres if it outgrows SQLite (the SQL layer is Effect's, so the queries stay).

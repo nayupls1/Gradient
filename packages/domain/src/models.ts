@@ -44,6 +44,23 @@ export const Label = Schema.Struct({
 })
 export type Label = typeof Label.Type
 
+/**
+ * A group of issues inside a team, such as one product or repository. An issue
+ * belongs to at most one project. A project can link one GitHub repository;
+ * its issues sync there.
+ */
+export const Project = Schema.Struct({
+  id: Schema.String,
+  teamId: Schema.String,
+  name: Schema.String,
+  color: Schema.String,
+  createdAt: Millis
+})
+export type Project = typeof Project.Type
+
+/** Colors handed to new projects in turn. Readable on light and dark surfaces. */
+export const PROJECT_COLORS = ["#0090ff", "#46a758", "#8e4ec6", "#f76b15", "#d6409f", "#12a594", "#e5484d", "#ffc53d"]
+
 export const IssueGithubRef = Schema.Struct({
   owner: Schema.String,
   repo: Schema.String,
@@ -55,6 +72,7 @@ export type IssueGithubRef = typeof IssueGithubRef.Type
 export const Issue = Schema.Struct({
   id: Schema.String,
   teamId: Schema.String,
+  projectId: Schema.NullOr(Schema.String),
   /** Assigned by the server. 0 while an optimistic create is in flight. */
   number: Schema.Int,
   title: Schema.String,
@@ -76,6 +94,8 @@ export type Issue = typeof Issue.Type
 export const GithubRepo = Schema.Struct({
   id: Schema.String,
   teamId: Schema.String,
+  /** The project whose issues sync with this repository. */
+  projectId: Schema.String,
   owner: Schema.String,
   name: Schema.String,
   /** When the last successful sync from GitHub finished. */
@@ -85,7 +105,7 @@ export const GithubRepo = Schema.Struct({
 })
 export type GithubRepo = typeof GithubRepo.Type
 
-export const ModelName = Schema.Literals(["team", "user", "workflowState", "label", "issue", "githubRepo"])
+export const ModelName = Schema.Literals(["team", "user", "workflowState", "label", "project", "issue", "githubRepo"])
 export type ModelName = typeof ModelName.Type
 
 /** One synced record, tagged by model, so clients can route it to the right table. */
@@ -94,6 +114,7 @@ export const Entity = Schema.Union([
   Schema.Struct({ model: Schema.Literal("user"), value: User }),
   Schema.Struct({ model: Schema.Literal("workflowState"), value: WorkflowState }),
   Schema.Struct({ model: Schema.Literal("label"), value: Label }),
+  Schema.Struct({ model: Schema.Literal("project"), value: Project }),
   Schema.Struct({ model: Schema.Literal("issue"), value: Issue }),
   Schema.Struct({ model: Schema.Literal("githubRepo"), value: GithubRepo })
 ])

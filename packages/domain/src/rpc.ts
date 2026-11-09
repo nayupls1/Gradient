@@ -46,13 +46,17 @@ export const GithubStatus = Schema.Struct({
 })
 export type GithubStatus = typeof GithubStatus.Type
 
-/** A repository the signed-in user has installed the Gradient GitHub App on. */
-export const GithubInstalledRepo = Schema.Struct({
+/**
+ * A repository the connected GitHub account can link: with an app sign-in, the
+ * ones the app is installed on; with a token, every repository it can see.
+ */
+export const GithubAvailableRepo = Schema.Struct({
   owner: Schema.String,
   name: Schema.String,
-  private: Schema.Boolean
+  private: Schema.Boolean,
+  description: Schema.NullOr(Schema.String)
 })
-export type GithubInstalledRepo = typeof GithubInstalledRepo.Type
+export type GithubAvailableRepo = typeof GithubAvailableRepo.Type
 
 export const ServerInfo = Schema.Struct({
   version: Schema.String,
@@ -75,9 +79,20 @@ export class GradientRpcs extends RpcGroup.make(
     error: MutationRejected
   }),
   Rpc.make("GithubStatus", { success: GithubStatus }),
+  /**
+   * Link a repository to a project and import its issues. Without a projectId,
+   * a new project is created (named `projectName`, or after the repository).
+   */
   Rpc.make("GithubLinkRepo", {
-    payload: { teamId: Schema.String, owner: Schema.String, name: Schema.String, pushExisting: Schema.Boolean },
-    success: Schema.Struct({ imported: Schema.Int, pushed: Schema.Int }),
+    payload: {
+      teamId: Schema.String,
+      projectId: Schema.NullOr(Schema.String),
+      projectName: Schema.optionalKey(Schema.String),
+      owner: Schema.String,
+      name: Schema.String,
+      pushExisting: Schema.Boolean
+    },
+    success: Schema.Struct({ projectId: Schema.String, imported: Schema.Int, pushed: Schema.Int }),
     error: GithubError
   }),
   Rpc.make("GithubUnlinkRepo", {
@@ -92,5 +107,5 @@ export class GradientRpcs extends RpcGroup.make(
   Rpc.make("GithubSignInCancel", {}),
   /** Forget the app sign-in. GITHUB_TOKEN or the gh CLI take over when present. */
   Rpc.make("GithubSignOut", { success: GithubStatus }),
-  Rpc.make("GithubInstalledRepos", { success: Schema.Array(GithubInstalledRepo), error: GithubError })
+  Rpc.make("GithubRepos", { success: Schema.Array(GithubAvailableRepo), error: GithubError })
 ) {}

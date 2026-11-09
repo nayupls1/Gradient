@@ -38,6 +38,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
               users: db.users,
               workflowStates: db.workflowStates,
               labels: db.labels,
+              projects: db.projects,
               issues: db.issues,
               githubRepos: db.githubRepos
             })
@@ -100,7 +101,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
       GithubSignInWait: () => auth.awaitSignIn.pipe(Effect.andThen(github.status)),
       GithubSignInCancel: () => auth.cancelSignIn,
       GithubSignOut: () => auth.signOut.pipe(Effect.andThen(github.status)),
-      GithubInstalledRepos: () => github.installedRepos
+      GithubRepos: () => github.availableRepos
     })
   })
 )

@@ -1,4 +1,4 @@
-import { identifier, type Issue, keyBetween, type Mutation, type Priority, uuidv7 } from "@gradient/domain"
+import { identifier, type Issue, keyBetween, type Mutation, type Priority, PROJECT_COLORS, uuidv7 } from "@gradient/domain"
 import { Effect, Layer } from "effect"
 import { McpProtocol, McpServer } from "effect/ai"
 import { ServerConfig } from "../config.ts"
@@ -17,7 +17,8 @@ export const mcpUrl = (config: { host: string; port: number }) =>
   `http://${config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host}:${config.port}/mcp`
 
 const INSTRUCTIONS = `Gradient is the user's issue tracker. Issues have identifiers like GRD-12.
-Call describe_workspace once to learn workflow states, labels and people, then use those names.
+Call describe_workspace once to learn workflow states, labels, people and projects, then use those names.
+Put issues in the project they belong to; a project with a linked repo syncs its issues to GitHub.
 Writes show up live in the user's app and sync to GitHub when a repo is linked, so keep titles short and specific, and put detail in the description (markdown).`
 
 const SKILL = `---
@@ -56,8 +57,9 @@ const ToolHandlers = GradientToolkit.toLayer(
       const states = yield* db.statesForTeam(team.id)
       const labels = yield* db.labelsForTeam(team.id)
       const users = yield* db.users
-      const repo = yield* db.repoForTeam(team.id)
-      return { team, viewerId, states, labels, users, repo }
+      const projects = yield* db.projectsForTeam(team.id)
+      const repos = (yield* db.githubRepos).filter((r) => r.teamId === team.id)
+      return { team, viewerId, states, labels, users, projects, repos }
     }).pipe(Effect.catchTag("SqlError", Effect.die))
     type Workspace = Effect.Success<typeof workspace>
 
@@ -80,6 +82,18 @@ const ToolHandlers = GradientToolkit.toLayer(
         const label = ws.labels.find((l) => l.name.toLowerCase() === name.trim().toLowerCase())
         return label ? Effect.succeed(label.id) : fail(`Unknown label "${name}". Valid: ${names(ws.labels)}.`)
       })
+    const resolveProject = (ws: Workspace, name: string) => {
+      const n = name.trim().toLowerCase()
+      if (n === "none" || n === "") return Effect.succeed(null)
+      const project = ws.projects.find((p) => p.name.toLowerCase() === n)
+      return project
+        ? Effect.succeed(project.id)
+        : fail(`Unknown project "${name}". Valid: ${ws.projects.length ? names(ws.projects) + ", " : ""}"none".`)
+    }
+    const repoName = (ws: Workspace, projectId: string) => {
+      const repo = ws.repos.find((r) => r.projectId === projectId)
+      return repo ? `${repo.owner}/${repo.name}` : null
+    }
     const findIssue = (ws: Workspace, ref: string) =>
       Effect.gen(function*() {
         const match = ref.trim().match(/^([a-z]+)-(\d+)$/i)
@@ -97,6 +111,7 @@ const ToolHandlers = GradientToolkit.toLayer(
       priority: PRIORITY_NAMES[issue.priority],
       assignee: ws.users.find((u) => u.id === issue.assigneeId)?.name ?? null,
       labels: issue.labelIds.flatMap((id) => ws.labels.find((l) => l.id === id)?.name ?? []),
+      project: ws.projects.find((p) => p.id === issue.projectId)?.name ?? null,
       github: issue.github?.url ?? null,
       updated: iso(issue.updatedAt)
     })
@@ -136,7 +151,11 @@ const ToolHandlers = GradientToolkit.toLayer(
           states: ws.states.map((s) => ({ name: s.name, type: s.type })),
           labels: ws.labels.map((l) => l.name),
           people: ws.users.map((u) => ({ name: u.name, githubLogin: u.githubLogin })),
-          githubRepo: ws.repo ? `${ws.repo.owner}/${ws.repo.name}` : null,
+          projects: ws.projects.map((p) => ({
+            name: p.name,
+            githubRepo: repoName(ws, p.id),
+            openIssues: issues.filter((i) => i.projectId === p.id && i.archivedAt === null && isOpen(ws, i)).length
+          })),
           openIssues: issues.filter((i) => i.archivedAt === null && isOpen(ws, i)).length
         }
       }),
@@ -160,6 +179,10 @@ const ToolHandlers = GradientToolkit.toLayer(
         if (input.label !== undefined) {
           const [labelId] = yield* resolveLabels(ws, [input.label])
           issues = issues.filter((i) => i.labelIds.includes(labelId!))
+        }
+        if (input.project !== undefined) {
+          const projectId = yield* resolveProject(ws, input.project)
+          issues = issues.filter((i) => i.projectId === projectId)
         }
         if (input.query) {
           const q = input.query.toLowerCase()
@@ -191,6 +214,7 @@ const ToolHandlers = GradientToolkit.toLayer(
           _tag: "IssueCreate",
           id,
           teamId: ws.team.id,
+          projectId: input.project !== undefined ? yield* resolveProject(ws, input.project) : null,
           title: input.title.trim(),
           description: input.description ?? "",
           stateId: state.id,
@@ -211,6 +235,7 @@ const ToolHandlers = GradientToolkit.toLayer(
         if (input.state !== undefined) patch.stateId = (yield* resolveState(ws, input.state)).id
         if (input.priority !== undefined) patch.priority = PRIORITY_VALUES[input.priority]
         if (input.assignee !== undefined) patch.assigneeId = yield* resolvePerson(ws, input.assignee)
+        if (input.project !== undefined) patch.projectId = yield* resolveProject(ws, input.project)
         if (input.labels || input.add_labels || input.remove_labels) {
           let ids = input.labels ? yield* resolveLabels(ws, input.labels) : [...issue.labelIds]
           for (const id of yield* resolveLabels(ws, input.add_labels ?? [])) if (!ids.includes(id)) ids.push(id)
@@ -236,7 +261,10 @@ const ToolHandlers = GradientToolkit.toLayer(
           : status.tokenSource === "gh-cli"
           ? "GitHub CLI"
           : null
-        const repo = ws.repo ? `${ws.repo.owner}/${ws.repo.name}` : null
+        const repos = ws.repos.map((r) => ({
+          repo: `${r.owner}/${r.name}`,
+          project: ws.projects.find((p) => p.id === r.projectId)?.name ?? "?"
+        }))
         const hint = status.signIn.pending
           ? `Waiting for the user to enter ${status.signIn.pending.userCode} at ${status.signIn.pending.verificationUri}.`
           : !status.tokenSource
@@ -244,18 +272,45 @@ const ToolHandlers = GradientToolkit.toLayer(
             (status.signIn.available
               ? "Not connected. Call github_sign_in, or ask the user to sign in under Settings → GitHub."
               : "Not connected. The user can set GITHUB_TOKEN or run `gh auth login`, then restart Gradient.")
-          : !repo
-          ? "Connected, but no repository is linked. The user links one under Settings → GitHub."
-          : `Issues sync with ${repo}.`
+          : repos.length === 0
+          ? "Connected, but no repository is linked. Call create_project with github_repo, or the user links one from a project."
+          : `Projects sync with ${repos.map((r) => `${r.repo} (${r.project})`).join(", ")}.`
         return {
           connected: status.tokenSource !== null,
           login: status.login,
           via,
-          repo,
+          repos,
           sign_in_available: status.signIn.available,
           pending_code: status.signIn.pending?.userCode ?? null,
           hint
         }
+      }),
+
+      create_project: Effect.fn("mcp.create_project")(function*(input) {
+        const ws = yield* workspace
+        if (input.github_repo) {
+          const [owner, name] = input.github_repo.trim().replace(/^https?:\/\/github\.com\//, "").split("/")
+          if (!owner || !name) return yield* fail(`Use "owner/name" for github_repo, not "${input.github_repo}".`)
+          const result = yield* github.linkRepo({
+            teamId: ws.team.id,
+            projectId: null,
+            projectName: input.name,
+            owner,
+            name,
+            pushExisting: false
+          }).pipe(Effect.mapError((e) => new ToolError({ message: e.message })))
+          const project = yield* db.getProject(result.projectId).pipe(Effect.orDie)
+          return { name: project?.name ?? name, github_repo: `${owner}/${name}`, imported: result.imported }
+        }
+        if (!input.name?.trim()) return yield* fail("Give the project a name, or a github_repo to name it after.")
+        yield* apply(ws, [{
+          _tag: "ProjectCreate",
+          id: uuidv7(),
+          teamId: ws.team.id,
+          name: input.name.trim(),
+          color: PROJECT_COLORS[ws.projects.length % PROJECT_COLORS.length]!
+        }])
+        return { name: input.name.trim(), github_repo: null, imported: 0 }
       }),
 
       github_sign_in: Effect.fn("mcp.github_sign_in")(function*() {

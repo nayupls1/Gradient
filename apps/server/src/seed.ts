@@ -1,4 +1,4 @@
-import { type Issue, keyBetween, type StateType } from "@gradient/domain"
+import { type Issue, keyBetween, PROJECT_COLORS, type StateType } from "@gradient/domain"
 import { Effect } from "effect"
 import { ServerConfig } from "./config.ts"
 import { Db } from "./db/Db.ts"
@@ -27,15 +27,16 @@ const SAMPLE: ReadonlyArray<{
   labels: ReadonlyArray<string>
   mine?: boolean
   description?: string
+  project?: string
 }> = [
-  { title: "Sync engine: replay deltas after reconnect", state: "In Progress", priority: 1, labels: ["Feature"], mine: true },
-  { title: "Two-way GitHub sync for issue labels", state: "In Progress", priority: 2, labels: ["Feature"], mine: true },
-  { title: "Theme presets and custom colors", state: "In Review", priority: 3, labels: ["Improvement"], mine: true },
-  { title: "Keyboard shortcut to create an issue", state: "Todo", priority: 3, labels: ["Improvement"] },
-  { title: "Issue list jumps when a row updates", state: "Todo", priority: 2, labels: ["Bug"] },
-  { title: "Command palette", state: "Backlog", priority: 4, labels: ["Feature"] },
-  { title: "Board view grouped by state", state: "Backlog", priority: 0, labels: ["Feature"] },
-  { title: "Comments, synced with GitHub", state: "Backlog", priority: 3, labels: ["Feature"] },
+  { title: "Sync engine: replay deltas after reconnect", state: "In Progress", priority: 1, labels: ["Feature"], mine: true, project: "Sync engine" },
+  { title: "Two-way GitHub sync for issue labels", state: "In Progress", priority: 2, labels: ["Feature"], mine: true, project: "Sync engine" },
+  { title: "Theme presets and custom colors", state: "In Review", priority: 3, labels: ["Improvement"], mine: true, project: "App" },
+  { title: "Keyboard shortcut to create an issue", state: "Todo", priority: 3, labels: ["Improvement"], project: "App" },
+  { title: "Issue list jumps when a row updates", state: "Todo", priority: 2, labels: ["Bug"], project: "App" },
+  { title: "Command palette", state: "Backlog", priority: 4, labels: ["Feature"], project: "App" },
+  { title: "Board view grouped by state", state: "Backlog", priority: 0, labels: ["Feature"], project: "App" },
+  { title: "Comments, synced with GitHub", state: "Backlog", priority: 3, labels: ["Feature"], project: "Sync engine" },
   { title: "Set up the repository", state: "Done", priority: 0, labels: ["Chore"], mine: true },
   {
     title: "Welcome to Gradient",
@@ -43,7 +44,7 @@ const SAMPLE: ReadonlyArray<{
     priority: 0,
     labels: [],
     description:
-      "Press **C** anywhere to create an issue. Changes sync live across tabs, and to GitHub once a repo is linked in Settings."
+      "Press **C** anywhere to create an issue. Group issues into projects from the sidebar; a project can link a GitHub repository, and its issues then sync both ways."
   }
 ]
 
@@ -80,6 +81,15 @@ export const seed = Effect.gen(function*() {
       }
       if (!config.seedSampleData) return
 
+      // Two sample projects, so the sidebar shows how issues are grouped.
+      const projectIds = new Map<string, string>()
+      for (const [i, name] of ["Sync engine", "App"].entries()) {
+        const id = Bun.randomUUIDv7()
+        projectIds.set(name, id)
+        yield* db.putProject({ id, teamId, name, color: PROJECT_COLORS[i]!, createdAt: tx.now })
+        tx.touch("project", id)
+      }
+
       let sortOrder: string | null = null
       for (const [index, sample] of SAMPLE.entries()) {
         const id = Bun.randomUUIDv7()
@@ -89,6 +99,7 @@ export const seed = Effect.gen(function*() {
         yield* db.putIssue({
           id,
           teamId,
+          projectId: sample.project ? projectIds.get(sample.project)! : null,
           number,
           title: sample.title,
           description: sample.description ?? "",

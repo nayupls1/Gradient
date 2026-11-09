@@ -12,12 +12,25 @@ const GhLabel = Schema.Union([
 const GhUser = Schema.Struct({ login: Schema.String, avatar_url: Schema.optionalKey(Schema.NullOr(Schema.String)) })
 
 const GhInstallations = Schema.Struct({ installations: Schema.Array(Schema.Struct({ id: Schema.Int })) })
-const GhInstallationRepos = Schema.Struct({
-  repositories: Schema.Array(Schema.Struct({
-    name: Schema.String,
-    private: Schema.Boolean,
-    owner: Schema.Struct({ login: Schema.String })
-  }))
+const GhRepo = Schema.Struct({
+  name: Schema.String,
+  private: Schema.Boolean,
+  description: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  owner: Schema.Struct({ login: Schema.String })
+})
+const GhInstallationRepos = Schema.Struct({ repositories: Schema.Array(GhRepo) })
+
+export interface AvailableRepo {
+  readonly owner: string
+  readonly name: string
+  readonly private: boolean
+  readonly description: string | null
+}
+const toAvailable = (r: typeof GhRepo.Type): AvailableRepo => ({
+  owner: r.owner.login,
+  name: r.name,
+  private: r.private,
+  description: r.description ?? null
 })
 
 export const GhIssue = Schema.Struct({
@@ -58,8 +71,12 @@ const toError = (context: string) => (cause: unknown) =>
 export class GithubClient extends Context.Service<GithubClient, {
   /** True while there is a token to call GitHub with (it can change at runtime). */
   ready(): boolean
-  /** Repositories the signed-in user installed the Gradient GitHub App on. Needs an app sign-in. */
-  readonly installedRepos: Effect.Effect<ReadonlyArray<{ owner: string; name: string; private: boolean }>, GithubError>
+  /**
+   * Repositories the connected account can link. With an app sign-in, the ones
+   * the app is installed on (alphabetical); with a token, every repository it
+   * can see, most recently pushed first.
+   */
+  readonly availableRepos: Effect.Effect<ReadonlyArray<AvailableRepo>, GithubError>
   getRepo(owner: string, repo: string): Effect.Effect<void, GithubError>
   listIssues(owner: string, repo: string, options: {
     readonly since: string | null
@@ -104,12 +121,18 @@ export class GithubClient extends Context.Service<GithubClient, {
       const guard = <A>(effect: Effect.Effect<A, GithubError>) => Effect.suspend(() => (ready() ? effect : disabled))
 
       /** Follow `Link: rel="next"` pages of one endpoint. */
-      const pages = <A>(path: string, decode: (res: HttpClientResponse.HttpClientResponse) => Effect.Effect<ReadonlyArray<A>, unknown>) =>
+      const pages = <A>(
+        path: string,
+        decode: (res: HttpClientResponse.HttpClientResponse) => Effect.Effect<ReadonlyArray<A>, unknown>,
+        params: Record<string, string> = {}
+      ) =>
         Effect.gen(function*() {
           const all: Array<A> = []
-          for (let page = 1; page <= 50; page++) {
+          for (let page = 1; page <= 20; page++) {
             const res = yield* ok.execute(
-              HttpClientRequest.get(path).pipe(HttpClientRequest.setUrlParams({ per_page: "100", page: String(page) }))
+              HttpClientRequest.get(path).pipe(
+                HttpClientRequest.setUrlParams({ ...params, per_page: "100", page: String(page) })
+              )
             )
             all.push(...(yield* decode(res)))
             if (!/rel="next"/.test(res.headers["link"] ?? "")) break
@@ -121,18 +144,26 @@ export class GithubClient extends Context.Service<GithubClient, {
 
       return GithubClient.of({
         ready,
-        installedRepos: guard(
+        availableRepos: guard(
           Effect.gen(function*() {
+            if ((yield* auth.source) !== "app") {
+              const repos = yield* pages("/user/repos", HttpClientResponse.schemaBodyJson(Schema.Array(GhRepo)), {
+                affiliation: "owner,collaborator,organization_member",
+                sort: "pushed"
+              })
+              return repos.map(toAvailable)
+            }
+            // A user token from the app sees only what the app is installed on.
             const installations = yield* pages("/user/installations", (res) =>
               HttpClientResponse.schemaBodyJson(GhInstallations)(res).pipe(Effect.map((b) => b.installations)))
-            const repos: Array<{ owner: string; name: string; private: boolean }> = []
+            const repos: Array<AvailableRepo> = []
             for (const installation of installations) {
               const list = yield* pages(`/user/installations/${installation.id}/repositories`, (res) =>
                 HttpClientResponse.schemaBodyJson(GhInstallationRepos)(res).pipe(Effect.map((b) => b.repositories)))
-              for (const r of list) repos.push({ owner: r.owner.login, name: r.name, private: r.private })
+              repos.push(...list.map(toAvailable))
             }
             return repos.sort((a, b) => `${a.owner}/${a.name}`.localeCompare(`${b.owner}/${b.name}`))
-          }).pipe(Effect.mapError(toError("Listing the repositories Gradient can access failed")))
+          }).pipe(Effect.mapError(toError("Listing your GitHub repositories failed")))
         ),
         getRepo: (owner, repo) =>
           guard(

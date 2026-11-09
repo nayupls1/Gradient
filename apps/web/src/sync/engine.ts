@@ -4,6 +4,7 @@ import {
   type Issue,
   type Label,
   type Mutation,
+  type Project,
   type Snapshot,
   type Team,
   type User,
@@ -26,6 +27,7 @@ export interface SyncState {
   users: Record<string, User>
   workflowStates: Record<string, WorkflowState>
   labels: Record<string, Label>
+  projects: Record<string, Project>
   issues: Record<string, Issue>
   githubRepos: Record<string, GithubRepo>
   errors: Array<{ id: string; message: string }>
@@ -52,6 +54,7 @@ export const createSyncEngine = () => {
     users: {},
     workflowStates: {},
     labels: {},
+    projects: {},
     issues: {},
     githubRepos: {},
     errors: []

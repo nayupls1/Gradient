@@ -105,7 +105,7 @@ describe("Sign in with GitHub", () => {
     // Linking a repo now talks to GitHub with the app token.
     fake.seed({ title: "From GitHub" })
     const teamId = await app.run(Effect.flatMap(Effect.service(Db), (db) => db.teams).pipe(Effect.map((t) => t[0]!.id)))
-    const result = await app.github((s) => s.linkRepo({ teamId, owner: "acme", name: "widgets", pushExisting: false }))
+    const result = await app.github((s) => s.linkRepo({ teamId, projectId: null, owner: "acme", name: "widgets", pushExisting: false }))
     expect(result.imported).toBe(1)
     const [token] = fake.appTokens()
     expect(token).toStartWith("ghu_")
@@ -158,18 +158,21 @@ describe("Sign in with GitHub", () => {
     expect(JSON.stringify(exit)).toContain("GITHUB_APP_CLIENT_ID")
   })
 
-  test("lists the repositories the app is installed on, only for an app sign-in", async () => {
+  test("a token lists every repo it can see; an app sign-in only the installed ones", async () => {
     const fake = fakeGithub()
+    fake.addRepo("acme", "a-private", { private: true })
     const app = start({ fake, envToken: "test-token" })
-    const denied = await app.run(Effect.exit(Effect.flatMap(Effect.service(GithubSync), (s) => s.installedRepos)))
-    expect(JSON.stringify(denied)).toContain("Sign in with GitHub")
+    expect((await app.github((s) => s.availableRepos)).map((r) => `${r.owner}/${r.name}`)).toEqual([
+      "acme/widgets",
+      "acme/a-private"
+    ])
 
     await app.signIn()
-    expect(await app.github((s) => s.installedRepos)).toEqual([])
+    expect(await app.github((s) => s.availableRepos)).toEqual([])
     fake.install([{ owner: "acme", name: "widgets" }, { owner: "acme", name: "a-private", private: true }])
-    expect(await app.github((s) => s.installedRepos)).toEqual([
-      { owner: "acme", name: "a-private", private: true },
-      { owner: "acme", name: "widgets", private: false }
+    expect(await app.github((s) => s.availableRepos)).toEqual([
+      { owner: "acme", name: "a-private", private: true, description: null },
+      { owner: "acme", name: "widgets", private: false, description: null }
     ])
   })
 
@@ -191,7 +194,7 @@ describe("Sign in with GitHub", () => {
     const app = start({ fake })
     await app.signIn()
     fake.revoke(fake.appTokens()[0]!)
-    await app.run(Effect.exit(Effect.flatMap(Effect.service(GithubSync), (s) => s.installedRepos)))
+    await app.run(Effect.exit(Effect.flatMap(Effect.service(GithubSync), (s) => s.availableRepos)))
     const status = await app.status()
     expect(status.tokenSource).toBeNull()
     expect(status.notice).toContain("Sign in again")

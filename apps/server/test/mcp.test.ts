@@ -69,6 +69,7 @@ describe("MCP", () => {
     const tools = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
     expect(Object.keys(tools).sort()).toEqual([
       "create_issue",
+      "create_project",
       "describe_workspace",
       "get_issue",
       "github_sign_in",
@@ -86,6 +87,27 @@ describe("MCP", () => {
     expect(data.team.key).toBe("GRD")
     expect(data.states.map((s: any) => s.name)).toContain("In Progress")
     expect(data.labels).toContain("Bug")
+    expect(data.projects.map((p: any) => p.name).sort()).toEqual(["App", "Sync engine"])
+    expect(data.projects.every((p: any) => p.githubRepo === null)).toBe(true)
+  })
+
+  test("projects: create one, file issues into it, filter by it, move issues out", async () => {
+    const project = await call("create_project", { name: "Agents" })
+    expect(project.data).toMatchObject({ name: "Agents", github_repo: null })
+    const dup = await call("create_project", { name: "agents" })
+    expect(dup.isError).toBe(true)
+    expect(dup.text).toContain("already exists")
+
+    const created = await call("create_issue", { title: "Teach agents about projects", project: "Agents" })
+    expect(created.data.project).toBe("Agents")
+    const listed = await call("list_issues", { project: "agents" })
+    expect(listed.data.issues.map((i: any) => i.title)).toEqual(["Teach agents about projects"])
+
+    const moved = await call("update_issue", { id: created.data.id, project: "none" })
+    expect(moved.data.project).toBeNull()
+    const unknown = await call("list_issues", { project: "Nope" })
+    expect(unknown.isError).toBe(true)
+    expect(unknown.text).toContain("Agents")
   })
 
   test("create, update and read back an issue through the shared write path", async () => {

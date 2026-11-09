@@ -1,6 +1,7 @@
 import {
   applyIssueMutation,
   applyLabelMutation,
+  applyProjectMutation,
   type Delta,
   type ModelName,
   type Mutation,
@@ -14,7 +15,8 @@ import { Hub } from "./Hub.ts"
 /**
  * Who made a change: the app (`client`), an agent over MCP (`mcp`), the GitHub
  * sync, or the server itself. `github` writes never go back out to GitHub;
- * every other origin queues an outbound sync when the team has a linked repo.
+ * every other origin queues an outbound sync when the issue has a repo: the one
+ * it is linked to, or its project's.
  */
 export type Origin = "client" | "mcp" | "github" | "system"
 
@@ -94,7 +96,7 @@ export class Mutations extends Context.Service<Mutations, {
                   deltas.push({ _tag: "Upsert", syncId, clientTxId, entity })
                 }
                 if (model === "issue" && options.origin !== "github" && entity?.model === "issue") {
-                  const repo = yield* db.repoForTeam(entity.value.teamId)
+                  const repo = yield* db.repoForIssue(entity.value)
                   if (repo) {
                     yield* db.sql`INSERT INTO github_outbox (issue_id, enqueued_at, next_attempt_at)
                                   VALUES (${id}, ${tx.now}, ${tx.now})
@@ -124,9 +126,14 @@ export class Mutations extends Context.Service<Mutations, {
             stateId?: string | undefined
             labelIds?: ReadonlyArray<string> | undefined
             assigneeId?: string | null | undefined
+            projectId?: string | null | undefined
             title?: string | undefined
           }) {
             if (fields.title !== undefined && fields.title.trim() === "") return yield* reject("Title is required")
+            if (fields.projectId) {
+              const project = yield* db.getProject(fields.projectId)
+              if (!project || project.teamId !== teamId) return yield* reject("Unknown project")
+            }
             if (fields.stateId !== undefined) {
               const state = yield* db.getState(fields.stateId)
               if (!state || state.teamId !== teamId) return yield* reject("Unknown workflow state")
@@ -140,7 +147,45 @@ export class Mutations extends Context.Service<Mutations, {
             }
           })
 
+          const checkProjectName = Effect.fnUntraced(function*(teamId: string, name: string, self?: string) {
+            if (name.trim() === "") return yield* reject("A project needs a name")
+            const clash = (yield* db.projectsForTeam(teamId)).find(
+              (p) => p.id !== self && p.name.toLowerCase() === name.trim().toLowerCase()
+            )
+            if (clash) return yield* reject(`Project "${clash.name}" already exists`)
+          })
+
           switch (m._tag) {
+            case "ProjectCreate": {
+              if (!(yield* db.getTeam(m.teamId))) return yield* reject("Unknown team")
+              if (yield* db.getProject(m.id)) return yield* reject("Project already exists")
+              yield* checkProjectName(m.teamId, m.name)
+              const project = applyProjectMutation(undefined, m, { now: tx.now })!
+              yield* db.putProject({ ...project, name: project.name.trim() })
+              tx.touch("project", m.id)
+              return
+            }
+            case "ProjectUpdate": {
+              const current = yield* db.getProject(m.id)
+              if (!current) return yield* reject("Project not found")
+              if (m.patch.name !== undefined) yield* checkProjectName(current.teamId, m.patch.name, current.id)
+              const next = applyProjectMutation(current, m, { now: tx.now })!
+              yield* db.putProject({ ...next, name: next.name.trim() })
+              tx.touch("project", m.id)
+              return
+            }
+            case "ProjectDelete": {
+              const current = yield* db.getProject(m.id)
+              if (!current) return
+              const repo = yield* db.repoForProject(m.id)
+              if (repo) return yield* reject(`Unlink ${repo.owner}/${repo.name} from this project first`)
+              const issues = yield* db.sql`SELECT id FROM issue WHERE project_id = ${m.id}`
+              yield* db.sql`UPDATE issue SET project_id = NULL, updated_at = ${tx.now} WHERE project_id = ${m.id}`
+              yield* db.deleteProject(m.id)
+              for (const row of issues) tx.touch("issue", row.id as string)
+              tx.touch("project", m.id, "delete")
+              return
+            }
             case "IssueCreate": {
               if (!(yield* db.getTeam(m.teamId))) return yield* reject("Unknown team")
               if (yield* db.getIssue(m.id)) return yield* reject("Issue already exists")

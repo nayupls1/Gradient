@@ -17,7 +17,16 @@ export const makeFakeGithub = (
   port = 0,
   options: { autoApproveDeviceAfterMs?: number; tokenExpiresIn?: number } = {}
 ) => {
-  const issues: Array<FakeIssue> = []
+  // Every repository the fake knows, by "owner/name" (lowercase). The first is the default one.
+  const repos = new Map<string, { owner: string; name: string; private: boolean; issues: Array<FakeIssue> }>()
+  const addRepo = (owner: string, name: string, isPrivate = false) => {
+    const entry = { owner, name, private: isPrivate, issues: [] as Array<FakeIssue> }
+    repos.set(`${owner}/${name}`.toLowerCase(), entry)
+    return entry
+  }
+  const issues = addRepo(repo.owner, repo.name).issues
+  const issuesOf = (r?: { owner: string; name: string }) =>
+    r ? repos.get(`${r.owner}/${r.name}`.toLowerCase())!.issues : issues
   const requests: Array<{ method: string; path: string; body: any }> = []
   let failWrites = 0
   // Device-flow sign-in: one outstanding code at a time is enough for tests.
@@ -31,9 +40,9 @@ export const makeFakeGithub = (
     clock += 1000
     return new Date(clock).toISOString().replace(/\.\d{3}Z$/, "Z")
   }
-  const toJson = (i: FakeIssue) => ({
+  const toJson = (r: { owner: string; name: string }, i: FakeIssue) => ({
     ...i,
-    html_url: `https://github.com/${repo.owner}/${repo.name}/issues/${i.number}`
+    html_url: `https://github.com/${r.owner}/${r.name}/issues/${i.number}`
   })
 
   const apply = (issue: FakeIssue, body: any) => {
@@ -113,24 +122,36 @@ export const makeFakeGithub = (
           repositories: installed.map((r) => ({ name: r.name, private: r.private, owner: { login: r.owner } }))
         })
       }
-      const base = `/repos/${repo.owner}/${repo.name}`
-      if (url.pathname === base) return Response.json({ full_name: `${repo.owner}/${repo.name}` })
-      if (url.pathname === `${base}/issues` && req.method === "GET") {
+      if (url.pathname === "/user/repos") {
+        const page = Number(url.searchParams.get("page") ?? 1)
+        const list = [...repos.values()].slice((page - 1) * 100, page * 100)
+        return Response.json(list.map((r) => ({
+          name: r.name,
+          private: r.private,
+          description: `The ${r.name} repository`,
+          owner: { login: r.owner }
+        })))
+      }
+      const route = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/issues(?:\/(\d+))?)?$/)
+      const target = route ? repos.get(`${route[1]}/${route[2]}`.toLowerCase()) : undefined
+      if (route && !target) return new Response("not found", { status: 404 })
+      if (route && target && !route[3]) return Response.json({ full_name: `${target.owner}/${target.name}` })
+      if (route && target && route[3] && !route[4] && req.method === "GET") {
         const since = url.searchParams.get("since")
         const page = Number(url.searchParams.get("page") ?? 1)
-        const list = issues
+        const list = target.issues
           .filter((i) => !since || i.updated_at >= since)
           .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
           .slice((page - 1) * 100, page * 100)
-          .map(toJson)
+          .map((i) => toJson(target, i))
         const text = JSON.stringify(list)
         const etag = `"${Bun.hash(text + page)}"`
         if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304 })
         return new Response(text, { headers: { "content-type": "application/json", etag } })
       }
-      if (url.pathname === `${base}/issues` && req.method === "POST") {
+      if (route && target && route[3] && !route[4] && req.method === "POST") {
         const issue: FakeIssue = {
-          number: issues.length + 1,
+          number: target.issues.length + 1,
           title: "",
           body: null,
           state: "open",
@@ -141,15 +162,14 @@ export const makeFakeGithub = (
           updated_at: tick()
         }
         apply(issue, body)
-        issues.push(issue)
-        return Response.json(toJson(issue), { status: 201 })
+        target.issues.push(issue)
+        return Response.json(toJson(target, issue), { status: 201 })
       }
-      const match = url.pathname.match(new RegExp(`^${base}/issues/(\\d+)$`))
-      if (match && req.method === "PATCH") {
-        const issue = issues.find((i) => i.number === Number(match[1]))
+      if (route && target && route[4] && req.method === "PATCH") {
+        const issue = target.issues.find((i) => i.number === Number(route[4]))
         if (!issue) return new Response("not found", { status: 404 })
         apply(issue, body)
-        return Response.json(toJson(issue))
+        return Response.json(toJson(target, issue))
       }
       return new Response("not found", { status: 404 })
     }
@@ -159,10 +179,17 @@ export const makeFakeGithub = (
     url: `http://127.0.0.1:${server.port}`,
     issues,
     requests,
+    /** Another repository the token can see (and the app could be installed on). */
+    addRepo(owner: string, name: string, options: { private?: boolean } = {}) {
+      addRepo(owner, name, options.private ?? false)
+    },
+    /** Issues of one repository (the default one when omitted). */
+    issuesOf,
     /** Simulate someone editing on github.com. */
-    seed(partial: Partial<FakeIssue> & { title: string }) {
+    seed(partial: Partial<FakeIssue> & { title: string }, inRepo?: { owner: string; name: string }) {
+      const list = issuesOf(inRepo)
       const issue: FakeIssue = {
-        number: issues.length + 1,
+        number: list.length + 1,
         body: null,
         state: "open",
         state_reason: null,
@@ -172,7 +199,7 @@ export const makeFakeGithub = (
         ...partial,
         updated_at: tick()
       }
-      issues.push(issue)
+      list.push(issue)
       return issue
     },
     edit(number: number, body: any) {

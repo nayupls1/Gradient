@@ -103,5 +103,34 @@ export const migrations = {
       expires_at INTEGER,
       created_at INTEGER NOT NULL
     )`
+  }),
+  /**
+   * Projects group issues inside a team, and each linked repository belongs to
+   * one. A repository linked before projects existed gets a project named
+   * after it, holding the issues synced with it.
+   */
+  "0003_projects": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE project (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL REFERENCES team(id),
+      name TEXT NOT NULL,
+      color TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE (team_id, name COLLATE NOCASE)
+    )`
+    yield* sql`ALTER TABLE issue ADD COLUMN project_id TEXT REFERENCES project(id) ON DELETE SET NULL`
+    yield* sql`CREATE INDEX issue_project ON issue (project_id)`
+    yield* sql`ALTER TABLE github_repo ADD COLUMN project_id TEXT REFERENCES project(id)`
+    const repos = yield* sql`SELECT id, team_id, name, created_at FROM github_repo`
+    for (const repo of repos) {
+      const projectId = crypto.randomUUID()
+      yield* sql`INSERT INTO project (id, team_id, name, color, created_at)
+                 VALUES (${projectId}, ${repo.team_id as string}, ${repo.name as string}, '#0090ff', ${repo.created_at as number})`
+      yield* sql`UPDATE github_repo SET project_id = ${projectId} WHERE id = ${repo.id as string}`
+      yield* sql`UPDATE issue SET project_id = ${projectId}
+                 WHERE id IN (SELECT issue_id FROM github_issue_link WHERE repo_id = ${repo.id as string})`
+    }
+    yield* sql`CREATE UNIQUE INDEX github_repo_project ON github_repo (project_id)`
   })
 }

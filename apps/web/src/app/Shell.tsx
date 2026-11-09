@@ -1,16 +1,17 @@
 import * as stylex from "@stylexjs/stylex"
 import { useLocation, useNavigate } from "@solidjs/router"
 import type { JSX } from "@solidjs/web"
-import { createSignal, onSettled, Show, useContext } from "solid-js"
+import { createSignal, For, onSettled, Show, useContext } from "solid-js"
 import { Shortcut, useCommands } from "../keys/solid.tsx"
-import { firstTeam } from "../lib/select.ts"
+import { firstTeam, projectHref, projectIdFromPath, projectRepo, teamProjects } from "../lib/select.ts"
 import { updateTheme, activeScheme } from "../theme/theme.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { PlusIcon, SettingsIcon } from "../ui/icons.tsx"
+import { GithubIcon, PlusIcon, ProjectIcon, SettingsIcon } from "../ui/icons.tsx"
 import { Toaster } from "../ui/kit.tsx"
 import { CommandSurfaces } from "./CommandMenu.tsx"
 import { Composer } from "./Composer.tsx"
-import { type ComposerDefaults, ComposerContext, Sync } from "./context.ts"
+import { type ComposerDefaults, ComposerContext, ProjectDialogsContext, Sync } from "./context.ts"
+import { ProjectDialog, type ProjectDialogMode } from "./ProjectDialog.tsx"
 import { github } from "./github.ts"
 
 const s = stylex.create({
@@ -107,6 +108,25 @@ const s = stylex.create({
     color: color.fgMuted
   },
   indent: { paddingLeft: 32 },
+  sectionRow: { display: "flex", alignItems: "center", marginTop: 14, marginBottom: 2, paddingLeft: 8, paddingRight: 2 },
+  sectionLabel: { flexGrow: 1, color: color.fgSubtle, fontSize: font.xs, fontWeight: 500 },
+  sectionAdd: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 20,
+    height: 20,
+    padding: 0,
+    borderWidth: 0,
+    borderRadius: radius.sm,
+    backgroundColor: { default: "transparent", ":hover": color.hover },
+    color: { default: color.fgSubtle, ":hover": color.fg },
+    cursor: "pointer"
+  },
+  projects: { display: "flex", flexDirection: "column", gap: 2, overflowY: "auto", minHeight: 0 },
+  projectName: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  projectGh: { color: color.fgSubtle, display: "inline-flex", flexShrink: 0 },
+  emptyProjects: { paddingInline: 8, paddingBlock: 4, color: color.fgSubtle, fontSize: font.sm },
   spacer: { flexGrow: 1 },
   status: {
     display: "flex",
@@ -138,13 +158,23 @@ const NavLink = (props: { href: string; children: JSX.Element; indent?: boolean;
 export const Shell = (props: { children: JSX.Element }) => {
   const sync = useContext(Sync)
   const navigate = useNavigate()
+  const location = useLocation()
   const [composer, setComposer] = createSignal<{ open: boolean; defaults: ComposerDefaults }>({ open: false, defaults: {} })
-  const openComposer = (defaults: ComposerDefaults = {}) => setComposer({ open: true, defaults })
+  // New issues land in the project being viewed, unless the caller says otherwise.
+  const openComposer = (defaults: ComposerDefaults = {}) =>
+    setComposer({ open: true, defaults: { projectId: projectIdFromPath(location.pathname) ?? null, ...defaults } })
   const team = () => firstTeam(sync.state)
+  const projects = () => (team() ? teamProjects(sync.state, team()!.id) : [])
+  const [projectDialog, setProjectDialog] = createSignal<ProjectDialogMode | null>(null)
+  const projectDialogs = {
+    create: () => setProjectDialog({ kind: "create" }),
+    edit: (projectId: string) => setProjectDialog({ kind: "edit", projectId })
+  }
 
   useCommands([
     { id: "issue.create", title: "New issue", group: "General", keys: ["c"], run: () => openComposer() },
-    { id: "nav.issues", title: "Go to issues", group: "Navigation", keys: ["g i"], run: () => navigate("/") },
+    { id: "nav.issues", title: "Go to all issues", group: "Navigation", keys: ["g i"], run: () => navigate("/") },
+    { id: "project.create", title: "New project", group: "General", keys: ["shift+c"], run: () => projectDialogs.create() },
     { id: "nav.settings", title: "Go to settings", group: "Navigation", keys: ["g s", "mod+,"], run: () => navigate("/settings") },
     {
       id: "theme.toggleMode",
@@ -175,6 +205,7 @@ export const Shell = (props: { children: JSX.Element }) => {
 
   return (
     <ComposerContext value={{ open: openComposer }}>
+      <ProjectDialogsContext value={projectDialogs}>
       <div {...stylex.attrs(s.shell)}>
         <nav {...stylex.attrs(s.sidebar)}>
           <div {...stylex.attrs(s.workspace)}>
@@ -191,7 +222,34 @@ export const Shell = (props: { children: JSX.Element }) => {
             <span {...stylex.attrs(s.teamBadge)}>{team()?.key.slice(0, 1) ?? "·"}</span>
             {team()?.name ?? "Team"}
           </div>
-          <NavLink href="/" indent match={(p) => p === "/" || p.startsWith("/issue/")}>Issues</NavLink>
+          <NavLink href="/" indent match={(p) => p === "/"}>All issues</NavLink>
+          <div {...stylex.attrs(s.sectionRow)}>
+            <span {...stylex.attrs(s.sectionLabel)}>Projects</span>
+            <button type="button" title="New project" onClick={() => projectDialogs.create()} {...stylex.attrs(s.sectionAdd)}>
+              <PlusIcon size={13} />
+            </button>
+          </div>
+          <div {...stylex.attrs(s.projects)}>
+            <For
+              each={projects()}
+              keyed={(p) => p.id}
+              fallback={<div {...stylex.attrs(s.emptyProjects)}>Group issues by product or repo.</div>}
+            >
+              {(project) => (
+                <NavLink href={projectHref(project().id)}>
+                  <ProjectIcon size={14} color={project().color} />
+                  <span {...stylex.attrs(s.projectName)}>{project().name}</span>
+                  <Show when={projectRepo(sync.state, project().id)}>
+                    {(r) => (
+                      <span {...stylex.attrs(s.projectGh)} title={`Syncs with ${r().owner}/${r().name}`}>
+                        <GithubIcon size={12} />
+                      </span>
+                    )}
+                  </Show>
+                </NavLink>
+              )}
+            </For>
+          </div>
           <div {...stylex.attrs(s.spacer)} />
           <NavLink href="/settings">
             <SettingsIcon size={15} />
@@ -210,7 +268,9 @@ export const Shell = (props: { children: JSX.Element }) => {
       </div>
       <Composer open={composer().open} defaults={composer().defaults} onClose={() => setComposer((c) => ({ ...c, open: false }))} />
       <CommandSurfaces />
+      <ProjectDialog mode={projectDialog()} onClose={() => setProjectDialog(null)} />
       <Toaster errors={sync.state.errors} onDismiss={sync.dismissError} />
+      </ProjectDialogsContext>
     </ComposerContext>
   )
 }

@@ -13,6 +13,20 @@ export const teamLabels = (state: SyncState, teamId: string) =>
     .filter((l) => l.teamId === teamId)
     .sort((a, b) => a.name.localeCompare(b.name))
 
+export const teamProjects = (state: SyncState, teamId: string) =>
+  Object.values(state.projects)
+    .filter((p) => p.teamId === teamId)
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+/** The GitHub repository a project syncs with, if any. */
+export const projectRepo = (state: SyncState, projectId: string | null | undefined) =>
+  projectId ? Object.values(state.githubRepos).find((r) => r.projectId === projectId) : undefined
+
+export const projectHref = (projectId: string) => `/project/${projectId}`
+
+/** The project shown by the current URL, if any. */
+export const projectIdFromPath = (path: string) => path.match(/^\/project\/([^/]+)/)?.[1]
+
 export const users = (state: SyncState) => Object.values(state.users).sort((a, b) => a.name.localeCompare(b.name))
 
 export const issueKey = (state: SyncState, issue: Issue) => {

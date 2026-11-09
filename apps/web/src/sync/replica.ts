@@ -1,14 +1,17 @@
 import {
   applyIssueMutation,
   applyLabelMutation,
+  applyProjectMutation,
   type Delta,
   type GithubRepo,
   type Issue,
   type Label,
   type Mutation,
+  type Project,
   type Snapshot,
   type Team,
   touchedIssueId,
+  touchedProjectId,
   type User,
   type WorkflowState
 } from "@gradient/domain"
@@ -27,6 +30,7 @@ export interface Tables {
   users: User
   workflowStates: WorkflowState
   labels: Label
+  projects: Project
   issues: Issue
   githubRepos: GithubRepo
 }
@@ -40,13 +44,14 @@ export interface PendingTx {
   confirmedAt: number | null
 }
 
-export const TABLES: ReadonlyArray<TableName> = ["teams", "users", "workflowStates", "labels", "issues", "githubRepos"]
+export const TABLES: ReadonlyArray<TableName> = ["teams", "users", "workflowStates", "labels", "projects", "issues", "githubRepos"]
 
 const tableOf: Record<string, TableName> = {
   team: "teams",
   user: "users",
   workflowState: "workflowStates",
   label: "labels",
+  project: "projects",
   issue: "issues",
   githubRepo: "githubRepos"
 }
@@ -73,6 +78,8 @@ export const createReplica = (options: { now?: () => number } = {}) => {
         const id = touchedIssueId(m)
         if (id) mark(c, "issues", id)
         if (m._tag === "LabelCreate") mark(c, "labels", m.id)
+        const projectId = touchedProjectId(m)
+        if (projectId) mark(c, "projects", projectId)
       }
     }
     return c
@@ -86,6 +93,13 @@ export const createReplica = (options: { now?: () => number } = {}) => {
       for (const tx of pending) {
         for (const m of tx.mutations) {
           if (touchedIssueId(m) === id) value = applyIssueMutation(value ?? undefined, m, ctx)
+        }
+      }
+    } else if (table === "projects") {
+      const ctx = { now: now() }
+      for (const tx of pending) {
+        for (const m of tx.mutations) {
+          if (touchedProjectId(m) === id) value = applyProjectMutation(value ?? undefined, m, ctx)
         }
       }
     } else if (table === "labels") {
@@ -105,6 +119,7 @@ export const createReplica = (options: { now?: () => number } = {}) => {
     for (const u of snap.users) base.users.set(u.id, u)
     for (const w of snap.workflowStates) base.workflowStates.set(w.id, w)
     for (const l of snap.labels) base.labels.set(l.id, l)
+    for (const p of snap.projects) base.projects.set(p.id, p)
     for (const i of snap.issues) base.issues.set(i.id, i)
     for (const r of snap.githubRepos) base.githubRepos.set(r.id, r)
     for (const t of TABLES) for (const id of base[t].keys()) mark(c, t, id)

@@ -1,4 +1,4 @@
-import type { GithubInstalledRepo, GithubStatus } from "@gradient/domain"
+import type { GithubAvailableRepo, GithubStatus } from "@gradient/domain"
 import { createSignal } from "solid-js"
 import type { SyncEngine } from "../sync/engine.ts"
 
@@ -10,7 +10,7 @@ import type { SyncEngine } from "../sync/engine.ts"
 
 const [status, setStatus] = createSignal<GithubStatus | null>(null)
 const [error, setError] = createSignal<string | null>(null)
-const [repos, setRepos] = createSignal<ReadonlyArray<GithubInstalledRepo> | null>(null)
+const [repos, setRepos] = createSignal<ReadonlyArray<GithubAvailableRepo> | null>(null)
 const [reposError, setReposError] = createSignal<string | null>(null)
 
 const messageOf = (e: unknown) => (e as { message?: string }).message ?? String(e)
@@ -69,16 +69,56 @@ const signOut = async (sync: SyncEngine) => {
   setRepos(null)
 }
 
-/** The repositories the app is installed on. Only meaningful after an app sign-in. */
-const loadRepos = async (sync: SyncEngine, current: GithubStatus | null = status()) => {
-  if (current?.tokenSource !== "app") return setRepos(null)
-  try {
-    setRepos(await sync.call((c) => c.GithubInstalledRepos()))
-    setReposError(null)
-  } catch (e) {
-    setReposError(messageOf(e))
-    await refresh(sync) // a 401 signs out; show that
+/**
+ * Repositories the connected account can link, for the repo dropdown: with an
+ * app sign-in the ones it is installed on, with a token (gh CLI, GITHUB_TOKEN)
+ * every repository the token sees.
+ */
+let reposLoading: Promise<void> | null = null
+const loadRepos = (sync: SyncEngine, current: GithubStatus | null = status()): Promise<void> => {
+  if (!current?.tokenSource) {
+    setRepos(null)
+    return Promise.resolve()
   }
+  reposLoading ??= sync.call((c) => c.GithubRepos()).then(
+    (list) => {
+      setRepos(list)
+      setReposError(null)
+    },
+    async (e) => {
+      setReposError(messageOf(e))
+      await refresh(sync) // a 401 signs out; show that
+    }
+  ).finally(() => {
+    reposLoading = null
+  })
+  return reposLoading
 }
 
-export const github = { status, error, repos, reposError, refresh, wait, signIn, cancel, signOut, loadRepos }
+/** Load the repo list once, for dropdowns that open before Settings did. */
+const ensureRepos = async (sync: SyncEngine) => {
+  if (repos() !== null) return
+  const current = status() ?? (await refresh(sync))
+  await loadRepos(sync, current)
+}
+
+/** Link a repository to a project, or to a new project named after it (projectId null). */
+const linkRepo = (
+  sync: SyncEngine,
+  input: { teamId: string; projectId: string | null; projectName?: string; owner: string; name: string; pushExisting: boolean }
+) => sync.call((c) => c.GithubLinkRepo(input))
+
+export const github = {
+  status,
+  error,
+  repos,
+  reposError,
+  refresh,
+  wait,
+  signIn,
+  cancel,
+  signOut,
+  loadRepos,
+  ensureRepos,
+  linkRepo
+}
