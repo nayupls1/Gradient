@@ -1,0 +1,97 @@
+# Working on Gradient
+
+Read `docs/PLAN.md` first for the architecture. This file covers conventions
+and the traps we have already hit.
+
+The philosophy is minimal and agent-first: every capability should be
+reachable by an agent (MCP tool) and by the keyboard (command), and the UI
+stays out of the way.
+
+## Commands
+
+- `bun run dev`: server (4100) and Vite (4200) together
+- `bun run typecheck`: `tsc` in every package (TypeScript 7)
+- `bun test`: all tests. Server tests start real servers on random ports and
+  use `test/fake-github.ts` instead of GitHub.
+
+Run both checks before you push.
+
+## Rules of the codebase
+
+- **One write path.** Every change clients should see goes through
+  `Mutations.transact` (or `Mutations.apply` for the `Mutation` union). It
+  logs to `sync_log`, broadcasts, and queues the GitHub outbox. Writing tables
+  directly skips all three.
+- **New synced field?** Add it to the schema in `packages/domain`, the
+  migration (a new one, never edit a shipped one), `Db.ts` mappers, and
+  `applyIssueMutation` so the optimistic client result matches the server.
+- **GitHub writes from inbound sync use `origin: "github"`**, so they are not
+  pushed back. Echo suppression relies on the shadow in `github_issue_link`:
+  always update it from GitHub's response.
+- **Agents use the same path.** MCP tools live in `apps/server/src/mcp/` and
+  call `Mutations.apply` with `origin: "mcp"`. Tools take and return human
+  names, never internal ids, and errors list the valid values. A new feature
+  that users can do in the UI should get a tool too.
+- **Keyboard first.** New actions are commands registered with `useCommands`
+  (stable id, title, group, scope, optional default keys), never ad-hoc
+  `keydown` listeners. The command then shows up in ⌘K, in `?`, and can be
+  remapped. Pick the narrowest scope; modals get a blocking scope from `Dialog`.
+- **Icons** come from `@lucide/solid`, imported per icon
+  (`@lucide/solid/icons/<name>`), through `ui/icons.tsx`. Use canonical names:
+  aliases have no type definitions.
+- **Themes**: mode (system/light/dark) and palette are separate. Every palette
+  defines both a light and a dark set; never add a palette that only works in
+  one mode.
+- **Few dependencies.** Prefer Bun and `effect` built-ins, then small
+  hand-written helpers. Add a package only when it carries real weight (a
+  router, a font); say why in the commit.
+
+## Effect v4
+
+v4 differs from v3 in many names. Check `node_modules/effect/ai-docs` and the
+source before guessing.
+
+- Modules: `effect/rpc`, `effect/sql`, `effect/http`, `effect/socket`.
+- Services: `class X extends Context.Service<X, Shape>()("id")`, `X.of(...)`,
+  `Effect.service(X)` to read one outside `Effect.gen`.
+- `Config.String/Int/Boolean/Redacted` (capitalized), `Schema.Literals([...])`,
+  `Schema.TaggedUnion({...})`, `Schema.optionalKey`, `Effect.catchDefect`.
+- `Stream.paginate` returns `[items, Option<next>]`. `Stream.unwrap` gives
+  the inner effect the stream's scope (use it for `PubSub.subscribe`).
+
+## Solid 2
+
+Read `node_modules/solid-js/CHEATSHEET.md`. The traps we hit:
+
+- `createEffect(compute, apply)`: two functions, always.
+- Pass values to props, never accessors, and do not destructure props.
+- No store or signal writes from component bodies; start side effects in
+  `onSettled`.
+- A component that reads a signal while building JSX it hands to someone else
+  rebuilds that JSX on every change. Pass getters (see `Popover`'s
+  `aria-expanded`) instead of reading eagerly.
+- JSX in data (picker items) must be a render function, so it is created
+  inside its owner.
+- `JSX` types come from `@solidjs/web`.
+
+## Keymap
+
+`apps/web/src/keys/core.ts` is framework free and unit tested
+(`apps/web/test/keys.test.ts`); `keys/solid.tsx` binds it to components.
+Bindings are strings: `"c"`, `"mod+k"` (⌘ on macOS, Ctrl elsewhere),
+`"shift+enter"`, sequences `"g i"`, symbols as typed (`"?"`). Commands that
+share a key on purpose need a `when` guard. Text fields only receive ⌘/Ctrl
+chords and commands with `allowInInput`.
+
+## StyleX
+
+- Use `stylex.attrs(...)`, not `stylex.props(...)`: Solid needs `class`.
+- Do not call local closures inside `stylex.attrs(...)` arguments
+  (`stylex.attrs(cond() && s.x)` with a local `cond`): the compiler tries to
+  evaluate them and fails with "Unsupported expression". Use props or plain
+  values.
+- Avoid dynamic style functions (`(c) => ({ color: c })`): `stylex.attrs`
+  kebab-cases the generated variable and the color never applies. Use an
+  inline `style` for runtime values.
+- Colors live in `theme/tokens.stylex.ts`. Themes write those CSS variables at
+  runtime (`theme/theme.ts`), so never hardcode a surface or text color.
