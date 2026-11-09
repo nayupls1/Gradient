@@ -9,6 +9,8 @@ import { DbLive } from "./db/Db.ts"
 import { GithubClient } from "./github/GithubClient.ts"
 import { GithubSync } from "./github/GithubSync.ts"
 import { WebhookRoute } from "./github/webhook.ts"
+import { localOnly } from "./http/guard.ts"
+import { McpRoute } from "./mcp/server.ts"
 import { seed } from "./seed.ts"
 import { Hub } from "./sync/Hub.ts"
 import { Mutations } from "./sync/Mutations.ts"
@@ -42,12 +44,15 @@ export const AppServices = Layer.mergeAll(Seed, Layer.empty).pipe(
   Layer.provideMerge(DbLive)
 )
 
-export const Routes = Layer.mergeAll(RpcRoute, HealthRoute, WebhookRoute, StaticRoute)
+export const Routes = Layer.mergeAll(RpcRoute, McpRoute, HealthRoute, WebhookRoute, StaticRoute)
 
 export const HttpLive = Layer.unwrap(
   Effect.gen(function*() {
     const { host, port } = yield* ServerConfig
-    return HttpRouter.serve(Routes).pipe(Layer.provide(BunHttpServer.layer({ hostname: host, port, idleTimeout: 120 })))
+    const loopbackBind = host === "127.0.0.1" || host === "localhost" || host === "::1"
+    return HttpRouter.serve(Routes, { middleware: localOnly({ loopbackBind }) }).pipe(
+      Layer.provide(BunHttpServer.layer({ hostname: host, port, idleTimeout: 120 }))
+    )
   })
 )
 

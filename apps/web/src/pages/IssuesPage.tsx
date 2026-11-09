@@ -1,26 +1,19 @@
 import type { Issue, WorkflowState } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { useNavigate } from "@solidjs/router"
-import { createMemo, createSignal, For, Show, useContext } from "solid-js"
-import { AssigneePicker, PriorityPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
+import { createEffect, createMemo, createSignal, For, Show, untrack, useContext } from "solid-js"
 import { ComposerContext, Sync } from "../app/context.ts"
-import {
-  compareIssues,
-  firstTeam,
-  formatDate,
-  issueHref,
-  issueKey,
-  teamStates,
-  type View,
-  viewTypes
-} from "../lib/select.ts"
+import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
+import { AssigneePicker, PriorityPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
+import { Shortcut, useCommands, useScope } from "../keys/solid.tsx"
+import { compareIssues, firstTeam, formatDate, issueHref, issueKey, teamStates } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
 import { ChevronDownIcon, ChevronRightIcon, GithubIcon, PlusIcon, StateIcon } from "../ui/icons.tsx"
 import { Button } from "../ui/kit.tsx"
 import { PageHeader } from "./Header.tsx"
 
 const s = stylex.create({
-  list: { flexGrow: 1, overflowY: "auto", paddingBottom: 40 },
+  list: { flexGrow: 1, overflowY: "auto", paddingBottom: 40, outline: "none" },
   group: {
     display: "flex",
     alignItems: "center",
@@ -56,6 +49,7 @@ const s = stylex.create({
   count: { color: color.fgSubtle, fontWeight: 400 },
   spacer: { flexGrow: 1 },
   row: {
+    position: "relative",
     display: "flex",
     alignItems: "center",
     gap: 10,
@@ -65,11 +59,16 @@ const s = stylex.create({
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: color.border,
-    backgroundColor: { default: "transparent", ":hover": color.hover },
+    backgroundColor: "transparent",
     fontSize: font.md,
     cursor: "pointer",
     color: color.fg,
-    textDecoration: "none"
+    textDecoration: "none",
+    outline: "none"
+  },
+  rowFocused: {
+    backgroundColor: color.hover,
+    boxShadow: `inset 2px 0 0 ${color.accent}`
   },
   key: {
     width: 58,
@@ -122,28 +121,48 @@ const s = stylex.create({
   }
 })
 
-const titles: Record<View, string> = { all: "All issues", active: "Active", backlog: "Backlog", mine: "My issues" }
-
-const IssueRow = (props: { issue: Issue }) => {
+const IssueRow = (props: {
+  issue: Issue
+  focused: boolean
+  onFocus: () => void
+  apis: (apis: PickerApis) => void
+}) => {
   const sync = useContext(Sync)
   const actions = useIssueActions()
   const navigate = useNavigate()
+  const apis: PickerApis = {}
+  untrack(() => props.apis(apis))
+  let el: HTMLDivElement | undefined
+  createEffect(
+    () => props.focused,
+    (focused) => {
+      if (focused) el?.scrollIntoView({ block: "nearest" })
+    }
+  )
   const labels = () => props.issue.labelIds.map((id) => sync.state.labels[id]).filter((l) => l !== undefined)
   return (
     <div
+      ref={el}
       role="link"
-      tabindex="0"
+      aria-current={props.focused ? "true" : undefined}
+      data-issue={props.issue.id}
       onClick={() => navigate(issueHref(sync.state, props.issue))}
-      onKeyDown={(e) => e.key === "Enter" && navigate(issueHref(sync.state, props.issue))}
-      {...stylex.attrs(s.row)}
+      onMouseMove={() => !props.focused && props.onFocus()}
+      {...stylex.attrs(s.row, props.focused && s.rowFocused)}
     >
-      <PriorityPicker variant="icon" value={props.issue.priority} onChange={(priority) => actions.update(props.issue, { priority })} />
+      <PriorityPicker
+        variant="icon"
+        value={props.issue.priority}
+        onChange={(priority) => actions.update(props.issue, { priority })}
+        apiRef={(a) => (apis.priority = a)}
+      />
       <span {...stylex.attrs(s.key)}>{issueKey(sync.state, props.issue)}</span>
       <StatePicker
         variant="icon"
         teamId={props.issue.teamId}
         value={props.issue.stateId}
         onChange={(stateId) => actions.update(props.issue, { stateId })}
+        apiRef={(a) => (apis.status = a)}
       />
       <span {...stylex.attrs(s.title)}>{props.issue.title}</span>
       <div {...stylex.attrs(s.labels)}>
@@ -164,21 +183,33 @@ const IssueRow = (props: { issue: Issue }) => {
         )}
       </Show>
       <span {...stylex.attrs(s.meta)}>{formatDate(props.issue.createdAt)}</span>
-      <AssigneePicker variant="icon" value={props.issue.assigneeId} onChange={(assigneeId) => actions.update(props.issue, { assigneeId })} />
+      <AssigneePicker
+        variant="icon"
+        value={props.issue.assigneeId}
+        onChange={(assigneeId) => actions.update(props.issue, { assigneeId })}
+        apiRef={(a) => (apis.assignee = a)}
+      />
     </div>
   )
 }
 
-const Group = (props: { state: WorkflowState; issues: ReadonlyArray<Issue> }) => {
+const Group = (props: {
+  state: WorkflowState
+  issues: ReadonlyArray<Issue>
+  collapsed: boolean
+  onToggle: () => void
+  focusedId: string | null
+  onFocus: (id: string) => void
+  registerApis: (id: string, apis: PickerApis) => void
+}) => {
   const composer = useContext(ComposerContext)
-  const [collapsed, setCollapsed] = createSignal(false)
   return (
     <section>
       <div {...stylex.attrs(s.group)}>
-        <button type="button" onClick={() => setCollapsed((c) => !c)} {...stylex.attrs(s.groupToggle)}>
+        <button type="button" onClick={() => props.onToggle()} {...stylex.attrs(s.groupToggle)}>
           <span {...stylex.attrs(s.chevron)}>
-            <Show when={collapsed()} fallback={<ChevronDownIcon size={12} />}>
-              <ChevronRightIcon size={12} />
+            <Show when={props.collapsed} fallback={<ChevronDownIcon size={13} />}>
+              <ChevronRightIcon size={13} />
             </Show>
           </span>
           <StateIcon type={props.state.type} color={props.state.color} />
@@ -190,37 +221,103 @@ const Group = (props: { state: WorkflowState; issues: ReadonlyArray<Issue> }) =>
           <PlusIcon size={14} />
         </Button>
       </div>
-      <Show when={!collapsed()}>
-        <For each={props.issues}>{(issue) => <IssueRow issue={issue} />}</For>
+      <Show when={!props.collapsed}>
+        <For each={props.issues}>
+          {(issue) => (
+            <IssueRow
+              issue={issue}
+              focused={props.focusedId === issue.id}
+              onFocus={() => props.onFocus(issue.id)}
+              apis={(apis) => props.registerApis(issue.id, apis)}
+            />
+          )}
+        </For>
       </Show>
     </section>
   )
 }
 
-export const IssuesPage = (props: { view: View }) => {
+export const IssuesPage = () => {
   const sync = useContext(Sync)
   const composer = useContext(ComposerContext)
+  const navigate = useNavigate()
+  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
+  const [focusTarget, setFocusedId] = createSignal<string | null>(null)
+  const apis = new Map<string, PickerApis>()
 
   const groups = createMemo(() => {
     const team = firstTeam(sync.state)
     if (!team) return []
-    const types = viewTypes[props.view]
-    const visible = Object.values(sync.state.issues).filter((i) =>
-      i.teamId === team.id && i.archivedAt === null && (props.view !== "mine" || i.assigneeId === sync.state.viewerId)
-    )
+    const visible = Object.values(sync.state.issues).filter((i) => i.teamId === team.id && i.archivedAt === null)
     return teamStates(sync.state, team.id)
-      .filter((st) => !types || types.includes(st.type))
       .map((state) => ({ state, issues: visible.filter((i) => i.stateId === state.id).sort(compareIssues) }))
       .filter((g) => g.issues.length > 0)
   })
   const total = () => groups().reduce((n, g) => n + g.issues.length, 0)
+  /** Rows the keyboard can reach, top to bottom. */
+  const order = createMemo(() => groups().flatMap((g) => (collapsed().has(g.state.id) ? [] : g.issues.map((i) => i.id))))
+  /** The focused row, dropped automatically when that issue leaves the list. */
+  const focusedId = createMemo(() => {
+    const id = focusTarget()
+    return id && order().includes(id) ? id : null
+  })
+  const focused = () => {
+    const id = focusedId()
+    return id ? sync.state.issues[id] : undefined
+  }
+
+  const move = (delta: number) => {
+    const ids = order()
+    if (ids.length === 0) return
+    const index = ids.indexOf(focusedId() ?? "")
+    const next = index === -1 ? (delta > 0 ? 0 : ids.length - 1) : Math.min(Math.max(index + delta, 0), ids.length - 1)
+    setFocusedId(ids[next]!)
+  }
+
+  useScope("issues.list")
+  const scope = "issues.list"
+  const group = "List"
+  useCommands([
+    { id: "list.next", title: "Next issue", group, keys: ["j", "arrowdown"], scope, repeat: true, run: () => move(1) },
+    { id: "list.previous", title: "Previous issue", group, keys: ["k", "arrowup"], scope, repeat: true, run: () => move(-1) },
+    { id: "list.first", title: "First issue", group, keys: ["home"], scope, run: () => setFocusedId(order()[0] ?? null) },
+    { id: "list.last", title: "Last issue", group, keys: ["end"], scope, run: () => setFocusedId(order().at(-1) ?? null) },
+    {
+      id: "list.open",
+      title: "Open issue",
+      group,
+      keys: ["enter", "o"],
+      scope,
+      when: () => focused() !== undefined,
+      run: () => navigate(issueHref(sync.state, focused()!))
+    },
+    {
+      id: "list.toggleGroup",
+      title: "Collapse or expand the focused group",
+      group,
+      keys: ["shift+enter"],
+      scope,
+      when: () => focused() !== undefined,
+      run: () => {
+        const stateId = focused()!.stateId
+        setCollapsed((c) => {
+          const next = new Set(c)
+          if (next.has(stateId)) next.delete(stateId)
+          else next.add(stateId)
+          return next
+        })
+      }
+    },
+    { id: "list.clearFocus", title: "Clear focus", group, keys: ["escape"], scope, hidden: true, when: () => focusedId() !== null, run: () => setFocusedId(null) }
+  ])
+  useIssueCommands({ scope, issue: focused, apis: () => apis.get(focusedId() ?? "") })
 
   return (
     <>
       <PageHeader
         title={
           <>
-            {titles[props.view]}
+            Issues
             <span {...stylex.attrs(s.headerCount)}>{total()}</span>
           </>
         }
@@ -228,6 +325,7 @@ export const IssuesPage = (props: { view: View }) => {
           <Button size="sm" onClick={() => composer.open()}>
             <PlusIcon size={13} />
             New issue
+            <Shortcut binding="c" />
           </Button>
         }
       />
@@ -236,13 +334,30 @@ export const IssuesPage = (props: { view: View }) => {
           when={groups().length > 0}
           fallback={
             <div {...stylex.attrs(s.empty)}>
-              No issues here yet.
+              No issues yet.
               <Button variant="primary" onClick={() => composer.open()}>Create an issue</Button>
             </div>
           }
         >
           <For each={groups()} keyed={(g) => g.state.id}>
-            {(group) => <Group state={group().state} issues={group().issues} />}
+            {(g) => (
+              <Group
+                state={g().state}
+                issues={g().issues}
+                collapsed={collapsed().has(g().state.id)}
+                onToggle={() =>
+                  setCollapsed((c) => {
+                    const next = new Set(c)
+                    const id = g().state.id
+                    if (next.has(id)) next.delete(id)
+                    else next.add(id)
+                    return next
+                  })}
+                focusedId={focusedId()}
+                onFocus={setFocusedId}
+                registerApis={(id, a) => apis.set(id, a)}
+              />
+            )}
           </For>
         </Show>
       </div>

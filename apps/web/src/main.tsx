@@ -4,6 +4,7 @@ import "./theme/theme.ts"
 import { render } from "@solidjs/web"
 import { onSettled } from "solid-js"
 import { Sync } from "./app/context.ts"
+import { KeymapProvider } from "./keys/solid.tsx"
 import { Router } from "./app/router.tsx"
 import { Shell } from "./app/Shell.tsx"
 import { createSyncEngine } from "./sync/engine.ts"
@@ -16,7 +17,9 @@ const App = () => {
   })
   return (
     <Sync value={engine}>
-      <Router>{(props) => <Shell>{props.children}</Shell>}</Router>
+      <KeymapProvider>
+        <Router>{(props) => <Shell>{props.children}</Shell>}</Router>
+      </KeymapProvider>
     </Sync>
   )
 }

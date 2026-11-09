@@ -1,4 +1,4 @@
-import { identifier, type Issue, type StateType, type WorkflowState } from "@gradient/domain"
+import { identifier, type Issue, type WorkflowState } from "@gradient/domain"
 import type { SyncState } from "../sync/engine.ts"
 
 export const firstTeam = (state: SyncState) => Object.values(state.teams)[0]
@@ -41,15 +41,6 @@ const priorityRank = (p: number) => (p === 0 ? 5 : p)
 
 export const compareIssues = (a: Issue, b: Issue) =>
   priorityRank(a.priority) - priorityRank(b.priority) || (a.sortOrder < b.sortOrder ? 1 : a.sortOrder > b.sortOrder ? -1 : 0)
-
-export type View = "all" | "active" | "backlog" | "mine"
-
-export const viewTypes: Record<View, ReadonlyArray<StateType> | null> = {
-  all: null,
-  active: ["unstarted", "started"],
-  backlog: ["backlog"],
-  mine: ["backlog", "unstarted", "started"]
-}
 
 export const formatDate = (ms: number) =>
   new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(ms)

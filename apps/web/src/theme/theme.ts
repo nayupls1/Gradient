@@ -1,69 +1,77 @@
 import { createSignal } from "solid-js"
-import { type ColorTokens, type Preset, presetById, presets } from "./presets.ts"
+import { type ColorTokens, paletteById, type Scheme } from "./presets.ts"
 import { color } from "./tokens.stylex.ts"
 
+export type Mode = "system" | "light" | "dark"
+
 /**
- * A theme is either a preset, "system" (Paper or Graphite, following the OS),
- * or a custom set of colors that starts from a preset.
+ * Two independent choices: the mode (light, dark, or follow the OS) and the
+ * palette. Custom colors override the palette, separately for each scheme.
  */
-export type ThemeChoice =
-  | { readonly kind: "system" }
-  | { readonly kind: "preset"; readonly id: string }
-  | { readonly kind: "custom"; readonly base: string; readonly colors: Partial<ColorTokens> }
+export interface Theme {
+  readonly mode: Mode
+  readonly palette: string
+  readonly custom: { readonly light: Partial<ColorTokens>; readonly dark: Partial<ColorTokens> }
+}
 
-const STORAGE_KEY = "gradient.theme"
+const STORAGE_KEY = "gradient.theme.v2"
 const media = window.matchMedia("(prefers-color-scheme: dark)")
+const defaults: Theme = { mode: "system", palette: "neutral", custom: { light: {}, dark: {} } }
 
-const load = (): ThemeChoice => {
+const load = (): Theme => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw) as ThemeChoice
+    if (raw) return { ...defaults, ...(JSON.parse(raw) as Partial<Theme>) }
   } catch {
     // Storage can be unavailable (private mode); fall back to the default.
   }
-  return { kind: "system" }
+  return defaults
 }
 
 /** StyleX compiles each token to a hashed CSS variable; read its name off the token. */
 const varName = (token: string) => token.match(/var\((--[^),\s]+)/)?.[1]
 
-export const resolveTheme = (choice: ThemeChoice): { preset: Preset; colors: ColorTokens } => {
-  if (choice.kind === "system") {
-    const preset = presetById(media.matches ? "graphite" : "paper")!
-    return { preset, colors: preset.colors }
-  }
-  if (choice.kind === "preset") {
-    const preset = presetById(choice.id) ?? presets[0]!
-    return { preset, colors: preset.colors }
-  }
-  const preset = presetById(choice.base) ?? presets[0]!
-  return { preset, colors: { ...preset.colors, ...choice.colors } }
-}
+export const schemeOf = (theme: Theme): Scheme =>
+  theme.mode === "system" ? (media.matches ? "dark" : "light") : theme.mode
 
-const apply = (choice: ThemeChoice) => {
-  const { preset, colors } = resolveTheme(choice)
+export const resolveColors = (theme: Theme, scheme: Scheme = schemeOf(theme)): ColorTokens => ({
+  ...paletteById(theme.palette)[scheme],
+  ...theme.custom[scheme]
+})
+
+const apply = (theme: Theme) => {
+  const scheme = schemeOf(theme)
   const root = document.documentElement
-  for (const [key, value] of Object.entries(colors)) {
+  for (const [key, value] of Object.entries(resolveColors(theme, scheme))) {
     const name = varName(String((color as unknown as Record<string, string>)[key]))
     if (name) root.style.setProperty(name, value)
   }
-  root.style.colorScheme = preset.scheme
-  root.dataset.scheme = preset.scheme
+  root.style.colorScheme = scheme
+  root.dataset.scheme = scheme
 }
 
-const [theme, setThemeSignal] = createSignal<ThemeChoice>(load())
+const [theme, setThemeSignal] = createSignal<Theme>(load())
+const [systemDark, setSystemDark] = createSignal(media.matches)
 apply(theme())
 media.addEventListener("change", () => {
-  if (theme().kind === "system") apply(theme())
+  setSystemDark(media.matches)
+  if (theme().mode === "system") apply(theme())
 })
 
 export { theme }
 
-export const setTheme = (choice: ThemeChoice) => {
-  setThemeSignal(choice)
-  apply(choice)
+/** The scheme on screen now. Reactive to both the mode setting and the OS. */
+export const activeScheme = (): Scheme => {
+  const t = theme()
+  return t.mode === "system" ? (systemDark() ? "dark" : "light") : t.mode
+}
+
+export const updateTheme = (patch: (current: Theme) => Theme) => {
+  const next = patch(theme())
+  setThemeSignal(next)
+  apply(next)
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(choice))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
   } catch {
     // Not fatal: the theme still applies for this session.
   }

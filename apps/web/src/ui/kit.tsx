@@ -1,8 +1,9 @@
 import * as stylex from "@stylexjs/stylex"
 import type { StyleXStyles } from "@stylexjs/stylex"
-import { createEffect, createSignal, createUniqueId, For, merge, omit, Show } from "solid-js"
+import { createEffect, createSignal, createUniqueId, For, merge, omit, Show, untrack } from "solid-js"
 import type { JSX } from "@solidjs/web"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
+import { KeyScope } from "../keys/solid.tsx"
 import { CheckIcon, SearchIcon } from "./icons.tsx"
 
 /*
@@ -351,8 +352,20 @@ export const Avatar = (props: { name?: string | null; src?: string | null; size?
 
 // ---------------------------------------------------------------- Dialog
 
-/** A modal built on `<dialog>`: focus trapping, Escape and the backdrop come from the browser. */
-export const Dialog = (props: { open: boolean; onClose: () => void; children: JSX.Element; sx?: Sx; label: string }) => {
+/**
+ * A modal built on `<dialog>`: focus trapping, Escape and the backdrop come
+ * from the browser. While open it pushes a blocking key scope, so shortcuts
+ * behind it stay quiet.
+ */
+export const Dialog = (props: {
+  open: boolean
+  onClose: () => void
+  children: JSX.Element
+  sx?: Sx
+  label: string
+  /** Key scope name for commands that belong to this dialog. */
+  scope?: string
+}) => {
   let el: HTMLDialogElement | undefined
   createEffect(
     () => props.open,
@@ -370,7 +383,11 @@ export const Dialog = (props: { open: boolean; onClose: () => void; children: JS
       onClose={() => props.onClose()}
       {...stylex.attrs(s.dialog, props.sx)}
     >
-      <Show when={props.open}>{props.children}</Show>
+      <Show when={props.open}>
+        <KeyScope name={props.scope ?? "dialog"} blocking>
+          {props.children}
+        </KeyScope>
+      </Show>
     </dialog>
   )
 }
@@ -380,6 +397,7 @@ export const Dialog = (props: { open: boolean; onClose: () => void; children: JS
 export type TriggerAttrs = { popovertarget: string; ref: (el: HTMLElement) => void; "aria-expanded": "true" | "false" }
 
 export interface PopoverApi {
+  open(): void
   close(): void
 }
 
@@ -391,6 +409,8 @@ export const Popover = (props: {
   trigger: (attrs: TriggerAttrs) => JSX.Element
   children: (api: PopoverApi) => JSX.Element
   onOpen?: (el: HTMLElement) => void
+  /** Receives open/close, so keyboard commands can open the popover. */
+  apiRef?: (api: PopoverApi) => void
   align?: "start" | "end"
   sx?: Sx
 }) => {
@@ -412,7 +432,13 @@ export const Popover = (props: {
     pop.style.left = `${left}px`
   }
 
-  const api: PopoverApi = { close: () => pop?.hidePopover() }
+  const api: PopoverApi = {
+    open: () => {
+      if (pop && !pop.matches(":popover-open")) pop.showPopover()
+    },
+    close: () => pop?.hidePopover()
+  }
+  untrack(() => props.apiRef?.(api))
 
   return (
     <>
@@ -458,6 +484,10 @@ export interface PickerItem<V> {
   /** A render function, so the icon is created inside the list that shows it. */
   icon?: () => JSX.Element
   hint?: string
+  /** Right-aligned extra, such as a shortcut. Also a render function. */
+  trailing?: () => JSX.Element
+  /** Extra words to match when filtering. */
+  keywords?: string
 }
 
 /**
@@ -477,7 +507,9 @@ export const PickerList = <V,>(props: {
   const [active, setActive] = createSignal(0)
   const filtered = () => {
     const q = query().trim().toLowerCase()
-    return q ? props.items.filter((i) => i.label.toLowerCase().includes(q)) : props.items
+    return q
+      ? props.items.filter((i) => `${i.label} ${i.keywords ?? ""}`.toLowerCase().includes(q))
+      : props.items
   }
   const canCreate = () => !!props.onCreate && query().trim() !== "" &&
     !props.items.some((i) => i.label.toLowerCase() === query().trim().toLowerCase())
@@ -516,13 +548,13 @@ export const PickerList = <V,>(props: {
           {...stylex.attrs(s.bare)}
         />
       </div>
-      <For each={filtered()}>
+      <For each={filtered()} keyed={(item) => item.value}>
         {(item, index) => {
-          const isSelected = () => props.selected.includes(item.value)
+          const isSelected = () => props.selected.includes(item().value)
           return (
             <button
               type="button"
-              onClick={() => pick(item)}
+              onClick={() => pick(item())}
               onMouseMove={() => setActive(index())}
               {...stylex.attrs(s.option, active() === index() && s.optionActive)}
             >
@@ -533,11 +565,12 @@ export const PickerList = <V,>(props: {
                   </Show>
                 </span>
               </Show>
-              {item.icon?.()}
-              <span {...stylex.attrs(s.optionLabel)}>{item.label}</span>
-              <Show when={item.hint}>
-                <span {...stylex.attrs(s.optionHint)}>{item.hint}</span>
+              {item().icon?.()}
+              <span {...stylex.attrs(s.optionLabel)}>{item().label}</span>
+              <Show when={item().hint}>
+                <span {...stylex.attrs(s.optionHint)}>{item().hint}</span>
               </Show>
+              {item().trailing?.()}
               <Show when={!props.multiple && isSelected()}>
                 <span {...stylex.attrs(s.check)}>
                   <CheckIcon size={14} />
@@ -569,10 +602,11 @@ export const Picker = <V,>(props: {
   onPick: (value: V) => void
   onCreate?: (query: string) => void
   align?: "start" | "end"
+  apiRef?: (api: PopoverApi) => void
 }) => {
-  const listProps = omit(props, "trigger", "align")
+  const listProps = omit(props, "trigger", "align", "apiRef")
   return (
-    <Popover trigger={props.trigger} align={props.align ?? "start"}>
+    <Popover trigger={props.trigger} align={props.align ?? "start"} {...(props.apiRef ? { apiRef: props.apiRef } : {})}>
       {(api) => <PickerList {...merge(listProps, { close: api.close })} />}
     </Popover>
   )

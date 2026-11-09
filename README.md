@@ -1,7 +1,22 @@
 # Gradient
 
-A Linear-style issue tracker with live, two-way GitHub issue sync. Runs
-locally. Built with Effect v4, Bun, SQLite, Solid 2 and StyleX.
+A minimal, agent-first issue tracker with live, two-way GitHub issue sync.
+Runs locally. Built with Effect v4, Bun, SQLite, Solid 2 and StyleX.
+
+## Connect your agent
+
+Gradient is an MCP server. With Gradient running:
+
+```bash
+claude mcp add --transport http --scope user gradient http://127.0.0.1:4100/mcp   # Claude Code
+codex mcp add gradient --url http://127.0.0.1:4100/mcp                            # Codex
+```
+
+Agents get `describe_workspace`, `list_issues`, `get_issue`, `create_issue` and
+`update_issue`. They take human names ("In Progress", "me", "Bug", GRD-12),
+and every write goes through the same sync engine as the app, so it shows up
+live and syncs to GitHub. The server also publishes a `gradient` skill with
+the conventions agents should follow.
 
 ## Run it
 
@@ -52,12 +67,22 @@ bun apps/server/test/dev-fake-github.ts
 GITHUB_API_URL=http://127.0.0.1:4300 GITHUB_TOKEN=fake bun run dev   # then link acme/widgets
 ```
 
+## Keyboard
+
+Everything is a command with an id. `?` lists every shortcut, `⌘K` / `Ctrl+K`
+runs any command available where you are. On the issue list: `j`/`k` move,
+`Enter` opens, `s` status, `p` priority, `a` assignee, `l` labels, `i` assign
+to me, `c` new issue. Sequences work too (`g i`, `g s`).
+
+Remap any command in localStorage under `gradient.keymap`, for example
+`{"issue.status": ["shift+s"], "nav.settings": null}`.
+
 ## Configuration
 
 | Variable | Default | |
 |---|---|---|
 | `GRADIENT_PORT` | `4100` | API server port |
-| `GRADIENT_HOST` | `127.0.0.1` | Bind address. Keep it local: there is no auth yet. |
+| `GRADIENT_HOST` | `127.0.0.1` | Bind address. Keep it local: there is no auth yet. Requests from non-local browser origins are refused. |
 | `GRADIENT_DB` | `./gradient.db` | SQLite file |
 | `GRADIENT_SEED_SAMPLE` | `true` | Add sample issues to a new database |
 | `GRADIENT_USER_NAME` | `Me` | Name of the local user on first start |

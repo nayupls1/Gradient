@@ -6,7 +6,7 @@ import type { JSX } from "@solidjs/web"
 import { teamLabels, teamStates, users } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
 import { PriorityIcon, priorityLabel, StateIcon, TagIcon, UserIcon } from "../ui/icons.tsx"
-import { Avatar, Picker, type TriggerAttrs } from "../ui/kit.tsx"
+import { Avatar, Picker, type PopoverApi, type TriggerAttrs } from "../ui/kit.tsx"
 import { Sync } from "./context.ts"
 
 const s = stylex.create({
@@ -75,11 +75,12 @@ const Trigger = (props: { variant: Variant; attrs: TriggerAttrs; title: string; 
   </button>
 )
 
-export const StatePicker = (props: { teamId: string; value: string; onChange: (id: string) => void; variant: Variant }) => {
+export const StatePicker = (props: { teamId: string; value: string; onChange: (id: string) => void; variant: Variant; apiRef?: (api: PopoverApi) => void }) => {
   const sync = useContext(Sync)
   const current = () => sync.state.workflowStates[props.value]
   return (
     <Picker
+      {...(props.apiRef ? { apiRef: props.apiRef } : {})}
       placeholder="Change status…"
       items={teamStates(sync.state, props.teamId).map((st) => ({
         value: st.id,
@@ -102,8 +103,9 @@ export const StatePicker = (props: { teamId: string; value: string; onChange: (i
 
 const PRIORITIES: ReadonlyArray<Priority> = [0, 1, 2, 3, 4]
 
-export const PriorityPicker = (props: { value: Priority; onChange: (p: Priority) => void; variant: Variant }) => (
+export const PriorityPicker = (props: { value: Priority; onChange: (p: Priority) => void; variant: Variant; apiRef?: (api: PopoverApi) => void }) => (
   <Picker
+    {...(props.apiRef ? { apiRef: props.apiRef } : {})}
     placeholder="Set priority…"
     items={PRIORITIES.map((p) => ({ value: p, label: priorityLabel[p], icon: () => <PriorityIcon priority={p} />, hint: String(p) }))}
     selected={[props.value]}
@@ -121,11 +123,12 @@ export const PriorityPicker = (props: { value: Priority; onChange: (p: Priority)
   />
 )
 
-export const AssigneePicker = (props: { value: string | null; onChange: (id: string | null) => void; variant: Variant }) => {
+export const AssigneePicker = (props: { value: string | null; onChange: (id: string | null) => void; variant: Variant; apiRef?: (api: PopoverApi) => void }) => {
   const sync = useContext(Sync)
   const current = () => (props.value ? sync.state.users[props.value] : undefined)
   return (
     <Picker<string | null>
+      {...(props.apiRef ? { apiRef: props.apiRef } : {})}
       placeholder="Assign to…"
       align={props.variant === "icon" ? "end" : "start"}
       items={[
@@ -158,11 +161,13 @@ export const LabelPicker = (props: {
   value: ReadonlyArray<string>
   onChange: (ids: ReadonlyArray<string>) => void
   variant: Variant
+  apiRef?: (api: PopoverApi) => void
 }) => {
   const sync = useContext(Sync)
   const selected = () => props.value.map((id) => sync.state.labels[id]).filter((l) => l !== undefined)
   return (
     <Picker
+      {...(props.apiRef ? { apiRef: props.apiRef } : {})}
       multiple
       placeholder="Add labels…"
       items={teamLabels(sync.state, props.teamId).map((l) => ({

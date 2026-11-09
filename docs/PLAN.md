@@ -3,8 +3,9 @@
 Status: pass 1 is built. This document describes what exists and what comes
 next.
 
-Gradient is a Linear-style issue tracker. It syncs issues both ways with GitHub,
-as close to realtime as GitHub allows. It runs locally, for one user, for now.
+Gradient is a minimal, agent-first issue tracker. It syncs issues both ways
+with GitHub, as close to realtime as GitHub allows, and exposes everything to
+coding agents over MCP. It runs locally, for one user, for now.
 
 ## Principles
 
@@ -29,13 +30,15 @@ as close to realtime as GitHub allows. It runs locally, for one user, for now.
 | UI | Solid 2 (RC) with `@solidjs/router` 2 |
 | Styles | StyleX, compiled by `@stylexjs/unplugin` |
 | Components | Hand-written kit with shadcn's API shape, on native `<dialog>` and the Popover API |
+| Icons | `@lucide/solid` (per-icon imports) |
+| Agents | MCP over Streamable HTTP with `effect/ai`'s `McpServer` (no extra package) |
 | Font | Inter, bundled (`@fontsource-variable/inter`) |
 | Build | Vite 8 with `vite-plugin-solid` |
 | Tests | `bun test`, with a fake GitHub server |
 
 Runtime dependencies: server 3 (`effect`, `@effect/platform-bun`,
-`@effect/sql-sqlite-bun`); web 6 (`effect`, `solid-js`, `@solidjs/web`,
-`@solidjs/router`, `@stylexjs/stylex`, the font).
+`@effect/sql-sqlite-bun`); web 7 (`effect`, `solid-js`, `@solidjs/web`,
+`@solidjs/router`, `@stylexjs/stylex`, `@lucide/solid`, the font).
 
 Kobalte, which shadcn-solid builds on, only has an alpha for Solid 2 pinned to
 an older RC. The kit is ours instead: `apps/web/src/ui/kit.tsx`.
@@ -56,13 +59,16 @@ apps/server/src
   sync/Hub.ts          PubSub fan-out of committed deltas
   sync/Rpc.ts          RPC handlers; Subscribe = catch-up from log, then live
   github/              client, field mapping, GithubSync (import/poll/push), webhook route
+  mcp/                 MCP tools (names in, names out), instructions, the gradient skill
+  http/guard.ts        local-only guard: refuses foreign browser origins and rebound hosts
   seed.ts, app.ts, main.ts
 apps/web/src
   sync/engine.ts       client store: base + pending transactions, reconnect, resend
-  theme/               tokens (StyleX vars), presets, runtime theme switching
+  keys/                command registry: chords, sequences, scopes, remaps (core.ts), Solid hooks
+  theme/               tokens (StyleX vars), palettes, mode + palette switching
   ui/                  kit (Button, Input, Dialog, Popover, Picker, Avatar, Toaster), icons
-  app/                 Shell (sidebar), Composer (new issue), property pickers, router
-  pages/               IssuesPage (list grouped by state), IssuePage, SettingsPage
+  app/                 Shell, Composer, CommandMenu (⌘K and ?), issue commands, pickers, router
+  pages/               IssuesPage (keyboard-driven list), IssuePage, SettingsPage
 ```
 
 ## Data model
@@ -128,18 +134,46 @@ Tested in `apps/server/test/github-sync.test.ts`: import, one-field PATCH with
 no echo, inbound edits not bounced back, concurrent edits to different fields
 both surviving, creating on GitHub, webhook signatures and dedupe.
 
+## Agents (MCP)
+
+`POST /mcp` speaks MCP over Streamable HTTP (protocol revisions 2025-03-26
+through 2026-07-28). Tools: `describe_workspace`, `list_issues`, `get_issue`,
+`create_issue`, `update_issue`. They take and return names (states, labels,
+people, GRD-12), never ids, and a bad name returns a tool error that lists the
+valid ones. Writes go through `Mutations.apply` with `origin: "mcp"`, so they
+appear live in the app and sync to GitHub. The server sends usage instructions
+on initialize and publishes a `gradient` skill (MCP skills extension).
+
+Install: `claude mcp add --transport http --scope user gradient http://127.0.0.1:4100/mcp`
+or `codex mcp add gradient --url http://127.0.0.1:4100/mcp`.
+
+There is no auth yet, so the server binds to loopback and `http/guard.ts`
+refuses requests whose `Origin` or `Host` is not local. CLI clients send no
+`Origin` and pass.
+
+## Keyboard
+
+Every action is a command: id, title, group, scope, optional bindings. The
+same registry drives key handling, ⌘K (commands available here), `?` (all
+shortcuts), remaps (`gradient.keymap` in localStorage) and `run(id)` for any
+future caller. Scopes stack (`global`, `issues.list`, `issue.detail`, and a
+blocking scope per open dialog); the highest eligible scope wins. Chords use
+the physical key under modifiers, so they work on any layout; sequences time
+out after a second; IME composition and held-key repeat are handled.
+
 ## Theming
 
-Color tokens are StyleX variables. A theme is a preset, "system" (Paper or
-Graphite, following the OS), or custom colors on top of a preset. `theme.ts`
-writes the variables on `<html>` at runtime and saves the choice in
-localStorage. Presets: Paper, Graphite, Slate, Sand, Midnight, Moss.
+Color tokens are StyleX variables. Two independent settings: mode (system,
+light, dark) and palette (Neutral, Slate, Stone, Moss, Iris), each palette
+defining both schemes. Custom colors override the palette per scheme.
+`theme.ts` writes the variables on `<html>` at runtime and saves the choice in
+localStorage.
 
 ## Next
 
 - Comments, synced with GitHub (`issue_comment` webhook + list/create/edit).
 - Board view, drag to reorder (the fractional `sortOrder` is already there).
-- Command palette, more shortcuts, search and filters.
+- Issue search in ⌘K, filters, more views (deliberately left to the user's design).
 - Markdown rendering for descriptions.
 - Offline cache of the store in IndexedDB.
 - Real auth (GitHub login), then multiple users; GitHub App instead of a token.

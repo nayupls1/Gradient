@@ -3,6 +3,10 @@
 Read `docs/PLAN.md` first for the architecture. This file covers conventions
 and the traps we have already hit.
 
+The philosophy is minimal and agent-first: every capability should be
+reachable by an agent (MCP tool) and by the keyboard (command), and the UI
+stays out of the way.
+
 ## Commands
 
 - `bun run dev`: server (4100) and Vite (4200) together
@@ -24,6 +28,20 @@ Run both checks before you push.
 - **GitHub writes from inbound sync use `origin: "github"`**, so they are not
   pushed back. Echo suppression relies on the shadow in `github_issue_link`:
   always update it from GitHub's response.
+- **Agents use the same path.** MCP tools live in `apps/server/src/mcp/` and
+  call `Mutations.apply` with `origin: "mcp"`. Tools take and return human
+  names, never internal ids, and errors list the valid values. A new feature
+  that users can do in the UI should get a tool too.
+- **Keyboard first.** New actions are commands registered with `useCommands`
+  (stable id, title, group, scope, optional default keys), never ad-hoc
+  `keydown` listeners. The command then shows up in ⌘K, in `?`, and can be
+  remapped. Pick the narrowest scope; modals get a blocking scope from `Dialog`.
+- **Icons** come from `@lucide/solid`, imported per icon
+  (`@lucide/solid/icons/<name>`), through `ui/icons.tsx`. Use canonical names:
+  aliases have no type definitions.
+- **Themes**: mode (system/light/dark) and palette are separate. Every palette
+  defines both a light and a dark set; never add a palette that only works in
+  one mode.
 - **Few dependencies.** Prefer Bun and `effect` built-ins, then small
   hand-written helpers. Add a package only when it carries real weight (a
   router, a font); say why in the commit.
@@ -55,6 +73,15 @@ Read `node_modules/solid-js/CHEATSHEET.md`. The traps we hit:
 - JSX in data (picker items) must be a render function, so it is created
   inside its owner.
 - `JSX` types come from `@solidjs/web`.
+
+## Keymap
+
+`apps/web/src/keys/core.ts` is framework free and unit tested
+(`apps/web/test/keys.test.ts`); `keys/solid.tsx` binds it to components.
+Bindings are strings: `"c"`, `"mod+k"` (⌘ on macOS, Ctrl elsewhere),
+`"shift+enter"`, sequences `"g i"`, symbols as typed (`"?"`). Commands that
+share a key on purpose need a `when` guard. Text fields only receive ⌘/Ctrl
+chords and commands with `allowInInput`.
 
 ## StyleX
 

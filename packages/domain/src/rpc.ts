@@ -20,8 +20,16 @@ export const GithubStatus = Schema.Struct({
 })
 export type GithubStatus = typeof GithubStatus.Type
 
+export const ServerInfo = Schema.Struct({
+  version: Schema.String,
+  /** Where agents connect over MCP (Streamable HTTP). */
+  mcpUrl: Schema.String
+})
+export type ServerInfo = typeof ServerInfo.Type
+
 export class GradientRpcs extends RpcGroup.make(
   Rpc.make("Bootstrap", { success: Snapshot }),
+  Rpc.make("ServerInfo", { success: ServerInfo }),
   Rpc.make("Subscribe", {
     payload: { since: Schema.Int },
     success: SyncEvent,

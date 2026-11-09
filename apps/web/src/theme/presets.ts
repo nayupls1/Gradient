@@ -4,15 +4,20 @@ export const TOKEN_KEYS = [
 ] as const
 
 export type ColorTokens = Record<(typeof TOKEN_KEYS)[number], string>
+export type Scheme = "light" | "dark"
 
-export interface Preset {
+/**
+ * A palette is a set of tints. It never decides light or dark: every palette
+ * has both, and the mode setting (system, light, dark) picks one.
+ */
+export interface Palette {
   readonly id: string
   readonly name: string
-  readonly scheme: "light" | "dark"
-  readonly colors: ColorTokens
+  readonly light: ColorTokens
+  readonly dark: ColorTokens
 }
 
-const light = (overrides: Partial<ColorTokens>): ColorTokens => ({
+const light = (o: Partial<ColorTokens> = {}): ColorTokens => ({
   bg: "#fbfbfa",
   panel: "#ffffff",
   subtle: "#f4f4f3",
@@ -29,10 +34,10 @@ const light = (overrides: Partial<ColorTokens>): ColorTokens => ({
   danger: "#d93f3f",
   shadow: "rgba(0, 0, 0, 0.08)",
   overlay: "rgba(0, 0, 0, 0.18)",
-  ...overrides
+  ...o
 })
 
-const dark = (overrides: Partial<ColorTokens>): ColorTokens => ({
+const dark = (o: Partial<ColorTokens> = {}): ColorTokens => ({
   bg: "#111112",
   panel: "#18181a",
   subtle: "#1c1c1f",
@@ -49,90 +54,68 @@ const dark = (overrides: Partial<ColorTokens>): ColorTokens => ({
   danger: "#ec5d5d",
   shadow: "rgba(0, 0, 0, 0.4)",
   overlay: "rgba(0, 0, 0, 0.5)",
-  ...overrides
+  ...o
 })
 
-/** Deliberately bland: neutral greys, with a few gentle tints to choose from. */
-export const presets: ReadonlyArray<Preset> = [
-  { id: "paper", name: "Paper", scheme: "light", colors: light({}) },
-  { id: "graphite", name: "Graphite", scheme: "dark", colors: dark({}) },
+/** Deliberately bland: neutral greys first, then a few gentle tints. */
+export const palettes: ReadonlyArray<Palette> = [
+  { id: "neutral", name: "Neutral", light: light(), dark: dark() },
   {
     id: "slate",
     name: "Slate",
-    scheme: "light",
-    colors: light({
-      bg: "#f8f9fb",
-      subtle: "#f1f3f6",
-      hover: "#ebeef2",
-      active: "#e3e7ec",
-      border: "#e1e5ea",
-      borderStrong: "#cdd3db",
-      fg: "#1a1f27",
-      fgMuted: "#5f6773",
-      fgSubtle: "#939aa5",
-      accent: "#3b5bdb",
-      ring: "rgba(59, 91, 219, 0.25)"
+    light: light({
+      bg: "#f8f9fb", subtle: "#f1f3f6", hover: "#ebeef2", active: "#e3e7ec", border: "#e1e5ea",
+      borderStrong: "#cdd3db", fg: "#1a1f27", fgMuted: "#5f6773", fgSubtle: "#939aa5",
+      accent: "#3b5bdb", ring: "rgba(59, 91, 219, 0.25)"
+    }),
+    dark: dark({
+      bg: "#0e1117", panel: "#141924", subtle: "#18202c", hover: "#1d2633", active: "#243041",
+      border: "#232c3a", borderStrong: "#303c4e", fg: "#e6eaf2", fgMuted: "#98a2b3", fgSubtle: "#667085",
+      accent: "#7c9cff", accentFg: "#0e1117", ring: "rgba(124, 156, 255, 0.28)"
     })
   },
   {
-    id: "sand",
-    name: "Sand",
-    scheme: "light",
-    colors: light({
-      bg: "#faf8f5",
-      panel: "#fffdfa",
-      subtle: "#f3efe9",
-      hover: "#eee9e1",
-      active: "#e7e0d6",
-      border: "#e7e1d8",
-      borderStrong: "#d6cdc0",
-      fg: "#26221d",
-      fgMuted: "#6f675c",
-      fgSubtle: "#a1978a",
-      accent: "#a0522d",
-      ring: "rgba(160, 82, 45, 0.22)"
-    })
-  },
-  {
-    id: "midnight",
-    name: "Midnight",
-    scheme: "dark",
-    colors: dark({
-      bg: "#0e1117",
-      panel: "#141924",
-      subtle: "#18202c",
-      hover: "#1d2633",
-      active: "#243041",
-      border: "#232c3a",
-      borderStrong: "#303c4e",
-      fg: "#e6eaf2",
-      fgMuted: "#98a2b3",
-      fgSubtle: "#667085",
-      accent: "#7c9cff",
-      accentFg: "#0e1117",
-      ring: "rgba(124, 156, 255, 0.28)"
+    id: "stone",
+    name: "Stone",
+    light: light({
+      bg: "#faf8f5", panel: "#fffdfa", subtle: "#f3efe9", hover: "#eee9e1", active: "#e7e0d6",
+      border: "#e7e1d8", borderStrong: "#d6cdc0", fg: "#26221d", fgMuted: "#6f675c", fgSubtle: "#a1978a",
+      accent: "#a0522d", ring: "rgba(160, 82, 45, 0.22)"
+    }),
+    dark: dark({
+      bg: "#141210", panel: "#1b1815", subtle: "#201d19", hover: "#27231e", active: "#2f2a24",
+      border: "#2e2924", borderStrong: "#3c362f", fg: "#ece7e1", fgMuted: "#a89f94", fgSubtle: "#776e64",
+      accent: "#d9845a", accentFg: "#141210", ring: "rgba(217, 132, 90, 0.25)"
     })
   },
   {
     id: "moss",
     name: "Moss",
-    scheme: "dark",
-    colors: dark({
-      bg: "#101311",
-      panel: "#161a17",
-      subtle: "#1b201c",
-      hover: "#212722",
-      active: "#283029",
-      border: "#29302a",
-      borderStrong: "#364037",
-      fg: "#e7ece7",
-      fgMuted: "#9ca79d",
-      fgSubtle: "#6b766c",
-      accent: "#8fbf8f",
-      accentFg: "#101311",
-      ring: "rgba(143, 191, 143, 0.25)"
+    light: light({
+      bg: "#f8faf8", subtle: "#f0f4f0", hover: "#e9eee9", active: "#e0e7e0", border: "#dfe6df",
+      borderStrong: "#cbd5cb", fg: "#1b221c", fgMuted: "#5c6a5e", fgSubtle: "#8f9c91",
+      accent: "#3d7a4a", ring: "rgba(61, 122, 74, 0.22)"
+    }),
+    dark: dark({
+      bg: "#101311", panel: "#161a17", subtle: "#1b201c", hover: "#212722", active: "#283029",
+      border: "#29302a", borderStrong: "#364037", fg: "#e7ece7", fgMuted: "#9ca79d", fgSubtle: "#6b766c",
+      accent: "#8fbf8f", accentFg: "#101311", ring: "rgba(143, 191, 143, 0.25)"
+    })
+  },
+  {
+    id: "iris",
+    name: "Iris",
+    light: light({
+      bg: "#f9f9fc", subtle: "#f2f2f8", hover: "#ececf4", active: "#e4e4ef", border: "#e3e3ee",
+      borderStrong: "#d0d0e0", fg: "#1d1c26", fgMuted: "#64627a", fgSubtle: "#9896ad",
+      accent: "#5b4fd6", ring: "rgba(91, 79, 214, 0.24)"
+    }),
+    dark: dark({
+      bg: "#111018", panel: "#17161f", subtle: "#1c1b26", hover: "#22212d", active: "#2a2837",
+      border: "#2a2836", borderStrong: "#383545", fg: "#ebeaf3", fgMuted: "#a3a0b8", fgSubtle: "#716e86",
+      accent: "#a59cff", accentFg: "#111018", ring: "rgba(165, 156, 255, 0.26)"
     })
   }
 ]
 
-export const presetById = (id: string) => presets.find((p) => p.id === id)
+export const paletteById = (id: string) => palettes.find((p) => p.id === id) ?? palettes[0]!

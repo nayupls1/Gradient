@@ -1,12 +1,14 @@
 import * as stylex from "@stylexjs/stylex"
-import { useLocation } from "@solidjs/router"
-import { createSignal, Show, useContext } from "solid-js"
+import { useLocation, useNavigate } from "@solidjs/router"
 import type { JSX } from "@solidjs/web"
-import { useHotkeys } from "../lib/hotkeys.ts"
+import { createSignal, Show, useContext } from "solid-js"
+import { Shortcut, useCommands } from "../keys/solid.tsx"
 import { firstTeam } from "../lib/select.ts"
+import { updateTheme, activeScheme } from "../theme/theme.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { InboxIcon, PlusIcon, SettingsIcon } from "../ui/icons.tsx"
-import { Kbd, Toaster } from "../ui/kit.tsx"
+import { PlusIcon, SettingsIcon } from "../ui/icons.tsx"
+import { Toaster } from "../ui/kit.tsx"
+import { CommandSurfaces } from "./CommandMenu.tsx"
 import { Composer } from "./Composer.tsx"
 import { type ComposerDefaults, ComposerContext, Sync } from "./context.ts"
 
@@ -66,7 +68,7 @@ const s = stylex.create({
   },
   grow: { flexGrow: 1, textAlign: "left" },
   section: {
-    marginTop: 14,
+    marginTop: 6,
     marginBottom: 2,
     paddingInline: 8,
     color: color.fgSubtle,
@@ -87,6 +89,7 @@ const s = stylex.create({
     textDecoration: "none"
   },
   linkActive: { backgroundColor: color.active, color: color.fg },
+  teamRow: { backgroundColor: { default: "transparent", ":hover": "transparent" }, color: color.fg, cursor: "default" },
   teamBadge: {
     display: "inline-flex",
     alignItems: "center",
@@ -103,7 +106,6 @@ const s = stylex.create({
     color: color.fgMuted
   },
   indent: { paddingLeft: 32 },
-  teamRow: { backgroundColor: { default: "transparent", ":hover": "transparent" }, color: color.fg, cursor: "default" },
   spacer: { flexGrow: 1 },
   status: {
     display: "flex",
@@ -122,9 +124,9 @@ const s = stylex.create({
   loading: { display: "grid", placeItems: "center", height: "100%", color: color.fgSubtle, fontSize: font.md }
 })
 
-const NavLink = (props: { href: string; children: JSX.Element; indent?: boolean }) => {
+const NavLink = (props: { href: string; children: JSX.Element; indent?: boolean; match?: (path: string) => boolean }) => {
   const location = useLocation()
-  const active = () => location.pathname === props.href
+  const active = () => (props.match ? props.match(location.pathname) : location.pathname === props.href)
   return (
     <a href={props.href} {...stylex.attrs(s.link, props.indent && s.indent, active() && s.linkActive)}>
       {props.children}
@@ -134,10 +136,22 @@ const NavLink = (props: { href: string; children: JSX.Element; indent?: boolean 
 
 export const Shell = (props: { children: JSX.Element }) => {
   const sync = useContext(Sync)
+  const navigate = useNavigate()
   const [composer, setComposer] = createSignal<{ open: boolean; defaults: ComposerDefaults }>({ open: false, defaults: {} })
   const openComposer = (defaults: ComposerDefaults = {}) => setComposer({ open: true, defaults })
-  useHotkeys({ c: () => openComposer() })
   const team = () => firstTeam(sync.state)
+
+  useCommands([
+    { id: "issue.create", title: "New issue", group: "General", keys: ["c"], run: () => openComposer() },
+    { id: "nav.issues", title: "Go to issues", group: "Navigation", keys: ["g i"], run: () => navigate("/") },
+    { id: "nav.settings", title: "Go to settings", group: "Navigation", keys: ["g s", "mod+,"], run: () => navigate("/settings") },
+    {
+      id: "theme.toggleMode",
+      title: "Switch light / dark",
+      group: "Appearance",
+      run: () => updateTheme((t) => ({ ...t, mode: activeScheme() === "dark" ? "light" : "dark" }))
+    }
+  ])
 
   return (
     <ComposerContext value={{ open: openComposer }}>
@@ -150,20 +164,14 @@ export const Shell = (props: { children: JSX.Element }) => {
           <button type="button" onClick={() => openComposer()} {...stylex.attrs(s.newIssue)}>
             <PlusIcon size={14} />
             <span {...stylex.attrs(s.grow)}>New issue</span>
-            <Kbd>C</Kbd>
+            <Shortcut binding="c" />
           </button>
-          <NavLink href="/my-issues">
-            <InboxIcon size={15} />
-            My issues
-          </NavLink>
           <div {...stylex.attrs(s.section)}>Your team</div>
           <div {...stylex.attrs(s.link, s.teamRow)}>
             <span {...stylex.attrs(s.teamBadge)}>{team()?.key.slice(0, 1) ?? "·"}</span>
             {team()?.name ?? "Team"}
           </div>
-          <NavLink href="/" indent>Issues</NavLink>
-          <NavLink href="/active" indent>Active</NavLink>
-          <NavLink href="/backlog" indent>Backlog</NavLink>
+          <NavLink href="/" indent match={(p) => p === "/" || p.startsWith("/issue/")}>Issues</NavLink>
           <div {...stylex.attrs(s.spacer)} />
           <NavLink href="/settings">
             <SettingsIcon size={15} />
@@ -181,8 +189,8 @@ export const Shell = (props: { children: JSX.Element }) => {
         </main>
       </div>
       <Composer open={composer().open} defaults={composer().defaults} onClose={() => setComposer((c) => ({ ...c, open: false }))} />
+      <CommandSurfaces />
       <Toaster errors={sync.state.errors} onDismiss={sync.dismissError} />
     </ComposerContext>
   )
 }
-

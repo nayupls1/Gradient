@@ -3,10 +3,11 @@ import * as stylex from "@stylexjs/stylex"
 import { createMemo, createSignal, For, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
 import { firstTeam, formatRelative } from "../lib/select.ts"
-import { type ColorTokens, type Preset, presetById, presets } from "../theme/presets.ts"
-import { resolveTheme, setTheme, theme } from "../theme/theme.ts"
+import type { JSX } from "@solidjs/web"
+import { type ColorTokens, paletteById, palettes } from "../theme/presets.ts"
+import { activeScheme, type Mode, resolveColors, theme, updateTheme } from "../theme/theme.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { CheckIcon, GithubIcon, PaletteIcon } from "../ui/icons.tsx"
+import { BotIcon, CheckIcon, CopyIcon, GithubIcon, MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "../ui/icons.tsx"
 import { Button, Input } from "../ui/kit.tsx"
 import { PageHeader } from "./Header.tsx"
 
@@ -16,7 +17,7 @@ const s = stylex.create({
   section: { marginBottom: 40 },
   h2: { display: "flex", alignItems: "center", gap: 8, margin: 0, fontSize: font.lg, fontWeight: 600 },
   lede: { marginTop: 4, marginBottom: 16, color: color.fgMuted, fontSize: font.md },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12 },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(124px, 1fr))", gap: 12 },
   card: {
     display: "flex",
     flexDirection: "column",
@@ -33,15 +34,45 @@ const s = stylex.create({
   },
   swatch: {
     position: "relative",
-    height: 84,
+    height: 76,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderStyle: "solid",
     borderColor: color.border,
     overflow: "hidden",
     display: "grid",
-    gridTemplateColumns: "34% 1fr"
+    gridTemplateColumns: "1fr 1fr"
   },
+  fieldLabel: { marginBottom: 8, marginTop: 4, color: color.fgMuted, fontSize: font.sm, fontWeight: 500 },
+  segmented: {
+    display: "inline-flex",
+    padding: 2,
+    gap: 2,
+    marginBottom: 20,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: color.border,
+    backgroundColor: color.subtle
+  },
+  segment: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    height: 26,
+    paddingInline: 10,
+    borderRadius: 4,
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    color: { default: color.fgMuted, ":hover": color.fg },
+    fontFamily: "inherit",
+    fontSize: font.md,
+    fontWeight: 500,
+    cursor: "pointer"
+  },
+  segmentOn: { backgroundColor: color.panel, color: color.fg, boxShadow: `0 1px 2px ${color.shadow}` },
+  agentRow: { display: "flex", alignItems: "center", gap: 10 },
+  agentName: { width: 96, flexShrink: 0, fontSize: font.md, fontWeight: 500 },
   swatchActive: { boxShadow: `0 0 0 2px ${color.accent}`, borderColor: "transparent" },
   check: {
     position: "absolute",
@@ -55,8 +86,6 @@ const s = stylex.create({
     backgroundColor: color.accent,
     color: color.accentFg
   },
-  cardName: { display: "flex", alignItems: "center", gap: 6 },
-  cardScheme: { color: color.fgSubtle, fontWeight: 400, fontSize: font.sm },
   custom: {
     marginTop: 16,
     padding: 16,
@@ -117,20 +146,20 @@ const s = stylex.create({
   repoInput: { flexGrow: 1, flexBasis: 0, width: "auto", minWidth: 200 }
 })
 
-/** A tiny rendering of the app in the preset's colors. */
-const Swatch = (props: { colors: ColorTokens; active: boolean }) => (
-  <div {...stylex.attrs(s.swatch, props.active && s.swatchActive)} style={{ "background-color": props.colors.bg }}>
-    <div style={{ "border-right": `1px solid ${props.colors.border}`, padding: "10px 8px", display: "grid", gap: "5px", "align-content": "start" }}>
-      <div style={{ height: "6px", width: "70%", "border-radius": "3px", background: props.colors.fg, opacity: 0.85 }} />
-      <div style={{ height: "5px", width: "85%", "border-radius": "3px", background: props.colors.fgSubtle }} />
-      <div style={{ height: "5px", width: "60%", "border-radius": "3px", background: props.colors.fgSubtle }} />
+/** A tiny rendering of the app in one palette and scheme. */
+const Swatch = (props: { colors: ColorTokens }) => (
+  <div style={{ display: "grid", "grid-template-columns": "30% 1fr", height: "100%", "background-color": props.colors.bg }}>
+    <div style={{ "border-right": `1px solid ${props.colors.border}`, padding: "9px 7px", display: "grid", gap: "5px", "align-content": "start" }}>
+      <div style={{ height: "5px", width: "70%", "border-radius": "3px", background: props.colors.fg, opacity: 0.85 }} />
+      <div style={{ height: "4px", width: "85%", "border-radius": "3px", background: props.colors.fgSubtle }} />
+      <div style={{ height: "4px", width: "60%", "border-radius": "3px", background: props.colors.fgSubtle }} />
     </div>
-    <div style={{ padding: "10px", display: "grid", gap: "6px", "align-content": "start", background: props.colors.panel }}>
+    <div style={{ padding: "9px", display: "grid", gap: "6px", "align-content": "start", background: props.colors.panel }}>
       <div style={{ display: "flex", "justify-content": "space-between", "align-items": "center" }}>
-        <div style={{ height: "6px", width: "45%", "border-radius": "3px", background: props.colors.fg }} />
-        <div style={{ height: "10px", width: "22%", "border-radius": "4px", background: props.colors.accent }} />
+        <div style={{ height: "5px", width: "45%", "border-radius": "3px", background: props.colors.fg }} />
+        <div style={{ height: "9px", width: "22%", "border-radius": "4px", background: props.colors.accent }} />
       </div>
-      <For each={[0.9, 0.7, 0.8]}>
+      <For each={[0.9, 0.7]}>
         {(w) => (
           <div style={{ display: "flex", gap: "5px", "align-items": "center", "border-top": `1px solid ${props.colors.border}`, "padding-top": "5px" }}>
             <div style={{ width: "6px", height: "6px", "border-radius": "50%", border: `1.5px solid ${props.colors.fgMuted}` }} />
@@ -153,83 +182,138 @@ const EDITABLE: ReadonlyArray<{ key: keyof ColorTokens; label: string }> = [
   { key: "accentFg", label: "Text on accent" }
 ]
 
+const MODES: ReadonlyArray<{ value: Mode; label: string; icon: () => JSX.Element }> = [
+  { value: "system", label: "System", icon: () => <MonitorIcon size={14} /> },
+  { value: "light", label: "Light", icon: () => <SunIcon size={14} /> },
+  { value: "dark", label: "Dark", icon: () => <MoonIcon size={14} /> }
+]
+
 const Appearance = () => {
-  const current = () => theme()
-  const resolved = createMemo(() => resolveTheme(current()))
-  const activeId = () => {
-    const t = current()
-    return t.kind === "system" ? "system" : t.kind === "preset" ? t.id : "custom"
-  }
-  const pick = (preset: Preset | "system") => setTheme(preset === "system" ? { kind: "system" } : { kind: "preset", id: preset.id })
-  const customize = () => {
-    const { preset, colors } = resolved()
-    setTheme({ kind: "custom", base: preset.id, colors: { accent: colors.accent } })
-  }
-  const setColor = (key: keyof ColorTokens, value: string) => {
-    const t = current()
-    if (t.kind !== "custom") return
-    setTheme({ ...t, colors: { ...t.colors, [key]: value } })
-  }
+  const scheme = () => activeScheme()
+  const colors = createMemo(() => resolveColors(theme(), scheme()))
+  const customized = () => Object.keys(theme().custom[scheme()]).length > 0
+  const setColor = (key: keyof ColorTokens, value: string) =>
+    updateTheme((t) => ({ ...t, custom: { ...t.custom, [scheme()]: { ...t.custom[scheme()], [key]: value } } }))
+  const resetColors = () => updateTheme((t) => ({ ...t, custom: { ...t.custom, [scheme()]: {} } }))
   const toHex = (value: string) => (/^#[0-9a-f]{6}$/i.test(value) ? value : "#888888")
 
   return (
     <section {...stylex.attrs(s.section)}>
       <h2 {...stylex.attrs(s.h2)}><PaletteIcon size={16} /> Appearance</h2>
-      <p {...stylex.attrs(s.lede)}>Pick a preset, or start from one and change any color. Saved in this browser.</p>
-      <div {...stylex.attrs(s.grid)}>
-        <button type="button" onClick={() => pick("system")} {...stylex.attrs(s.card)}>
-          <div style={{ position: "relative" }}>
-            <Swatch colors={resolveTheme({ kind: "system" }).colors} active={activeId() === "system"} />
-            <Show when={activeId() === "system"}><span {...stylex.attrs(s.check)}><CheckIcon size={11} /></span></Show>
-          </div>
-          <span {...stylex.attrs(s.cardName)}>System <span {...stylex.attrs(s.cardScheme)}>Paper / Graphite</span></span>
-        </button>
-        <For each={presets}>
-          {(preset) => (
-            <button type="button" onClick={() => pick(preset)} {...stylex.attrs(s.card)}>
-              <div style={{ position: "relative" }}>
-                <Swatch colors={preset.colors} active={activeId() === preset.id} />
-                <Show when={activeId() === preset.id}><span {...stylex.attrs(s.check)}><CheckIcon size={11} /></span></Show>
-              </div>
-              <span {...stylex.attrs(s.cardName)}>{preset.name} <span {...stylex.attrs(s.cardScheme)}>{preset.scheme}</span></span>
+      <p {...stylex.attrs(s.lede)}>Mode and palette are separate: every palette has a light and a dark version. Saved in this browser.</p>
+
+      <div {...stylex.attrs(s.fieldLabel)}>Mode</div>
+      <div {...stylex.attrs(s.segmented)} role="radiogroup" aria-label="Mode">
+        <For each={MODES}>
+          {(m) => (
+            <button
+              type="button"
+              role="radio"
+              aria-checked={theme().mode === m.value ? "true" : "false"}
+              onClick={() => updateTheme((t) => ({ ...t, mode: m.value }))}
+              {...stylex.attrs(s.segment, theme().mode === m.value && s.segmentOn)}
+            >
+              {m.icon()}
+              {m.label}
             </button>
           )}
         </For>
       </div>
+
+      <div {...stylex.attrs(s.fieldLabel)}>Palette</div>
+      <div {...stylex.attrs(s.grid)}>
+        <For each={palettes}>
+          {(palette) => (
+            <button type="button" onClick={() => updateTheme((t) => ({ ...t, palette: palette.id }))} {...stylex.attrs(s.card)}>
+              <div {...stylex.attrs(s.swatch, theme().palette === palette.id && s.swatchActive)}>
+                <Swatch colors={palette.light} />
+                <Swatch colors={palette.dark} />
+                <Show when={theme().palette === palette.id}>
+                  <span {...stylex.attrs(s.check)}><CheckIcon size={11} /></span>
+                </Show>
+              </div>
+              <span>{palette.name}</span>
+            </button>
+          )}
+        </For>
+      </div>
+
       <div {...stylex.attrs(s.custom)}>
         <div {...stylex.attrs(s.row)}>
           <div {...stylex.attrs(s.grow)}>
             <div style={{ "font-weight": 600, "font-size": "13px" }}>Custom colors</div>
             <div {...stylex.attrs(s.subtle)}>
-              <Show when={current().kind === "custom"} fallback={"Start from the current theme and tweak it."}>
-                Based on {presetById((current() as { base: string }).base)?.name}.
-              </Show>
+              Changes apply to the {scheme()} version of {paletteById(theme().palette).name}.
             </div>
           </div>
-          <Show
-            when={current().kind === "custom"}
-            fallback={<Button onClick={customize}>Customize</Button>}
-          >
-            <Button variant="ghost" onClick={() => pick(resolved().preset)}>Reset to {resolved().preset.name}</Button>
+          <Show when={customized()}>
+            <Button variant="ghost" onClick={resetColors}>Reset</Button>
           </Show>
         </div>
-        <Show when={current().kind === "custom"}>
-          <div {...stylex.attrs(s.customGrid)}>
-            <For each={EDITABLE}>
-              {(field) => (
-                <label {...stylex.attrs(s.colorField)}>
-                  <input
-                    type="color"
-                    value={toHex(resolved().colors[field.key])}
-                    onInput={(e) => setColor(field.key, e.currentTarget.value)}
-                    {...stylex.attrs(s.colorInput)}
-                  />
-                  {field.label}
-                </label>
-              )}
-            </For>
-          </div>
-        </Show>
+        <div {...stylex.attrs(s.customGrid)}>
+          <For each={EDITABLE}>
+            {(field) => (
+              <label {...stylex.attrs(s.colorField)}>
+                <input
+                  type="color"
+                  value={toHex(colors()[field.key])}
+                  onInput={(e) => setColor(field.key, e.currentTarget.value)}
+                  {...stylex.attrs(s.colorInput)}
+                />
+                {field.label}
+              </label>
+            )}
+          </For>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/** The server's MCP URL, from the server itself (it knows its host and port). */
+const useMcpUrl = () => {
+  const sync = useContext(Sync)
+  const [url, setUrl] = createSignal("http://127.0.0.1:4100/mcp")
+  sync.call((c) => c.ServerInfo()).then((info) => setUrl(info.mcpUrl), () => {})
+  return url
+}
+
+/** The one-liners that connect a coding agent to this Gradient over MCP. */
+const Agents = () => {
+  const url = useMcpUrl()
+  const commands = createMemo(() => [
+    { name: "Claude Code", command: `claude mcp add --transport http --scope user gradient ${url()}` },
+    { name: "Codex", command: `codex mcp add gradient --url ${url()}` }
+  ])
+  const [copied, setCopied] = createSignal<string | null>(null)
+  const copy = async (text: string) => {
+    await navigator.clipboard?.writeText(text)
+    setCopied(text)
+    setTimeout(() => setCopied(null), 1500)
+  }
+  return (
+    <section {...stylex.attrs(s.section)}>
+      <h2 {...stylex.attrs(s.h2)}><BotIcon size={16} /> Agents</h2>
+      <p {...stylex.attrs(s.lede)}>
+        Gradient is an MCP server. Agents read and change issues through the same sync engine as this app, so their edits show up here live.
+      </p>
+      <div {...stylex.attrs(s.panel)}>
+        <For each={commands()} keyed={(c) => c.name}>
+          {(entry) => (
+            <div {...stylex.attrs(s.agentRow)}>
+              <span {...stylex.attrs(s.agentName)}>{entry().name}</span>
+              <code {...stylex.attrs(s.code, s.grow)}>{entry().command}</code>
+              <Button size="icon" variant="ghost" title="Copy" onClick={() => copy(entry().command)}>
+                <Show when={copied() === entry().command} fallback={<CopyIcon size={14} />}>
+                  <CheckIcon size={14} />
+                </Show>
+              </Button>
+            </div>
+          )}
+        </For>
+        <div {...stylex.attrs(s.subtle)}>
+          Tools: list, get, create and update issues, and describe the workspace (states, labels, people). The server also publishes a Gradient skill with the conventions agents should follow.
+        </div>
       </div>
     </section>
   )
@@ -237,6 +321,7 @@ const Appearance = () => {
 
 const GithubSettings = () => {
   const sync = useContext(Sync)
+  const url = useMcpUrl()
   const team = () => firstTeam(sync.state)
   const repo = () => Object.values(sync.state.githubRepos).find((r) => r.teamId === team()?.id)
   const [status, setStatus] = createSignal<GithubStatus | null>(null)
@@ -332,7 +417,7 @@ const GithubSettings = () => {
                 {status()?.webhookSecretSet ? "" : " (set GITHUB_WEBHOOK_SECRET first)"}:
               </div>
               <code {...stylex.attrs(s.code)}>
-                gh webhook forward --repo={r().owner}/{r().name} --events=issues --url=http://localhost:4100/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
+                gh webhook forward --repo={r().owner}/{r().name} --events=issues --url={url().replace(/\/mcp$/, "")}/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
               </code>
             </>
           )}
@@ -351,6 +436,7 @@ export const SettingsPage = () => (
     <div {...stylex.attrs(s.page)}>
       <div {...stylex.attrs(s.column)}>
         <Appearance />
+        <Agents />
         <GithubSettings />
       </div>
     </div>

@@ -2,10 +2,12 @@ import * as stylex from "@stylexjs/stylex"
 import { useNavigate, useParams } from "@solidjs/router"
 import { createSignal, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
+import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
+import { useCommands, useScope } from "../keys/solid.tsx"
 import { findIssue, formatRelative, issueKey } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { ArchiveIcon, ChevronRightIcon, GithubIcon, MoreIcon, TrashIcon } from "../ui/icons.tsx"
+import { ArchiveIcon, ChevronRightIcon, GithubIcon, MoreIcon, RestoreIcon, TrashIcon } from "../ui/icons.tsx"
 import { AutoTextarea, Avatar, Button, PickerList, Popover } from "../ui/kit.tsx"
 import { PageHeader } from "./Header.tsx"
 
@@ -62,6 +64,28 @@ export const IssuePage = () => {
   const navigate = useNavigate()
   const actions = useIssueActions()
   const issue = () => findIssue(sync.state, params.ref ?? "")
+  const apis: PickerApis = {}
+  let titleEl: HTMLTextAreaElement | undefined
+  let descriptionEl: HTMLTextAreaElement | undefined
+
+  useScope("issue.detail")
+  useIssueCommands({ scope: "issue.detail", issue, apis: () => apis })
+  useCommands([
+    { id: "issue.back", title: "Back to issues", group: "Navigation", keys: ["escape", "u"], scope: "issue.detail", run: () => navigate("/") },
+    { id: "issue.editTitle", title: "Edit title", group: "Issue", keys: ["e"], scope: "issue.detail", run: () => titleEl?.focus() },
+    { id: "issue.editDescription", title: "Edit description", group: "Issue", keys: ["d"], scope: "issue.detail", run: () => descriptionEl?.focus() },
+    {
+      id: "issue.blur",
+      title: "Stop editing",
+      group: "Issue",
+      keys: ["escape"],
+      scope: "issue.detail",
+      allowInInput: true,
+      hidden: true,
+      when: () => document.activeElement === titleEl || document.activeElement === descriptionEl,
+      run: () => (document.activeElement as HTMLElement | null)?.blur()
+    }
+  ])
 
   // Drafts follow the synced value until the user edits; commit on blur.
   const [title, setTitle] = createSignal(() => issue()?.title ?? "")
@@ -108,7 +132,7 @@ export const IssuePage = () => {
                     items={[
                       current().archivedAt === null
                         ? { value: "archive", label: "Archive", icon: () => <ArchiveIcon size={14} /> }
-                        : { value: "unarchive", label: "Restore from archive", icon: () => <ArchiveIcon size={14} /> },
+                        : { value: "unarchive", label: "Restore from archive", icon: () => <RestoreIcon size={14} /> },
                       { value: "delete", label: "Delete…", icon: () => <TrashIcon size={14} /> }
                     ]}
                     onPick={(action) => {
@@ -136,6 +160,7 @@ export const IssuePage = () => {
                   </div>
                 </Show>
                 <AutoTextarea
+                  ref={(el) => (titleEl = el)}
                   aria-label="Title"
                   value={title()}
                   onInput={(e) => setTitle(e.currentTarget.value)}
@@ -149,6 +174,7 @@ export const IssuePage = () => {
                   sx={s.title}
                 />
                 <AutoTextarea
+                  ref={(el) => (descriptionEl = el)}
                   aria-label="Description"
                   placeholder="Add a description…"
                   value={description()}
@@ -161,19 +187,19 @@ export const IssuePage = () => {
             <aside {...stylex.attrs(s.side)}>
               <div {...stylex.attrs(s.prop)}>
                 <span {...stylex.attrs(s.propLabel)}>Status</span>
-                <StatePicker variant="row" teamId={current().teamId} value={current().stateId} onChange={(stateId) => actions.update(current(), { stateId })} />
+                <StatePicker apiRef={(a) => (apis.status = a)} variant="row" teamId={current().teamId} value={current().stateId} onChange={(stateId) => actions.update(current(), { stateId })} />
               </div>
               <div {...stylex.attrs(s.prop)}>
                 <span {...stylex.attrs(s.propLabel)}>Priority</span>
-                <PriorityPicker variant="row" value={current().priority} onChange={(priority) => actions.update(current(), { priority })} />
+                <PriorityPicker apiRef={(a) => (apis.priority = a)} variant="row" value={current().priority} onChange={(priority) => actions.update(current(), { priority })} />
               </div>
               <div {...stylex.attrs(s.prop)}>
                 <span {...stylex.attrs(s.propLabel)}>Assignee</span>
-                <AssigneePicker variant="row" value={current().assigneeId} onChange={(assigneeId) => actions.update(current(), { assigneeId })} />
+                <AssigneePicker apiRef={(a) => (apis.assignee = a)} variant="row" value={current().assigneeId} onChange={(assigneeId) => actions.update(current(), { assigneeId })} />
               </div>
               <div {...stylex.attrs(s.prop)}>
                 <span {...stylex.attrs(s.propLabel)}>Labels</span>
-                <LabelPicker variant="row" teamId={current().teamId} value={current().labelIds} onChange={(labelIds) => actions.update(current(), { labelIds })} />
+                <LabelPicker apiRef={(a) => (apis.labels = a)} variant="row" teamId={current().teamId} value={current().labelIds} onChange={(labelIds) => actions.update(current(), { labelIds })} />
               </div>
               <div {...stylex.attrs(s.divider)} />
               <Show when={current().github}>

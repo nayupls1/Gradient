@@ -4,7 +4,8 @@ import { createSignal, useContext } from "solid-js"
 import { firstTeam, teamStates } from "../lib/select.ts"
 import { color, font } from "../theme/tokens.stylex.ts"
 import { ChevronRightIcon } from "../ui/icons.tsx"
-import { AutoTextarea, Button, Dialog, Kbd } from "../ui/kit.tsx"
+import { Shortcut, useCommands } from "../keys/solid.tsx"
+import { AutoTextarea, Button, Dialog } from "../ui/kit.tsx"
 import type { ComposerDefaults } from "./context.ts"
 import { Sync } from "./context.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, StatePicker } from "./properties.tsx"
@@ -94,18 +95,16 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
     props.onClose()
   }
 
+  useCommands([
+    { id: "composer.submit", title: "Create issue", group: "New issue", keys: ["mod+enter"], scope: "composer", run: submit }
+  ])
+
   return (
-    <Dialog open={props.open} onClose={props.onClose} label="New issue">
+    <Dialog open={props.open} onClose={props.onClose} label="New issue" scope="composer">
       <form
         onSubmit={(e) => {
           e.preventDefault()
           submit()
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault()
-            submit()
-          }
         }}
       >
         <div {...stylex.attrs(s.header)}>
@@ -139,8 +138,7 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
         </div>
         <div {...stylex.attrs(s.footer)}>
           <span {...stylex.attrs(s.hint)}>
-            <Kbd>Ctrl</Kbd>
-            <Kbd>Enter</Kbd>
+            <Shortcut binding="mod+enter" />
             to create
           </span>
           <Button variant="ghost" onClick={props.onClose}>Cancel</Button>

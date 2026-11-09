@@ -1,7 +1,9 @@
 import { type Delta, GradientRpcs, MutationRejected, type SyncEvent } from "@gradient/domain"
 import { Effect, Layer, Option, PubSub, Stream } from "effect"
 import { Db, type LogRow } from "../db/Db.ts"
+import { ServerConfig } from "../config.ts"
 import { GithubSync } from "../github/GithubSync.ts"
+import { mcpUrl } from "../mcp/server.ts"
 import { Hub } from "./Hub.ts"
 import { Mutations } from "./Mutations.ts"
 
@@ -18,6 +20,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
     const hub = yield* Hub
     const mutations = yield* Mutations
     const github = yield* GithubSync
+    const config = yield* ServerConfig
 
     const viewerId = () => db.getMeta("viewer_id").pipe(Effect.map((id) => id!), Effect.orDie)
 
@@ -38,6 +41,8 @@ export const RpcHandlers = GradientRpcs.toLayer(
             })
           )
         }).pipe(Effect.orDie),
+
+      ServerInfo: () => Effect.succeed({ version: "0.1.0", mcpUrl: mcpUrl(config) }),
 
       Subscribe: ({ since }) =>
         Stream.unwrap(

@@ -12,10 +12,11 @@ import { Db } from "../db/Db.ts"
 import { Hub } from "./Hub.ts"
 
 /**
- * Who made a change. `github` writes never go back out to GitHub; every other
- * origin queues an outbound sync when the team has a linked repo.
+ * Who made a change: the app (`client`), an agent over MCP (`mcp`), the GitHub
+ * sync, or the server itself. `github` writes never go back out to GitHub;
+ * every other origin queues an outbound sync when the team has a linked repo.
  */
-export type Origin = "client" | "github" | "system"
+export type Origin = "client" | "mcp" | "github" | "system"
 
 export interface TxContext {
   readonly now: number
