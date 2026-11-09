@@ -1,6 +1,6 @@
 import * as stylex from "@stylexjs/stylex"
 import type { StyleXStyles } from "@stylexjs/stylex"
-import { createEffect, createSignal, createUniqueId, For, merge, omit, Show, untrack } from "solid-js"
+import { createEffect, createSignal, createUniqueId, For, merge, omit, onCleanup, Show, untrack } from "solid-js"
 import type { JSX } from "@solidjs/web"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
 import { KeyScope } from "../keys/solid.tsx"
@@ -150,6 +150,7 @@ const s = stylex.create({
     maxWidth: 320,
     maxHeight: 340,
     overflowY: "auto",
+    overscrollBehavior: "contain",
     borderRadius: radius.lg,
     borderWidth: 1,
     borderStyle: "solid",
@@ -160,13 +161,20 @@ const s = stylex.create({
     fontSize: font.md
   },
   pickerSearch: {
+    // Stays in view while the options scroll (the popover pads 4px).
+    position: "sticky",
+    top: -4,
+    zIndex: 1,
+    marginTop: -4,
+    paddingTop: 4,
+    backgroundColor: color.panel,
     display: "flex",
     alignItems: "center",
     gap: 8,
     paddingInline: 8,
     paddingBottom: 4,
     marginBottom: 4,
-    height: 32,
+    height: 36,
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: color.border,
@@ -394,6 +402,8 @@ export const Dialog = (props: {
 
 // ---------------------------------------------------------------- Popover
 
+const MAX_POPOVER_HEIGHT = 340
+
 export type TriggerAttrs = { popovertarget: string; ref: (el: HTMLElement) => void; "aria-expanded": "true" | "false" }
 
 export interface PopoverApi {
@@ -419,18 +429,30 @@ export const Popover = (props: {
   let anchor: HTMLElement | undefined
   let pop: HTMLElement | undefined
 
+  /** Where it fits: below the trigger, else above, else whichever side has more room, with the height capped to fit. */
   const place = () => {
     if (!anchor || !pop) return
     const a = anchor.getBoundingClientRect()
-    const p = pop.getBoundingClientRect()
     const gap = 4
-    let top = a.bottom + gap
-    if (top + p.height > window.innerHeight - 8) top = Math.max(8, a.top - gap - p.height)
-    let left = props.align === "end" ? a.right - p.width : a.left
-    left = Math.min(Math.max(8, left), window.innerWidth - p.width - 8)
+    const margin = 8
+    const below = window.innerHeight - a.bottom - gap - margin
+    const above = a.top - gap - margin
+    pop.style.maxHeight = ""
+    const natural = Math.min(pop.scrollHeight + 2, MAX_POPOVER_HEIGHT)
+    const downward = natural <= below || below >= above
+    const room = Math.min(MAX_POPOVER_HEIGHT, Math.max(120, downward ? below : above))
+    const height = Math.min(natural, room)
+    pop.style.maxHeight = `${room}px`
+    const top = downward ? a.bottom + gap : Math.max(margin, a.top - gap - height)
+    const width = pop.getBoundingClientRect().width
+    let left = props.align === "end" ? a.right - width : a.left
+    left = Math.min(Math.max(margin, left), window.innerWidth - width - margin)
     pop.style.top = `${top}px`
     pop.style.left = `${left}px`
   }
+  // Content renders after the toggle and can grow later (items that load), so place again on every resize.
+  let observer: ResizeObserver | undefined
+  onCleanup(() => observer?.disconnect())
 
   const api: PopoverApi = {
     open: () => {
@@ -461,8 +483,17 @@ export const Popover = (props: {
           setOpen(isOpen)
           if (isOpen) {
             place()
+            observer ??= new ResizeObserver(() => place())
+            // Observe the content, whose size changes as items render or load.
+            for (const child of e.currentTarget.children) observer.observe(child)
+            requestAnimationFrame(() => {
+              if (!pop) return
+              for (const child of pop.children) observer!.observe(child)
+              place()
+            })
             props.onOpen?.(e.currentTarget)
           } else {
+            observer?.disconnect()
             // The content unmounts on close, which would drop focus to <body>. Hand it back to the trigger.
             const active = document.activeElement
             if (!active || active === document.body || pop?.contains(active)) anchor?.focus()
@@ -507,6 +538,16 @@ export const PickerList = <V,>(props: {
 }) => {
   const [query, setQuery] = createSignal("")
   const [active, setActive] = createSignal(0)
+  /** Scroll the active option into view only when the keyboard moved it, not under the mouse. */
+  let keyboardMoved = false
+  let listEl: HTMLDivElement | undefined
+  createEffect(
+    () => active(),
+    (index) => {
+      if (!keyboardMoved || !listEl) return
+      listEl.querySelectorAll("[data-option]")[index]?.scrollIntoView({ block: "nearest" })
+    }
+  )
   const filtered = () => {
     const q = query().trim().toLowerCase()
     return q
@@ -521,8 +562,10 @@ export const PickerList = <V,>(props: {
   }
   return (
     <div
+      ref={(el) => (listEl = el)}
       onKeyDown={(e) => {
         const count = filtered().length
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") keyboardMoved = true
         if (e.key === "ArrowDown") {
           e.preventDefault()
           setActive((i) => (count ? (i + 1) % count : 0))
@@ -540,7 +583,7 @@ export const PickerList = <V,>(props: {
       <div {...stylex.attrs(s.pickerSearch)}>
         <SearchIcon size={14} />
         <input
-          ref={(el) => requestAnimationFrame(() => el.focus())}
+          ref={(el) => requestAnimationFrame(() => el.focus({ preventScroll: true }))}
           value={query()}
           onInput={(e) => {
             setQuery(e.currentTarget.value)
@@ -556,8 +599,12 @@ export const PickerList = <V,>(props: {
           return (
             <button
               type="button"
+              data-option=""
               onClick={() => pick(item())}
-              onMouseMove={() => setActive(index())}
+              onMouseMove={() => {
+                keyboardMoved = false
+                setActive(index())
+              }}
               {...stylex.attrs(s.option, active() === index() && s.optionActive)}
             >
               <Show when={props.multiple}>

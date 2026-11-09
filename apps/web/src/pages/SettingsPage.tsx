@@ -176,7 +176,18 @@ const s = stylex.create({
     borderTopStyle: "solid",
     borderTopColor: color.border
   },
-  projectLink: { display: "inline-flex", alignItems: "center", gap: 4, color: color.fgMuted, fontSize: font.sm, textDecoration: "none" },
+  projectLink: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    color: color.fgMuted,
+    fontSize: font.sm,
+    textDecoration: "none",
+    whiteSpace: "nowrap"
+  },
+  nowrap: { whiteSpace: "nowrap", flexShrink: 0 },
+  repoName: { fontWeight: 600, fontSize: font.md, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 },
+  spacer: { flexGrow: 1 },
   repoRow: {
     display: "flex",
     alignItems: "center",
@@ -525,7 +536,7 @@ const GithubSettings = () => {
                   <div {...stylex.attrs(s.repoRowStack)}>
                     <div {...stylex.attrs(s.repoRow)}>
                       <span {...stylex.attrs(s.dot, r().lastError ? s.bad : s.ok)} />
-                      <a href={`https://github.com/${r().owner}/${r().name}`} target="_blank" rel="noreferrer" {...stylex.attrs(s.repo)}>
+                      <a href={`https://github.com/${r().owner}/${r().name}`} target="_blank" rel="noreferrer" {...stylex.attrs(s.repoName)}>
                         {r().owner}/{r().name}
                       </a>
                       <Show when={project()}>
@@ -536,10 +547,10 @@ const GithubSettings = () => {
                           </a>
                         )}
                       </Show>
-                      <span {...stylex.attrs(s.subtle)}>
+                      <span {...stylex.attrs(s.subtle, s.nowrap)}>
                         {r().lastSyncedAt ? `synced ${formatRelative(r().lastSyncedAt!)}` : "not synced yet"}
                       </span>
-                      <span {...stylex.attrs(s.grow)} />
+                      <span {...stylex.attrs(s.spacer)} />
                       <Button size="sm" variant="ghost" disabled={busy()} onClick={() => run(async () => (await sync.call((c) => c.GithubSyncNow({ repoId: r().id })), `Synced ${r().owner}/${r().name}.`))}>
                         Sync now
                       </Button>
