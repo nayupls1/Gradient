@@ -99,7 +99,8 @@ apps/server       Bun + Effect: SQLite, sync engine, GitHub sync
 apps/web          Solid 2 + StyleX: client sync store, UI kit, views
 ```
 
-See [docs/PLAN.md](docs/PLAN.md) for the architecture and
+See [docs/PLAN.md](docs/PLAN.md) for the architecture,
+[CONTRIBUTING.md](CONTRIBUTING.md) to make a change, and
 [AGENTS.md](AGENTS.md) for conventions.
 
 ## Checks
