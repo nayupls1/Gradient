@@ -200,6 +200,64 @@ describe("GitHub sync", () => {
     expect(await (await post(await sign(payload), "d2")).text()).toBe("Duplicate delivery")
   })
 
+  test("reopening on GitHub moves a done issue back to Todo, while staying open keeps the local state", async () => {
+    ctx.fake.seed({ title: "Flaky", state: "closed", state_reason: "completed" })
+    await link()
+    const t = await team()
+    const all = await states(t.id)
+    const typeOf = async () => {
+      const { stateId } = await issueByGh(1)
+      return all.find((s) => s.id === stateId)!
+    }
+
+    ctx.fake.edit(1, { state: "open" })
+    await syncNow()
+    expect((await typeOf()).name).toBe("Todo")
+
+    // In Review is still "open" on GitHub: no PATCH, and a later GitHub edit keeps it.
+    const review = all.find((s) => s.name === "In Review")!
+    await mutate([{ _tag: "IssueUpdate", id: (await issueByGh(1)).id, patch: { stateId: review.id } }])
+    await syncNow()
+    expect(ctx.fake.writes()).toHaveLength(0)
+    ctx.fake.edit(1, { title: "Flaky test" })
+    await syncNow()
+    expect((await typeOf()).name).toBe("In Review")
+  })
+
+  test("a late event older than what we already have is ignored", async () => {
+    ctx.fake.seed({ title: "Old title" })
+    await link()
+    const before = { ...ctx.fake.issues[0]!, html_url: "https://github.com/acme/widgets/issues/1" }
+    ctx.fake.edit(1, { title: "New title" })
+    await syncNow()
+
+    // A delayed webhook for the earlier version arrives now.
+    const repo = await ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.githubRepos).pipe(Effect.map((r) => r[0]!)))
+    const outcome = await ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.ingest(repo, before)))
+    expect(outcome).toBe("unchanged")
+    expect((await issueByGh(1)).title).toBe("New title")
+  })
+
+  test("a push that fails stays queued and goes out on retry", async () => {
+    ctx.fake.seed({ title: "Before" })
+    await link()
+    const issue = await issueByGh(1)
+    ctx.fake.failNextWrites(1)
+    await mutate([{ _tag: "IssueUpdate", id: issue.id, patch: { title: "After" } }])
+    await syncNow()
+
+    const queued = () =>
+      ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.sql`SELECT attempts FROM github_outbox WHERE issue_id = ${issue.id}`))
+    expect(ctx.fake.issues[0]!.title).toBe("Before")
+    expect(await queued()).toEqual([{ attempts: 1 }])
+
+    // Skip the backoff wait instead of sleeping in the test.
+    await ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.sql`UPDATE github_outbox SET next_attempt_at = 0`))
+    await syncNow()
+    expect(ctx.fake.issues[0]!.title).toBe("After")
+    expect(await queued()).toEqual([])
+  })
+
   test("verifySignature matches GitHub's documented example", async () => {
     // https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
     const header = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"

@@ -63,7 +63,8 @@ apps/server/src
   http/guard.ts        local-only guard: refuses foreign browser origins and rebound hosts
   seed.ts, app.ts, main.ts
 apps/web/src
-  sync/engine.ts       client store: base + pending transactions, reconnect, resend
+  sync/replica.ts      pure client copy: base + pending transactions, confirm/rollback (unit tested)
+  sync/engine.ts       network loop around the replica, mirrored into a Solid store
   keys/                command registry: chords, sequences, scopes, remaps (core.ts), Solid hooks
   theme/               tokens (StyleX vars), palettes, mode + palette switching
   ui/                  kit (Button, Input, Dialog, Popover, Picker, Avatar, Toaster), icons

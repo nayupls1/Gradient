@@ -66,6 +66,16 @@ test("subscribe replays the log from a cursor, then streams live commits in orde
   )
 })
 
+test("a cursor ahead of the server (its database was reset) gets told to bootstrap again", async () => {
+  await run((c) =>
+    Effect.gen(function*() {
+      const snap = yield* c.Bootstrap()
+      const events = yield* c.Subscribe({ since: snap.lastSyncId + 1000 }).pipe(Stream.take(1), Stream.runCollect)
+      expect((events as ReadonlyArray<SyncEvent>)[0]!._tag).toBe("ResetRequired")
+    })
+  )
+})
+
 test("mutate is idempotent per clientTxId and rejects invalid input", async () => {
   await run((c) =>
     Effect.gen(function*() {

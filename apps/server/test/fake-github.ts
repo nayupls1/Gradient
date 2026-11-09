@@ -15,6 +15,7 @@ export interface FakeIssue {
 export const makeFakeGithub = (repo = { owner: "acme", name: "widgets" }, port = 0) => {
   const issues: Array<FakeIssue> = []
   const requests: Array<{ method: string; path: string; body: any }> = []
+  let failWrites = 0
   let clock = Date.parse("2026-01-01T00:00:00Z")
   const tick = () => {
     clock += 1000
@@ -46,6 +47,10 @@ export const makeFakeGithub = (repo = { owner: "acme", name: "widgets" }, port =
       const url = new URL(req.url)
       const body = req.method === "GET" ? undefined : await req.json()
       requests.push({ method: req.method, path: url.pathname, body })
+      if (req.method !== "GET" && failWrites > 0) {
+        failWrites--
+        return new Response("upstream error", { status: 502 })
+      }
       if (url.pathname === "/user") return Response.json({ login: "octo", avatar_url: "https://avatars/octo" })
       const base = `/repos/${repo.owner}/${repo.name}`
       if (url.pathname === base) return Response.json({ full_name: `${repo.owner}/${repo.name}` })
@@ -113,6 +118,10 @@ export const makeFakeGithub = (repo = { owner: "acme", name: "widgets" }, port =
       apply(issues.find((i) => i.number === number)!, body)
     },
     writes: () => requests.filter((r) => r.method !== "GET"),
+    /** Make the next `n` writes fail with a 502, like a GitHub outage. */
+    failNextWrites(n: number) {
+      failWrites = n
+    },
     stop: () => server.stop(true)
   }
 }

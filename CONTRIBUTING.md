@@ -30,7 +30,7 @@ CI runs these on every pull request. Run them before you push:
 
 ```bash
 bun run typecheck    # tsc in every package
-bun test             # domain, server (real servers on random ports), keymap
+bun test             # domain, server (real servers on random ports), client replica, keymap
 bun run --filter '@gradient/web' build
 ```
 
@@ -48,8 +48,10 @@ Server tests never touch GitHub: they use `apps/server/test/fake-github.ts`.
 | A color | A token in `theme/tokens.stylex.ts`, set in every palette for both light and dark |
 | A dependency | Only when it carries real weight. Say why in the commit. |
 
-Add a test with behavior changes: the sync engine, GitHub mapping, MCP tools
-and the keymap all have suites to extend. For UI changes, include a screenshot
+Add a test with behavior changes, aimed at what would break silently: the
+sync protocol, the client replica (`apps/web/src/sync/replica.ts`), GitHub sync,
+MCP tools and the keymap all have suites to extend. Skip tests that only
+restate the code. For UI changes, include a screenshot
 (light and dark) in the pull request.
 
 ## Commits and pull requests

@@ -18,9 +18,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.4
+      # Bun's official installer instead of a third-party action, so a
+      # "GitHub actions only" policy does not stop the workflow from starting.
+      - name: Install Bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
       - name: Install
         run: bun install --frozen-lockfile
       - name: Typecheck

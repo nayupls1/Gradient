@@ -1,7 +1,4 @@
 import {
-  applyIssueMutation,
-  applyLabelMutation,
-  type Delta,
   type GithubRepo,
   GradientRpcs,
   type Issue,
@@ -9,7 +6,6 @@ import {
   type Mutation,
   type Snapshot,
   type Team,
-  touchedIssueId,
   type User,
   uuidv7,
   type WorkflowState
@@ -18,6 +14,7 @@ import { Cause, Effect, Layer, ManagedRuntime, Queue, Schedule, Stream } from "e
 import { RpcClient, RpcSerialization } from "effect/rpc"
 import { Socket } from "effect/socket"
 import { createStore, reconcile } from "solid-js"
+import { type Changes, createReplica, type PendingTx } from "./replica.ts"
 
 export type ConnectionState = "connecting" | "online" | "offline"
 
@@ -34,34 +31,6 @@ export interface SyncState {
   errors: Array<{ id: string; message: string }>
 }
 
-interface PendingTx {
-  readonly clientTxId: string
-  readonly mutations: ReadonlyArray<Mutation>
-  /** Set when the server accepted it; the tx drops once our log reaches this id. */
-  confirmedAt: number | null
-}
-
-type Tables = Pick<SyncState, "teams" | "users" | "workflowStates" | "labels" | "issues" | "githubRepos">
-type TableName = keyof Tables
-
-const emptyTables = (): { [K in TableName]: Map<string, Tables[K][string]> } => ({
-  teams: new Map(),
-  users: new Map(),
-  workflowStates: new Map(),
-  labels: new Map(),
-  issues: new Map(),
-  githubRepos: new Map()
-})
-
-const tableOf = {
-  team: "teams",
-  user: "users",
-  workflowState: "workflowStates",
-  label: "labels",
-  issue: "issues",
-  githubRepo: "githubRepos"
-} as const satisfies Record<Delta extends { model: infer M } ? M & string : never, TableName> & Record<string, TableName>
-
 const rpcUrl = () => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/rpc`
 
 const ProtocolLive = RpcClient.layerProtocolSocket({ retryTransientErrors: true }).pipe(
@@ -71,12 +40,8 @@ const ProtocolLive = RpcClient.layerProtocolSocket({ retryTransientErrors: true 
 )
 
 /**
- * The client half of the sync engine.
- *
- * `base` holds what the server has confirmed. `pending` holds local
- * transactions the server has not confirmed yet. The reactive `state` is
- * always base with pending applied on top, so the UI updates instantly and
- * rolls back cleanly when the server rejects a change.
+ * The client half of the sync engine: the network loop around a `Replica`
+ * (see replica.ts), mirrored into a Solid store for the UI.
  */
 export const createSyncEngine = () => {
   const [state, setState] = createStore<SyncState>({
@@ -92,108 +57,33 @@ export const createSyncEngine = () => {
     errors: []
   })
 
-  let base = emptyTables()
-  let lastSyncId = 0
-  // Plain copies of store fields the engine itself reads, so it never reads the store outside a tracking scope.
-  let ready = false
-  let viewerId = ""
-  let pending: Array<PendingTx> = []
-
+  const replica = createReplica()
   const runtime = ManagedRuntime.make(ProtocolLive)
   const outbox = Effect.runSync(Queue.unbounded<PendingTx>())
 
-  /** Recompute the visible value of the given rows from base + pending. */
-  const recompute = (table: TableName, ids: Iterable<string>) => {
-    const now = Date.now()
-    const ctx = { now, actorId: viewerId }
+  /** Copy the replica's visible value of each changed row into the reactive store. */
+  const write = (changes: Changes) =>
     setState((s) => {
-      for (const id of ids) {
-        let value: any = base[table].get(id)
-        if (table === "issues") {
-          for (const tx of pending) {
-            for (const m of tx.mutations) {
-              if (touchedIssueId(m) === id) value = applyIssueMutation(value ?? undefined, m, ctx)
-            }
-          }
-        } else if (table === "labels") {
-          for (const tx of pending) for (const m of tx.mutations) if (m._tag === "LabelCreate" && m.id === id) value ??= applyLabelMutation(m)
-        }
+      for (const [table, ids] of changes) {
         const target = s[table] as Record<string, any>
-        if (value === null || value === undefined) delete target[id]
-        else if (target[id]) reconcile(value, "id")(target[id])
-        else target[id] = value
+        for (const id of ids) {
+          const value = replica.view(table, id)
+          if (value === undefined) delete target[id]
+          else if (target[id]) reconcile(value, "id")(target[id])
+          else target[id] = value
+        }
       }
     })
-  }
-
-  const affected = (txs: ReadonlyArray<PendingTx>) => {
-    const issues = new Set<string>()
-    const labels = new Set<string>()
-    for (const tx of txs) {
-      for (const m of tx.mutations) {
-        const id = touchedIssueId(m)
-        if (id) issues.add(id)
-        if (m._tag === "LabelCreate") labels.add(m.id)
-      }
-    }
-    return { issues, labels }
-  }
 
   const applySnapshot = (snap: Snapshot) => {
-    base = emptyTables()
-    for (const t of snap.teams) base.teams.set(t.id, t)
-    for (const u of snap.users) base.users.set(u.id, u)
-    for (const w of snap.workflowStates) base.workflowStates.set(w.id, w)
-    for (const l of snap.labels) base.labels.set(l.id, l)
-    for (const i of snap.issues) base.issues.set(i.id, i)
-    for (const r of snap.githubRepos) base.githubRepos.set(r.id, r)
-    lastSyncId = snap.lastSyncId
-    viewerId = snap.viewerId
-    ready = true
+    const changes = replica.applySnapshot(snap)
     setState((s) => {
       s.viewerId = snap.viewerId
-      for (const table of Object.keys(base) as Array<TableName>) {
-        ;(s as any)[table] = Object.fromEntries(base[table])
-      }
     })
-    const { issues, labels } = affected(pending)
-    recompute("issues", issues)
-    recompute("labels", labels)
+    write(changes)
     setState((s) => {
       s.ready = true
     })
-  }
-
-  const applyDeltas = (deltas: ReadonlyArray<Delta>) => {
-    const touched = new Map<TableName, Set<string>>()
-    const mark = (table: TableName, id: string) => {
-      let set = touched.get(table)
-      if (!set) touched.set(table, (set = new Set()))
-      set.add(id)
-    }
-    const seenTx = new Set<string>()
-    for (const d of deltas) {
-      if (d.syncId <= lastSyncId) continue
-      lastSyncId = d.syncId
-      if (d.clientTxId) seenTx.add(d.clientTxId)
-      if (d._tag === "Upsert") {
-        const table = tableOf[d.entity.model]
-        base[table].set(d.entity.value.id, d.entity.value as any)
-        mark(table, d.entity.value.id)
-      } else {
-        const table = tableOf[d.model]
-        base[table].delete(d.id)
-        mark(table, d.id)
-      }
-    }
-    const done = pending.filter((tx) => seenTx.has(tx.clientTxId) || (tx.confirmedAt !== null && tx.confirmedAt <= lastSyncId))
-    if (done.length) {
-      pending = pending.filter((tx) => !done.includes(tx))
-      const { issues, labels } = affected(done)
-      for (const id of issues) mark("issues", id)
-      for (const id of labels) mark("labels", id)
-    }
-    for (const [table, ids] of touched) recompute(table, ids)
   }
 
   const reportError = (message: string) => {
@@ -219,12 +109,12 @@ export const createSyncEngine = () => {
 
     // Keep one subscription alive; on failure, back off and resume from lastSyncId.
     const subscribe = Effect.gen(function*() {
-      if (!ready) applySnapshot(yield* client.Bootstrap())
+      if (!replica.ready) applySnapshot(yield* client.Bootstrap())
       setConnection("online")
-      yield* client.Subscribe({ since: lastSyncId }).pipe(
+      yield* client.Subscribe({ since: replica.lastSyncId }).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function*() {
-            if (event._tag === "Deltas") applyDeltas(event.deltas)
+            if (event._tag === "Deltas") write(replica.applyDeltas(event.deltas))
             else applySnapshot(yield* client.Bootstrap())
           })
         )
@@ -239,18 +129,10 @@ export const createSyncEngine = () => {
     const send = Effect.gen(function*() {
       const tx = yield* Queue.take(outbox)
       yield* client.Mutate({ clientTxId: tx.clientTxId, mutations: tx.mutations }).pipe(
-        Effect.tap(({ syncId }) =>
-          Effect.sync(() => {
-            tx.confirmedAt = syncId
-            applyDeltas([])
-          })
-        ),
+        Effect.tap(({ syncId }) => Effect.sync(() => write(replica.confirm(tx, syncId)))),
         Effect.catchTag("MutationRejected", (e) =>
           Effect.sync(() => {
-            pending = pending.filter((p) => p !== tx)
-            const { issues, labels } = affected([tx])
-            recompute("issues", issues)
-            recompute("labels", labels)
+            write(replica.reject(tx))
             reportError(e.message)
           })
         ),
@@ -266,11 +148,8 @@ export const createSyncEngine = () => {
 
   /** Apply mutations locally right away, then send them to the server. */
   const mutate = (...mutations: ReadonlyArray<Mutation>) => {
-    const tx: PendingTx = { clientTxId: uuidv7(), mutations, confirmedAt: null }
-    pending.push(tx)
-    const { issues, labels } = affected([tx])
-    recompute("issues", issues)
-    recompute("labels", labels)
+    const { tx, changes } = replica.addPending(uuidv7(), mutations)
+    write(changes)
     Queue.offerUnsafe(outbox, tx)
     return tx.clientTxId
   }
