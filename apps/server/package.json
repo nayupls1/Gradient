@@ -1,0 +1,16 @@
+{
+  "name": "@gradient/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.1.2",
+    "@effect/sql-sqlite-bun": "4.1.2",
+    "@gradient/domain": "workspace:*",
+    "effect": "4.1.2"
+  }
+}

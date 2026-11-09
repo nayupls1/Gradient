@@ -1,0 +1,70 @@
+import { Effect, Option, Schema } from "effect"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { ServerConfig } from "../config.ts"
+import { Db } from "../db/Db.ts"
+import { GhIssue } from "./GithubClient.ts"
+import { GithubSync } from "./GithubSync.ts"
+
+const IssuesEvent = Schema.Struct({
+  action: Schema.String,
+  issue: GhIssue,
+  repository: Schema.Struct({ name: Schema.String, owner: Schema.Struct({ login: Schema.String }) })
+})
+
+const encoder = new TextEncoder()
+
+/** Constant-time check of GitHub's `X-Hub-Signature-256` header. */
+export const verifySignature = async (secret: string, body: string, header: string | undefined) => {
+  if (!header?.startsWith("sha256=")) return false
+  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign"
+  ])
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(body)))
+  const expected = Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("")
+  const given = header.slice("sha256=".length)
+  if (given.length !== expected.length) return false
+  let diff = 0
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ given.charCodeAt(i)
+  return diff === 0
+}
+
+/**
+ * Receives GitHub webhooks. Locally, forward them with
+ * `gh webhook forward --repo owner/name --events issues --url http://localhost:4100/webhooks/github --secret $GITHUB_WEBHOOK_SECRET`.
+ */
+export const WebhookRoute = HttpRouter.add(
+  "POST",
+  "/webhooks/github",
+  Effect.gen(function*() {
+    const config = yield* ServerConfig
+    const secret = Option.getOrNull(config.github.webhookSecret)
+    if (!secret) return HttpServerResponse.text("Webhooks are not configured (set GITHUB_WEBHOOK_SECRET)", { status: 503 })
+    const request = yield* HttpServerRequest.HttpServerRequest
+    const body = yield* request.text
+    const valid = yield* Effect.promise(() => verifySignature(secret, body, request.headers["x-hub-signature-256"]))
+    if (!valid) return HttpServerResponse.text("Bad signature", { status: 401 })
+
+    const db = yield* Db
+    const delivery = request.headers["x-github-delivery"]
+    if (delivery) {
+      const inserted = yield* db.sql`INSERT OR IGNORE INTO github_delivery (delivery_id, received_at)
+                                     VALUES (${delivery}, ${Date.now()}) RETURNING delivery_id`
+      if (inserted.length === 0) return HttpServerResponse.text("Duplicate delivery", { status: 200 })
+    }
+
+    const event = request.headers["x-github-event"]
+    if (event !== "issues") return HttpServerResponse.text("Ignored", { status: 202 })
+    const payload = yield* Schema.decodeUnknownEffect(IssuesEvent)(JSON.parse(body))
+    const repo = yield* db.repoByName(payload.repository.owner.login, payload.repository.name)
+    if (!repo) return HttpServerResponse.text("Repository not linked", { status: 202 })
+    const sync = yield* GithubSync
+    const outcome = yield* sync.ingest(repo, payload.issue)
+    return HttpServerResponse.text(outcome, { status: 202 })
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logError("Webhook failed", cause).pipe(
+        Effect.as(HttpServerResponse.text("Webhook failed", { status: 400 }))
+      )
+    )
+  )
+)
