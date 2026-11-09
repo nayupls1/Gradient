@@ -1,9 +1,9 @@
-import { type GithubAvailableRepo, PROJECT_COLORS, uuidv7 } from "@gradient/domain"
+import { type GithubAvailableRepo, isValidProjectKey, PROJECT_COLORS, uuidv7 } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createSignal, For, Show, useContext } from "solid-js"
 import { useCommands } from "../keys/solid.tsx"
-import { firstTeam, projectHref, teamProjects } from "../lib/select.ts"
+import { firstTeam, projectHref, suggestProjectKey, teamProjects } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
 import { CheckIcon, ChevronDownIcon, GithubIcon, ProjectIcon, XIcon } from "../ui/icons.tsx"
 import { Button, Dialog, Input } from "../ui/kit.tsx"
@@ -54,7 +54,9 @@ const s = stylex.create({
   grow: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   muted: { color: color.fgMuted },
   error: { color: color.danger, fontSize: font.sm },
-  footer: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }
+  footer: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 },
+  keyRow: { display: "flex", alignItems: "center", gap: 10 },
+  keyInput: { width: 90, flexShrink: 0, fontFamily: font.mono, letterSpacing: "0.06em", textTransform: "uppercase" }
 })
 
 export type ProjectDialogMode = { kind: "create" } | { kind: "edit"; projectId: string }
@@ -70,6 +72,9 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
   const editing = () => (props.mode?.kind === "edit" ? sync.state.projects[props.mode.projectId] : undefined)
 
   const [name, setName] = createSignal("")
+  const [key, setKey] = createSignal("")
+  /** The key follows the name until the user edits it. */
+  const [keyEdited, setKeyEdited] = createSignal(false)
   const [colorValue, setColor] = createSignal(PROJECT_COLORS[0]!)
   const [repo, setRepo] = createSignal<GithubAvailableRepo | null>(null)
   const [busy, setBusy] = createSignal(false)
@@ -83,6 +88,8 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
       const project = mode.kind === "edit" ? sync.state.projects[mode.projectId] : undefined
       const count = team() ? teamProjects(sync.state, team()!.id).length : 0
       setName(project?.name ?? "")
+      setKey(project?.key ?? "")
+      setKeyEdited(project !== undefined)
       setColor(project?.color ?? PROJECT_COLORS[count % PROJECT_COLORS.length]!)
       setRepo(null)
       setError(null)
@@ -90,21 +97,43 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
     }
   )
 
+  /** What the key will be: the user's, or one derived from the name (or the picked repo's). */
+  const effectiveKey = () => {
+    const t = team()
+    if (keyEdited()) return key().trim().toUpperCase()
+    const source = name().trim() || repo()?.name || ""
+    return t && source ? suggestProjectKey(sync.state, t.id, source, editing()?.id) : ""
+  }
+  const keyProblem = () => {
+    const k = effectiveKey()
+    if (!k) return null
+    if (!isValidProjectKey(k)) return "2–5 capital letters or digits, starting with a letter."
+    const t = team()
+    if (t && t.key.toUpperCase() === k) return `${k} is the team's own key.`
+    const clash = Object.values(sync.state.projects).find((p) => p.teamId === t?.id && p.key === k && p.id !== editing()?.id)
+    return clash ? `${k} is used by ${clash.name}.` : null
+  }
+
   const submit = async () => {
     const t = team()
     if (!t || busy()) return
     const project = editing()
     const trimmed = name().trim()
+    if (keyProblem()) return setError(`Key: ${keyProblem()}`)
     if (project) {
       if (!trimmed) return setError("A project needs a name.")
-      sync.mutate({ _tag: "ProjectUpdate", id: project.id, patch: { name: trimmed, color: colorValue() } })
+      sync.mutate({
+        _tag: "ProjectUpdate",
+        id: project.id,
+        patch: { name: trimmed, color: colorValue(), ...(effectiveKey() !== project.key ? { key: effectiveKey() } : {}) }
+      })
       return props.onClose()
     }
     const picked = repo()
     if (!picked) {
       if (!trimmed) return setError("A project needs a name.")
       const id = uuidv7()
-      sync.mutate({ _tag: "ProjectCreate", id, teamId: t.id, name: trimmed, color: colorValue() })
+      sync.mutate({ _tag: "ProjectCreate", id, teamId: t.id, key: effectiveKey(), name: trimmed, color: colorValue() })
       props.onClose()
       return navigate(projectHref(id))
     }
@@ -116,6 +145,7 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
         teamId: t.id,
         projectId: null,
         ...(trimmed ? { projectName: trimmed } : {}),
+        ...(keyEdited() ? { projectKey: effectiveKey() } : {}),
         owner: picked.owner,
         name: picked.name,
         pushExisting: false
@@ -154,6 +184,24 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
           />
+        </label>
+        <label {...stylex.attrs(s.field)}>
+          <span {...stylex.attrs(s.label)}>Key</span>
+          <div {...stylex.attrs(s.keyRow)}>
+            <Input
+              placeholder="TES"
+              maxlength={5}
+              value={effectiveKey()}
+              onInput={(e) => {
+                setKeyEdited(true)
+                setKey(e.currentTarget.value.toUpperCase())
+              }}
+              sx={s.keyInput}
+            />
+            <span {...stylex.attrs(s.hint)}>
+              {keyProblem() ?? `Issues read ${effectiveKey() || "KEY"}-12.`}
+            </span>
+          </div>
         </label>
         <div {...stylex.attrs(s.field)}>
           <span {...stylex.attrs(s.label)}>Color</span>

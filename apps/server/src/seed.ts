@@ -83,10 +83,10 @@ export const seed = Effect.gen(function*() {
 
       // Two sample projects, so the sidebar shows how issues are grouped.
       const projectIds = new Map<string, string>()
-      for (const [i, name] of ["Sync engine", "App"].entries()) {
+      for (const [i, [name, key]] of [["Sync engine", "SYN"], ["App", "APP"]].entries()) {
         const id = Bun.randomUUIDv7()
-        projectIds.set(name, id)
-        yield* db.putProject({ id, teamId, name, color: PROJECT_COLORS[i]!, createdAt: tx.now })
+        projectIds.set(name!, id)
+        yield* db.putProject({ id, teamId, key: key!, name: name!, color: PROJECT_COLORS[i]!, createdAt: tx.now })
         tx.touch("project", id)
       }
 

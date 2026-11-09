@@ -35,10 +35,14 @@ export const Mutation = Schema.TaggedUnion({
   IssueUnarchive: { id: Schema.String },
   IssueDelete: { id: Schema.String },
   LabelCreate: { id: Schema.String, teamId: Schema.String, name: Schema.String, color: Schema.String },
-  ProjectCreate: { id: Schema.String, teamId: Schema.String, name: Schema.String, color: Schema.String },
+  ProjectCreate: { id: Schema.String, teamId: Schema.String, key: Schema.String, name: Schema.String, color: Schema.String },
   ProjectUpdate: {
     id: Schema.String,
-    patch: Schema.Struct({ name: Schema.optionalKey(Schema.String), color: Schema.optionalKey(Schema.String) })
+    patch: Schema.Struct({
+      name: Schema.optionalKey(Schema.String),
+      key: Schema.optionalKey(Schema.String),
+      color: Schema.optionalKey(Schema.String)
+    })
   },
   /** Its issues stay, without a project. A project with a linked repository must be unlinked first. */
   ProjectDelete: { id: Schema.String }
@@ -120,11 +124,12 @@ export const applyProjectMutation = (
 ): Project | null | undefined => {
   switch (m._tag) {
     case "ProjectCreate":
-      return { id: m.id, teamId: m.teamId, name: m.name, color: m.color, createdAt: ctx.now }
+      return { id: m.id, teamId: m.teamId, key: m.key, name: m.name, color: m.color, createdAt: ctx.now }
     case "ProjectUpdate":
       return current && {
         ...current,
         ...(m.patch.name !== undefined ? { name: m.patch.name } : {}),
+        ...(m.patch.key !== undefined ? { key: m.patch.key } : {}),
         ...(m.patch.color !== undefined ? { color: m.patch.color } : {})
       }
     case "ProjectDelete":

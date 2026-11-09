@@ -100,11 +100,16 @@ describe("MCP", () => {
 
     const created = await call("create_issue", { title: "Teach agents about projects", project: "Agents" })
     expect(created.data.project).toBe("Agents")
+    // The identifier carries the project's key; the team key with the same number still finds it.
+    expect(created.data.id).toMatch(/^AGE-\d+$/)
+    const number = created.data.id.split("-")[1]
+    expect((await call("get_issue", { id: `GRD-${number}` })).data.title).toBe("Teach agents about projects")
     const listed = await call("list_issues", { project: "agents" })
     expect(listed.data.issues.map((i: any) => i.title)).toEqual(["Teach agents about projects"])
 
     const moved = await call("update_issue", { id: created.data.id, project: "none" })
     expect(moved.data.project).toBeNull()
+    expect(moved.data.id).toBe(`GRD-${number}`)
     const unknown = await call("list_issues", { project: "Nope" })
     expect(unknown.isError).toBe(true)
     expect(unknown.text).toContain("Agents")

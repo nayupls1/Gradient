@@ -7,7 +7,9 @@ import { Tool, Toolkit } from "effect/ai"
  * Call describe_workspace first to learn the valid names.
  */
 
-const IssueRef = Schema.String.annotate({ description: "Issue identifier, e.g. \"GRD-12\"." })
+const IssueRef = Schema.String.annotate({
+  description: "Issue identifier: project key (or team key) and number, e.g. \"TES-12\" or \"GRD-12\"."
+})
 const StateName = Schema.String.annotate({
   description: "Workflow state name (e.g. \"In Progress\") or type: backlog, unstarted, started, completed, canceled."
 })
@@ -59,6 +61,7 @@ export const DescribeWorkspace = Tool.make("describe_workspace", {
     people: Schema.Array(Schema.Struct({ name: Schema.String, githubLogin: Schema.NullOr(Schema.String) })),
     projects: Schema.Array(Schema.Struct({
       name: Schema.String,
+      key: Schema.String,
       githubRepo: Schema.NullOr(Schema.String),
       openIssues: Schema.Int
     })),
@@ -187,6 +190,9 @@ export const CreateProject = Tool.make("create_project", {
     "Create a project to group issues. Pass github_repo (\"owner/name\") to link a repository: its issues are imported into the project and sync both ways.",
   parameters: Schema.Struct({
     name: Schema.optionalKey(Schema.String.annotate({ description: "Defaults to the repository name." })),
+    key: Schema.optionalKey(Schema.String.annotate({
+      description: "Identifier prefix, 2–5 capitals (\"WEB\" → WEB-12). Defaults to the first three letters of the name."
+    })),
     github_repo: Schema.optionalKey(Schema.String.annotate({ description: "\"owner/name\" of a GitHub repository." }))
   }),
   success: Schema.Struct({ name: Schema.String, github_repo: Schema.NullOr(Schema.String), imported: Schema.Int }),

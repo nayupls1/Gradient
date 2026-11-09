@@ -53,10 +53,29 @@ test("0003 moves a repository linked before projects into a project of its own, 
 
   expect(after.projects).toHaveLength(1)
   const project = after.projects[0]!
-  expect(project).toMatchObject({ team_id: "t1", name: "widgets" })
+  expect(project).toMatchObject({ team_id: "t1", name: "widgets", key: "WID" })
   expect(after.repo!.project_id).toBe(project.id)
   expect(after.issues).toEqual([
     { id: "local", project_id: null },
     { id: "synced", project_id: project.id }
   ])
+})
+
+test("0004 gives existing projects unique keys from their names, never the team key", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gradient-migrate-"))
+  dirs.push(dir)
+  const file = join(dir, "projects.db")
+  await withDb(file, ["0001_init", "0002_github_auth", "0003_projects"], Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`INSERT INTO team (id, key, name, issue_counter) VALUES ('t1', 'GRA', 'Grammar', 0)`
+    let at = 1
+    for (const name of ["Issue project", "issues", "Grand plan", "x"]) {
+      yield* sql`INSERT INTO project (id, team_id, name, color, created_at) VALUES (${name}, 't1', ${name}, '#000', ${at++})`
+    }
+  }))
+  const keys = await withDb(file, Object.keys(migrations) as Array<keyof typeof migrations>, Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    return (yield* sql`SELECT name, key FROM project ORDER BY created_at`).map((r) => [r.name, r.key])
+  }))
+  expect(keys).toEqual([["Issue project", "ISS"], ["issues", "IS2"], ["Grand plan", "GR2"], ["x", "PRJ"]])
 })

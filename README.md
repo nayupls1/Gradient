@@ -64,6 +64,12 @@ bun run --filter '@gradient/server' start   # http://localhost:4100
    New issues go to the repository of their project; issues without a project
    stay local. Moving an issue into a linked project creates it there.
 
+Issue identifiers carry their project's key: the first three letters of its
+name ("test" → TES-12, "Issue project" → ISS-12), editable in the project's
+settings. Issues without a project use the team key (GRD-12). Numbers are
+shared across the team, so an identifier still resolves after the issue moves
+to another project or a key changes: TES-12 and GRD-12 open the same issue.
+
 From then on, title, description, open/closed (with reason), labels and the
 first assignee sync both ways. Priority and order stay in Gradient.
 

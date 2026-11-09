@@ -1,4 +1,14 @@
-import { identifier, type Issue, keyBetween, type Mutation, type Priority, PROJECT_COLORS, uuidv7 } from "@gradient/domain"
+import {
+  identifier,
+  type Issue,
+  keyBetween,
+  type Mutation,
+  parseIdentifier,
+  type Priority,
+  PROJECT_COLORS,
+  projectKeyFor,
+  uuidv7
+} from "@gradient/domain"
 import { Effect, Layer } from "effect"
 import { McpProtocol, McpServer } from "effect/ai"
 import { ServerConfig } from "../config.ts"
@@ -16,14 +26,14 @@ const iso = (ms: number) => new Date(ms).toISOString()
 export const mcpUrl = (config: { host: string; port: number }) =>
   `http://${config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host}:${config.port}/mcp`
 
-const INSTRUCTIONS = `Gradient is the user's issue tracker. Issues have identifiers like GRD-12.
+const INSTRUCTIONS = `Gradient is the user's issue tracker. Issues have identifiers like TES-12: the key of their project (or of the team, GRD, when they have none) and a number.
 Call describe_workspace once to learn workflow states, labels, people and projects, then use those names.
 Put issues in the project they belong to; a project with a linked repo syncs its issues to GitHub.
 Writes show up live in the user's app and sync to GitHub when a repo is linked, so keep titles short and specific, and put detail in the description (markdown).`
 
 const SKILL = `---
 name: gradient
-description: Track work in Gradient, the user's issue tracker. Use when planning, starting, finishing or reporting on work, or when the user mentions an issue like GRD-12.
+description: Track work in Gradient, the user's issue tracker. Use when planning, starting, finishing or reporting on work, or when the user mentions an issue like GRD-12 or TES-4.
 ---
 
 # Working with Gradient
@@ -94,18 +104,21 @@ const ToolHandlers = GradientToolkit.toLayer(
       const repo = ws.repos.find((r) => r.projectId === projectId)
       return repo ? `${repo.owner}/${repo.name}` : null
     }
+    /** "TES-12" or "GRD-12": any key of the team or its projects, then the team-wide number. */
     const findIssue = (ws: Workspace, ref: string) =>
       Effect.gen(function*() {
-        const match = ref.trim().match(/^([a-z]+)-(\d+)$/i)
+        const parsed = parseIdentifier(ref)
+        const keys = new Set([ws.team.key.toUpperCase(), ...ws.projects.map((p) => p.key)])
         const issues = yield* db.issuesForTeam(ws.team.id).pipe(Effect.orDie)
-        const issue = match && match[1]!.toLowerCase() === ws.team.key.toLowerCase()
-          ? issues.find((i) => i.number === Number(match[2]))
+        const issue = parsed && keys.has(parsed.key)
+          ? issues.find((i) => i.number === parsed.number)
           : issues.find((i) => i.id === ref)
-        return issue ?? (yield* fail(`No issue "${ref}". Identifiers look like ${ws.team.key}-12.`))
+        const example = ws.projects[0] ? `${ws.projects[0].key}-12 or ${ws.team.key}-12` : `${ws.team.key}-12`
+        return issue ?? (yield* fail(`No issue "${ref}". Identifiers look like ${example}.`))
       })
 
     const summary = (ws: Workspace, issue: Issue): IssueSummary => ({
-      id: identifier(ws.team, issue),
+      id: identifier(ws.team, issue, ws.projects.find((p) => p.id === issue.projectId)),
       title: issue.title,
       state: ws.states.find((s) => s.id === issue.stateId)?.name ?? "?",
       priority: PRIORITY_NAMES[issue.priority],
@@ -121,7 +134,7 @@ const ToolHandlers = GradientToolkit.toLayer(
       creator: ws.users.find((u) => u.id === issue.creatorId)?.name ?? "unknown",
       created: iso(issue.createdAt),
       archived: issue.archivedAt !== null,
-      url: `http://${config.host}:${config.port}/issue/${identifier(ws.team, issue)}`
+      url: `http://${config.host}:${config.port}/issue/${identifier(ws.team, issue, ws.projects.find((p) => p.id === issue.projectId))}`
     })
 
     const apply = (ws: Workspace, list: ReadonlyArray<Mutation>) =>
@@ -153,6 +166,7 @@ const ToolHandlers = GradientToolkit.toLayer(
           people: ws.users.map((u) => ({ name: u.name, githubLogin: u.githubLogin })),
           projects: ws.projects.map((p) => ({
             name: p.name,
+            key: p.key,
             githubRepo: repoName(ws, p.id),
             openIssues: issues.filter((i) => i.projectId === p.id && i.archivedAt === null && isOpen(ws, i)).length
           })),
@@ -295,6 +309,7 @@ const ToolHandlers = GradientToolkit.toLayer(
             teamId: ws.team.id,
             projectId: null,
             projectName: input.name,
+            projectKey: input.key,
             owner,
             name,
             pushExisting: false
@@ -307,6 +322,7 @@ const ToolHandlers = GradientToolkit.toLayer(
           _tag: "ProjectCreate",
           id: uuidv7(),
           teamId: ws.team.id,
+          key: input.key?.trim().toUpperCase() || projectKeyFor(input.name, [ws.team.key, ...ws.projects.map((p) => p.key)]),
           name: input.name.trim(),
           color: PROJECT_COLORS[ws.projects.length % PROJECT_COLORS.length]!
         }])

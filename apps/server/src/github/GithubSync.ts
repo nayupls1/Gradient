@@ -5,7 +5,8 @@ import {
   type GithubStatus,
   type Issue,
   keyBetween,
-  PROJECT_COLORS
+  PROJECT_COLORS,
+  projectKeyFor
 } from "@gradient/domain"
 import { Context, Effect, Layer, Option, Queue, Schedule, Semaphore, Stream } from "effect"
 import type { SqlError } from "effect/sql"
@@ -33,6 +34,7 @@ export class GithubSync extends Context.Service<GithubSync, {
     teamId: string
     projectId: string | null
     projectName?: string | undefined
+    projectKey?: string | undefined
     owner: string
     name: string
     pushExisting: boolean
@@ -373,7 +375,13 @@ export class GithubSync extends Context.Service<GithubSync, {
       }
 
       /** The project a repo links to: the given one, an unlinked one with the same name, or a new one. */
-      const projectFor = (input: { teamId: string; projectId: string | null; projectName?: string | undefined; name: string }) =>
+      const projectFor = (input: {
+        teamId: string
+        projectId: string | null
+        projectName?: string | undefined
+        projectKey?: string | undefined
+        name: string
+      }) =>
         Effect.gen(function*() {
           const projects = yield* db.projectsForTeam(input.teamId)
           if (input.projectId) {
@@ -390,10 +398,13 @@ export class GithubSync extends Context.Service<GithubSync, {
             return same.id
           }
           const id = Bun.randomUUIDv7()
+          const team = yield* db.getTeam(input.teamId)
           yield* mutations.apply({ origin: "system", actorId: null }, [{
             _tag: "ProjectCreate",
             id,
             teamId: input.teamId,
+            key: input.projectKey?.trim().toUpperCase() ||
+              projectKeyFor(wanted, [team?.key ?? "", ...projects.map((p) => p.key)]),
             name: wanted,
             color: PROJECT_COLORS[projects.length % PROJECT_COLORS.length]!
           }]).pipe(Effect.mapError((e) => new GithubError({ message: e.message })))
@@ -404,6 +415,7 @@ export class GithubSync extends Context.Service<GithubSync, {
         teamId: string
         projectId: string | null
         projectName?: string | undefined
+        projectKey?: string | undefined
         owner: string
         name: string
         pushExisting: boolean

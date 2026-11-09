@@ -105,7 +105,15 @@ const ensureRepos = async (sync: SyncEngine) => {
 /** Link a repository to a project, or to a new project named after it (projectId null). */
 const linkRepo = (
   sync: SyncEngine,
-  input: { teamId: string; projectId: string | null; projectName?: string; owner: string; name: string; pushExisting: boolean }
+  input: {
+    teamId: string
+    projectId: string | null
+    projectName?: string
+    projectKey?: string
+    owner: string
+    name: string
+    pushExisting: boolean
+  }
 ) => sync.call((c) => c.GithubLinkRepo(input))
 
 export const github = {

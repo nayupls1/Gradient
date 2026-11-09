@@ -88,6 +88,8 @@ export class GradientRpcs extends RpcGroup.make(
       teamId: Schema.String,
       projectId: Schema.NullOr(Schema.String),
       projectName: Schema.optionalKey(Schema.String),
+      /** Key of the new project; derived from its name when omitted. */
+      projectKey: Schema.optionalKey(Schema.String),
       owner: Schema.String,
       name: Schema.String,
       pushExisting: Schema.Boolean

@@ -30,6 +30,7 @@ const toLabel = (r: Row): Label => ({ id: str(r.id), teamId: str(r.team_id), nam
 const toProject = (r: Row): Project => ({
   id: str(r.id),
   teamId: str(r.team_id),
+  key: str(r.key),
   name: str(r.name),
   color: str(r.color),
   createdAt: num(r.created_at)
@@ -145,9 +146,9 @@ const makeDb = Effect.gen(function*() {
     projectsForTeam: (teamId: string) =>
       all(sql`SELECT * FROM project WHERE team_id = ${teamId} ORDER BY name COLLATE NOCASE`, toProject),
     putProject: (p: Project) =>
-      sql`INSERT INTO project (id, team_id, name, color, created_at)
-          VALUES (${p.id}, ${p.teamId}, ${p.name}, ${p.color}, ${p.createdAt})
-          ON CONFLICT (id) DO UPDATE SET name = excluded.name, color = excluded.color`,
+      sql`INSERT INTO project (id, team_id, key, name, color, created_at)
+          VALUES (${p.id}, ${p.teamId}, ${p.key}, ${p.name}, ${p.color}, ${p.createdAt})
+          ON CONFLICT (id) DO UPDATE SET key = excluded.key, name = excluded.name, color = excluded.color`,
     deleteProject: (id: string) => sql`DELETE FROM project WHERE id = ${id}`,
 
     issues: all(sql.unsafe(`${ISSUE_SELECT} ORDER BY i.sort_order DESC`), toIssue),

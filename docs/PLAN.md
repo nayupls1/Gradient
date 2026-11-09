@@ -103,6 +103,11 @@ Conflicts: last write wins per field, in server arrival order.
 
 ## GitHub two-way sync
 
+**Identifiers** are `<key>-<number>`: the project's key (unique in the team,
+derived from its name, `projectKeyFor`) or the team key without a project. The
+number is team-wide (`team.issue_counter`), so lookups accept any key of the
+team and moving an issue only changes the prefix.
+
 **Projects carry the repository.** A project groups issues inside a team, and
 links at most one repository (`github_repo.project_id`, unique). Imported
 issues join the repo's project. An issue pushes to the repo it is already

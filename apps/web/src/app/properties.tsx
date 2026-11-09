@@ -3,7 +3,7 @@ import { PROJECT_COLORS, uuidv7 } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { For, Show, useContext } from "solid-js"
 import type { JSX } from "@solidjs/web"
-import { projectRepo, teamLabels, teamProjects, teamStates, users } from "../lib/select.ts"
+import { projectRepo, suggestProjectKey, teamLabels, teamProjects, teamStates, users } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
 import { PriorityIcon, priorityLabel, ProjectIcon, StateIcon, TagIcon, UserIcon } from "../ui/icons.tsx"
 import { Avatar, Picker, type PopoverApi, type TriggerAttrs } from "../ui/kit.tsx"
@@ -229,7 +229,8 @@ export const ProjectPicker = (props: {
             value: p.id,
             label: p.name,
             icon: () => <ProjectIcon size={14} color={p.color} />,
-            ...(repo ? { hint: `${repo.owner}/${repo.name}` } : {})
+            keywords: p.key,
+            hint: repo ? `${p.key} · ${repo.owner}/${repo.name}` : p.key
           }
         })
       ]}
@@ -238,7 +239,7 @@ export const ProjectPicker = (props: {
       onCreate={(name) => {
         const id = uuidv7()
         const color = PROJECT_COLORS[teamProjects(sync.state, props.teamId).length % PROJECT_COLORS.length]!
-        sync.mutate({ _tag: "ProjectCreate", id, teamId: props.teamId, name, color })
+        sync.mutate({ _tag: "ProjectCreate", id, teamId: props.teamId, key: suggestProjectKey(sync.state, props.teamId, name), name, color })
         props.onChange(id)
       }}
       trigger={(attrs) => (

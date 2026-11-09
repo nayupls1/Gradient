@@ -52,6 +52,8 @@ export type Label = typeof Label.Type
 export const Project = Schema.Struct({
   id: Schema.String,
   teamId: Schema.String,
+  /** Prefix of its issues' identifiers ("TES" → TES-12). Unique in the team, distinct from the team key. */
+  key: Schema.String,
   name: Schema.String,
   color: Schema.String,
   createdAt: Millis
@@ -120,5 +122,41 @@ export const Entity = Schema.Union([
 ])
 export type Entity = typeof Entity.Type
 
-export const identifier = (team: Pick<Team, "key">, issue: Pick<Issue, "number">) =>
-  issue.number > 0 ? `${team.key}-${issue.number}` : `${team.key}-…`
+/**
+ * An issue's human identifier: its project's key, or the team's when it has no
+ * project, then its number. Numbers are unique per team, so moving an issue to
+ * another project changes only the prefix, and any known prefix still finds it.
+ */
+export const identifier = (
+  team: Pick<Team, "key">,
+  issue: Pick<Issue, "number">,
+  project?: Pick<Project, "key"> | null
+) => {
+  const key = project?.key ?? team.key
+  return issue.number > 0 ? `${key}-${issue.number}` : `${key}-…`
+}
+
+/** "TES-12" → { key: "TES", number: 12 }. */
+export const parseIdentifier = (ref: string): { key: string; number: number } | null => {
+  const match = ref.trim().match(/^([A-Za-z][A-Za-z0-9]*)-(\d+)$/)
+  return match ? { key: match[1]!.toUpperCase(), number: Number(match[2]) } : null
+}
+
+export const isValidProjectKey = (key: string) => /^[A-Z][A-Z0-9]{1,4}$/.test(key)
+
+/**
+ * A key for a new project: the first three letters of its name, uppercased
+ * ("test" → "TES", "Issue project" → "ISS"). When taken, the third character
+ * becomes a digit ("IS2").
+ */
+export const projectKeyFor = (name: string, taken: Iterable<string>): string => {
+  const used = new Set([...taken].map((k) => k.toUpperCase()))
+  const cleaned = name.normalize("NFKD").replace(/[^A-Za-z0-9]/g, "").toUpperCase().replace(/^[0-9]+/, "")
+  const base = cleaned.length >= 2 ? cleaned.slice(0, 3) : "PRJ"
+  if (!used.has(base)) return base
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${base.slice(0, n < 10 ? 2 : 1)}${n}`
+    if (!used.has(candidate)) return candidate
+  }
+  return `${base.slice(0, 1)}${Date.now() % 10000}`
+}

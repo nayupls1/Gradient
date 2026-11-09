@@ -132,5 +132,28 @@ export const migrations = {
                  WHERE id IN (SELECT issue_id FROM github_issue_link WHERE repo_id = ${repo.id as string})`
     }
     yield* sql`CREATE UNIQUE INDEX github_repo_project ON github_repo (project_id)`
+  }),
+  /**
+   * Projects get a key that prefixes their issues' identifiers (TES-12). Keys
+   * are the first three letters of the name, made unique within the team.
+   * (The derivation is inlined so this migration never changes.)
+   */
+  "0004_project_keys": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE project ADD COLUMN key TEXT`
+    const teams = yield* sql`SELECT id, key FROM team`
+    for (const team of teams) {
+      const used = new Set<string>([String(team.key).toUpperCase()])
+      const projects = yield* sql`SELECT id, name FROM project WHERE team_id = ${team.id as string} ORDER BY created_at`
+      for (const project of projects) {
+        const cleaned = String(project.name).normalize("NFKD").replace(/[^A-Za-z0-9]/g, "").toUpperCase().replace(/^[0-9]+/, "")
+        const base = cleaned.length >= 2 ? cleaned.slice(0, 3) : "PRJ"
+        let key = base
+        for (let n = 2; used.has(key); n++) key = `${base.slice(0, n < 10 ? 2 : 1)}${n}`
+        used.add(key)
+        yield* sql`UPDATE project SET key = ${key} WHERE id = ${project.id as string}`
+      }
+    }
+    yield* sql`CREATE UNIQUE INDEX project_key ON project (team_id, key)`
   })
 }

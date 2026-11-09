@@ -126,7 +126,7 @@ describe("replica", () => {
 
   test("projects: optimistic create, rename and delete, then confirmed by the server", () => {
     const replica = setup()
-    replica.addPending("tx1", [{ _tag: "ProjectCreate", id: "p1", teamId: "t1", name: "Website", color: "#0090ff" }])
+    replica.addPending("tx1", [{ _tag: "ProjectCreate", id: "p1", teamId: "t1", key: "WEB", name: "Website", color: "#0090ff" }])
     expect(replica.view("projects", "p1")).toMatchObject({ name: "Website", teamId: "t1" })
     replica.addPending("tx2", [{ _tag: "ProjectUpdate", id: "p1", patch: { name: "Site" } }])
     expect(replica.view("projects", "p1")?.name).toBe("Site")
@@ -135,7 +135,7 @@ describe("replica", () => {
       _tag: "Upsert",
       syncId: 11,
       clientTxId: "tx1",
-      entity: { model: "project", value: { id: "p1", teamId: "t1", name: "Website", color: "#0090ff", createdAt: 5 } }
+      entity: { model: "project", value: { id: "p1", teamId: "t1", key: "WEB", name: "Website", color: "#0090ff", createdAt: 5 } }
     }])
     expect(replica.view("projects", "p1")?.name).toBe("Site")
     replica.addPending("tx3", [{ _tag: "ProjectDelete", id: "p1" }])

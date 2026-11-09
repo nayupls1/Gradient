@@ -2,6 +2,7 @@ import {
   applyIssueMutation,
   applyLabelMutation,
   applyProjectMutation,
+  isValidProjectKey,
   type Delta,
   type ModelName,
   type Mutation,
@@ -155,11 +156,22 @@ export class Mutations extends Context.Service<Mutations, {
             if (clash) return yield* reject(`Project "${clash.name}" already exists`)
           })
 
+          const checkProjectKey = Effect.fnUntraced(function*(teamId: string, key: string, self?: string) {
+            if (!isValidProjectKey(key)) {
+              return yield* reject(`"${key}" is not a valid key: 2–5 capital letters or digits, starting with a letter`)
+            }
+            const team = yield* db.getTeam(teamId)
+            if (team && team.key.toUpperCase() === key) return yield* reject(`"${key}" is the team's own key`)
+            const clash = (yield* db.projectsForTeam(teamId)).find((p) => p.id !== self && p.key === key)
+            if (clash) return yield* reject(`The key "${key}" is taken by the project "${clash.name}"`)
+          })
+
           switch (m._tag) {
             case "ProjectCreate": {
               if (!(yield* db.getTeam(m.teamId))) return yield* reject("Unknown team")
               if (yield* db.getProject(m.id)) return yield* reject("Project already exists")
               yield* checkProjectName(m.teamId, m.name)
+              yield* checkProjectKey(m.teamId, m.key)
               const project = applyProjectMutation(undefined, m, { now: tx.now })!
               yield* db.putProject({ ...project, name: project.name.trim() })
               tx.touch("project", m.id)
@@ -169,9 +181,11 @@ export class Mutations extends Context.Service<Mutations, {
               const current = yield* db.getProject(m.id)
               if (!current) return yield* reject("Project not found")
               if (m.patch.name !== undefined) yield* checkProjectName(current.teamId, m.patch.name, current.id)
+              if (m.patch.key !== undefined) yield* checkProjectKey(current.teamId, m.patch.key, current.id)
               const next = applyProjectMutation(current, m, { now: tx.now })!
               yield* db.putProject({ ...next, name: next.name.trim() })
               tx.touch("project", m.id)
+              // Identifiers of its issues change with the key; clients derive them, so no issue rows change.
               return
             }
             case "ProjectDelete": {

@@ -314,7 +314,7 @@ describe("projects and repositories", () => {
 
     const widgets = await linkTo("widgets")
     const gadgetsLink = await linkTo("gadgets", { projectName: "Gadgets" })
-    expect((await projects()).map((p) => p.name).sort()).toEqual(["Gadgets", "widgets"])
+    expect((await projects()).map((p) => [p.name, p.key]).sort()).toEqual([["Gadgets", "GAD"], ["widgets", "WID"]])
     const all = await issues()
     expect(all.find((i) => i.title === "Widget bug")!.projectId).toBe(widgets.projectId)
     expect(all.find((i) => i.title === "Gadget idea")!.projectId).toBe(gadgetsLink.projectId)
@@ -332,12 +332,18 @@ describe("projects and repositories", () => {
     ctx.fake.addRepo("acme", "gadgets")
     const t = await team()
     const id = Bun.randomUUIDv7()
-    await mutate([{ _tag: "ProjectCreate", id, teamId: t.id, name: "Widgets", color: "#0090ff" }])
+    await mutate([{ _tag: "ProjectCreate", id, teamId: t.id, key: "WID", name: "Widgets", color: "#0090ff" }])
     const linked = await linkTo("widgets")
     expect(linked.projectId).toBe(id)
     await expect(linkTo("gadgets", { projectId: id })).rejects.toThrow(/already syncs/)
-    await expect(mutate([{ _tag: "ProjectCreate", id: Bun.randomUUIDv7(), teamId: t.id, name: "widgets", color: "#000" }]))
+    await expect(mutate([{ _tag: "ProjectCreate", id: Bun.randomUUIDv7(), teamId: t.id, key: "WI2", name: "widgets", color: "#000" }]))
       .rejects.toThrow(/already exists/)
+    // Keys are unique in the team, distinct from the team key, and well-formed.
+    const create = (key: string) =>
+      mutate([{ _tag: "ProjectCreate", id: Bun.randomUUIDv7(), teamId: t.id, key, name: `P ${key}`, color: "#000" }])
+    await expect(create("WID")).rejects.toThrow(/taken by the project "Widgets"/)
+    await expect(create("GRD")).rejects.toThrow(/team's own key/)
+    await expect(create("w-1")).rejects.toThrow(/not a valid key/)
   })
 
   test("moving an issue into a linked project creates it on that repository", async () => {

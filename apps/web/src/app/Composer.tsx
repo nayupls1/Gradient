@@ -117,7 +117,7 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
         }}
       >
         <div {...stylex.attrs(s.header)}>
-          <span {...stylex.attrs(s.teamKey)}>{team()?.key}</span>
+          <span {...stylex.attrs(s.teamKey)}>{(projectId() ? sync.state.projects[projectId()!]?.key : undefined) ?? team()?.key}</span>
           <ChevronRightIcon size={12} />
           <Show when={projectId() ? sync.state.projects[projectId()!] : undefined}>
             {(p) => (
