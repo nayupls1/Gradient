@@ -58,7 +58,7 @@ apps/server/src
   sync/Mutations.ts    the single write path: validate, write, log, broadcast, queue outbox
   sync/Hub.ts          PubSub fan-out of committed deltas
   sync/Rpc.ts          RPC handlers; Subscribe = catch-up from log, then live
-  github/              client, field mapping, GithubSync (import/poll/push), webhook route
+  github/              auth (device-flow sign-in), client, field mapping, GithubSync (import/poll/push), webhook route
   mcp/                 MCP tools (names in, names out), instructions, the gradient skill
   http/guard.ts        local-only guard: refuses foreign browser origins and rebound hosts
   seed.ts, app.ts, main.ts
@@ -102,8 +102,15 @@ Conflicts: last write wins per field, in server arrival order.
 
 ## GitHub two-way sync
 
-Token auth for now: `GITHUB_TOKEN`, or the GitHub CLI's token. The client is
-behind one service, so GitHub App auth can replace it later.
+**Auth** (`github/GithubAuth.ts`): "Sign in with GitHub" runs the device flow
+of the Gradient GitHub App, which needs only its public client id. The server
+polls github.com for the token, stores it in `github_auth`, and links the local
+user to the GitHub login. The token acts as the user, limited to repositories
+the app is installed on (listed via `/user/installations`). It wins over
+`GITHUB_TOKEN` and the gh CLI token, which remain as fallbacks. `GithubClient`
+reads the token per request, so sign-in and sign-out apply without a restart;
+a 401 drops an expired or revoked sign-in. Webhooks to the app would need a
+public URL, so a local install keeps polling.
 
 | Gradient | GitHub |
 |---|---|
@@ -177,6 +184,7 @@ localStorage.
 - Issue search in ⌘K, filters, more views (deliberately left to the user's design).
 - Markdown rendering for descriptions.
 - Offline cache of the store in IndexedDB.
-- Real auth (GitHub login), then multiple users; GitHub App instead of a token.
+- Multiple users with sessions, and a hosted relay for app webhooks and
+  installation tokens (the private key cannot ship in a local app).
 - Projects and cycles.
 - Postgres if it outgrows SQLite (the SQL layer is Effect's, so the queries stay).

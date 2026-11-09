@@ -1,7 +1,7 @@
 import * as stylex from "@stylexjs/stylex"
 import { useLocation, useNavigate } from "@solidjs/router"
 import type { JSX } from "@solidjs/web"
-import { createSignal, Show, useContext } from "solid-js"
+import { createSignal, onSettled, Show, useContext } from "solid-js"
 import { Shortcut, useCommands } from "../keys/solid.tsx"
 import { firstTeam } from "../lib/select.ts"
 import { updateTheme, activeScheme } from "../theme/theme.ts"
@@ -11,6 +11,7 @@ import { Toaster } from "../ui/kit.tsx"
 import { CommandSurfaces } from "./CommandMenu.tsx"
 import { Composer } from "./Composer.tsx"
 import { type ComposerDefaults, ComposerContext, Sync } from "./context.ts"
+import { github } from "./github.ts"
 
 const s = stylex.create({
   shell: {
@@ -150,8 +151,27 @@ export const Shell = (props: { children: JSX.Element }) => {
       title: "Switch light / dark",
       group: "Appearance",
       run: () => updateTheme((t) => ({ ...t, mode: activeScheme() === "dark" ? "light" : "dark" }))
+    },
+    {
+      id: "github.signIn",
+      title: "Sign in with GitHub",
+      group: "GitHub",
+      when: () => github.status()?.signIn.available === true && github.status()?.tokenSource !== "app",
+      run: () => {
+        navigate("/settings")
+        void github.signIn(sync)
+      }
+    },
+    {
+      id: "github.signOut",
+      title: "Sign out of GitHub",
+      group: "GitHub",
+      when: () => github.status()?.tokenSource === "app",
+      run: () => void github.signOut(sync)
     }
   ])
+  // The GitHub commands above need to know whether sign-in is possible.
+  onSettled(() => void github.refresh(sync))
 
   return (
     <ComposerContext value={{ open: openComposer }}>

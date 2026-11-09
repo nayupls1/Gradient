@@ -2,6 +2,7 @@ import { type Delta, GradientRpcs, MutationRejected, type SyncEvent } from "@gra
 import { Effect, Layer, Option, PubSub, Stream } from "effect"
 import { Db, type LogRow } from "../db/Db.ts"
 import { ServerConfig } from "../config.ts"
+import { GithubAuth } from "../github/GithubAuth.ts"
 import { GithubSync } from "../github/GithubSync.ts"
 import { mcpUrl } from "../mcp/server.ts"
 import { Hub } from "./Hub.ts"
@@ -20,6 +21,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
     const hub = yield* Hub
     const mutations = yield* Mutations
     const github = yield* GithubSync
+    const auth = yield* GithubAuth
     const config = yield* ServerConfig
 
     const viewerId = () => db.getMeta("viewer_id").pipe(Effect.map((id) => id!), Effect.orDie)
@@ -93,7 +95,12 @@ export const RpcHandlers = GradientRpcs.toLayer(
       GithubStatus: () => github.status,
       GithubLinkRepo: (input) => github.linkRepo(input),
       GithubUnlinkRepo: ({ repoId }) => github.unlinkRepo(repoId),
-      GithubSyncNow: ({ repoId }) => github.syncNow(repoId)
+      GithubSyncNow: ({ repoId }) => github.syncNow(repoId),
+      GithubSignInStart: () => auth.startSignIn,
+      GithubSignInWait: () => auth.awaitSignIn.pipe(Effect.andThen(github.status)),
+      GithubSignInCancel: () => auth.cancelSignIn,
+      GithubSignOut: () => auth.signOut.pipe(Effect.andThen(github.status)),
+      GithubInstalledRepos: () => github.installedRepos
     })
   })
 )

@@ -12,8 +12,9 @@ claude mcp add --transport http --scope user gradient http://127.0.0.1:4100/mcp 
 codex mcp add gradient --url http://127.0.0.1:4100/mcp                            # Codex
 ```
 
-Agents get `describe_workspace`, `list_issues`, `get_issue`, `create_issue` and
-`update_issue`. They take human names ("In Progress", "me", "Bug", GRD-12),
+Agents get `describe_workspace`, `list_issues`, `get_issue`, `create_issue`,
+`update_issue`, `github_status` and `github_sign_in` (which hands the user a
+code to approve on github.com). They take human names ("In Progress", "me", "Bug", GRD-12),
 and every write goes through the same sync engine as the app, so it shows up
 live and syncs to GitHub. The server also publishes a `gradient` skill with
 the conventions agents should follow.
@@ -41,10 +42,17 @@ bun run --filter '@gradient/server' start   # http://localhost:4100
 
 ## GitHub sync
 
-1. Give the server a token: either be logged in with the GitHub CLI
-   (`gh auth login`), or set `GITHUB_TOKEN` (a fine-grained token with
-   read/write access to Issues on the repo).
-2. In Settings → GitHub, link `owner/repo`. Existing issues are imported.
+1. Connect GitHub, one of:
+   - **Sign in with GitHub** in Settings → GitHub (or ⌘K → "Sign in with
+     GitHub"). Gradient shows a short code; enter it on github.com and approve.
+     Then install the Gradient GitHub App on the repositories you want, and
+     pick one from the list. Gradient only sees repositories you install it on.
+   - Be logged in with the GitHub CLI (`gh auth login`), or set `GITHUB_TOKEN`
+     (a fine-grained token with read/write access to Issues on the repo).
+
+   A sign-in through the app takes precedence over the other two; signing out
+   falls back to them.
+2. In Settings → GitHub, link a repository. Existing issues are imported.
    Tick the box to also create the team's existing Gradient issues on GitHub.
 
 From then on, title, description, open/closed (with reason), labels and the
@@ -65,7 +73,31 @@ To try the sync UI without a real repo, run the fake GitHub API used by the test
 ```bash
 bun apps/server/test/dev-fake-github.ts
 GITHUB_API_URL=http://127.0.0.1:4300 GITHUB_TOKEN=fake bun run dev   # then link acme/widgets
+# or, to try "Sign in with GitHub" (the fake approves the code after 3 seconds):
+GITHUB_API_URL=http://127.0.0.1:4300 GITHUB_WEB_URL=http://127.0.0.1:4300 \
+  GITHUB_APP_CLIENT_ID=fake GITHUB_APP_SLUG=gradient bun run dev
 ```
+
+### The Gradient GitHub App
+
+Sign-in uses the [device flow](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-cli-with-a-github-app)
+of a GitHub App. It needs only the app's client id, which is public, so a
+local install carries no secret. To register the app (once, by the
+maintainer) at github.com/settings/apps/new:
+
+- **Callback URL**: none needed. **Enable Device Flow**: on. **Webhook**: off
+  (GitHub cannot reach a local machine; Gradient polls).
+- **Repository permissions**: Issues read & write, Metadata read-only.
+- **Optional features**: opt out of user-to-server token expiration. Refreshing
+  an expiring token needs the client secret, which a local app cannot ship;
+  with expiry on, users sign in again every 8 hours.
+- **Where can this app be installed**: any account.
+
+Put the client id and the app's URL slug in `GITHUB_APP` in
+`apps/server/src/config.ts`, or set `GITHUB_APP_CLIENT_ID` and
+`GITHUB_APP_SLUG`. The token is stored in the local database
+(`github_auth`); signing out deletes it. To revoke it on GitHub, use
+Settings → Applications → Authorized GitHub Apps.
 
 ## Keyboard
 

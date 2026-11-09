@@ -136,4 +136,47 @@ export const UpdateIssue = Tool.make("update_issue", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false)
 
-export const GradientToolkit = Toolkit.make(DescribeWorkspace, ListIssues, GetIssue, CreateIssue, UpdateIssue)
+export const GithubConnection = Tool.make("github_status", {
+  description:
+    "Whether Gradient is connected to GitHub, as whom, and which repo the team syncs with. Check this before relying on GitHub sync.",
+  success: Schema.Struct({
+    connected: Schema.Boolean,
+    login: Schema.NullOr(Schema.String),
+    via: Schema.NullOr(Schema.String),
+    repo: Schema.NullOr(Schema.String),
+    sign_in_available: Schema.Boolean,
+    pending_code: Schema.NullOr(Schema.String),
+    hint: Schema.String
+  }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, false)
+
+export const GithubSignIn = Tool.make("github_sign_in", {
+  description:
+    "Start \"Sign in with GitHub\". Returns a short code and a URL: show both to the user and ask them to enter the code there. " +
+    "Gradient finishes the sign-in on its own once they approve; call github_status to confirm.",
+  success: Schema.Struct({
+    user_code: Schema.String,
+    url: Schema.String,
+    expires_in_minutes: Schema.Int,
+    instructions: Schema.String
+  }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+
+export const GradientToolkit = Toolkit.make(
+  DescribeWorkspace,
+  ListIssues,
+  GetIssue,
+  CreateIssue,
+  UpdateIssue,
+  GithubConnection,
+  GithubSignIn
+)

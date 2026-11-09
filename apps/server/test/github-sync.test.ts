@@ -25,6 +25,8 @@ const setup = () => {
       token: Option.some("test-token"),
       tokenSource: "env",
       apiUrl: fake.url,
+      webUrl: fake.url,
+      app: { clientId: "test-client", slug: "gradient-test" },
       webhookSecret: Option.some(SECRET),
       pollIntervalSeconds: 3600
     }

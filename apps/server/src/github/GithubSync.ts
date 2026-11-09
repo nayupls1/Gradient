@@ -1,9 +1,17 @@
-import { type GithubRepo, GithubError, type GithubStatus, type Issue, keyBetween } from "@gradient/domain"
-import { Context, Effect, Layer, Option, Queue, Schedule, Semaphore } from "effect"
+import {
+  GithubError,
+  type GithubInstalledRepo,
+  type GithubRepo,
+  type GithubStatus,
+  type Issue,
+  keyBetween
+} from "@gradient/domain"
+import { Context, Effect, Layer, Option, Queue, Schedule, Semaphore, Stream } from "effect"
 import type { SqlError } from "effect/sql"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
 import { Mutations, type TxContext } from "../sync/Mutations.ts"
+import { GithubAuth, type Viewer } from "./GithubAuth.ts"
 import { type GhIssue, GithubClient, type IssueWrite, labelColor, labelName } from "./GithubClient.ts"
 import { diff, fromGithub, fromIssue, resolveState, type Shadow } from "./mapping.ts"
 
@@ -32,6 +40,8 @@ export class GithubSync extends Context.Service<GithubSync, {
   ingest(repo: GithubRepo, gh: GhIssue): Effect.Effect<"created" | "updated" | "unchanged" | "skipped">
   /** Push every due outbox entry to GitHub. */
   readonly flushOutbox: Effect.Effect<number>
+  /** Repositories the app is installed on, for picking one to link. */
+  readonly installedRepos: Effect.Effect<ReadonlyArray<GithubInstalledRepo>, GithubError>
 }>()("gradient/GithubSync") {
   static readonly layer = Layer.effect(
     GithubSync,
@@ -39,9 +49,9 @@ export class GithubSync extends Context.Service<GithubSync, {
       const config = yield* ServerConfig
       const db = yield* Db
       const gh = yield* GithubClient
+      const auth = yield* GithubAuth
       const mutations = yield* Mutations
       const sql = db.sql
-      let viewerLogin: string | null = null
       // One flush at a time: two concurrent pushes of a new issue would create it twice on GitHub.
       const flushLock = yield* Semaphore.make(1)
 
@@ -304,24 +314,26 @@ export class GithubSync extends Context.Service<GithubSync, {
         }
       })
 
-      if (gh.enabled) {
-        // Link the local user to the token's GitHub account, so assignees map both ways.
-        const viewer = yield* Effect.option(gh.viewer)
-        if (Option.isSome(viewer)) {
-          viewerLogin = viewer.value.login
-          yield* mutations.transact({ origin: "system", actorId: null }, (tx) =>
-            Effect.gen(function*() {
-              const viewerId = yield* db.getMeta("viewer_id")
-              const me = viewerId ? yield* db.getUser(viewerId) : undefined
-              const taken = yield* db.getUserByLogin(viewer.value.login)
-              if (me && !me.githubLogin && !taken) {
-                yield* db.putUser({ ...me, githubLogin: viewer.value.login, avatarUrl: viewer.value.avatarUrl })
-                tx.touch("user", me.id)
-              }
-            }))
-        } else {
-          yield* Effect.logWarning("GitHub token found but /user failed; sync will retry on each poll")
-        }
+      /** Link the local user to the GitHub account in use, so assignees map both ways. */
+      const adoptViewer = (viewer: Viewer) =>
+        mutations.transact({ origin: "system", actorId: null }, (tx) =>
+          Effect.gen(function*() {
+            const viewerId = yield* db.getMeta("viewer_id")
+            const me = viewerId ? yield* db.getUser(viewerId) : undefined
+            if (!me || me.githubLogin?.toLowerCase() === viewer.login.toLowerCase()) return
+            // Someone else already has this login (an assignee imported earlier): leave both alone.
+            if (yield* db.getUserByLogin(viewer.login)) return
+            yield* db.putUser({ ...me, githubLogin: viewer.login, avatarUrl: viewer.avatarUrl ?? me.avatarUrl })
+            tx.touch("user", me.id)
+          })).pipe(Effect.asVoid, Effect.orDie)
+
+      const adoptCurrentViewer = Effect.gen(function*() {
+        const viewer = yield* auth.viewer
+        if (viewer) yield* adoptViewer(viewer)
+      })
+
+      if (config.github.enabled) {
+        yield* adoptCurrentViewer
 
         // Outbound worker: wakes on each queued change, and every few seconds for retries.
         yield* Effect.forkScoped(
@@ -329,13 +341,29 @@ export class GithubSync extends Context.Service<GithubSync, {
             Effect.gen(function*() {
               yield* Effect.race(Queue.take(mutations.outboxSignal), Effect.sleep("5 seconds"))
               yield* Effect.sleep("150 millis") // coalesce bursts of edits into one PATCH
-              yield* flushOutbox
+              // Without a token, queued changes wait for a sign-in instead of burning retries.
+              if (gh.ready()) yield* flushOutbox
             })
           )
         )
         // Inbound poller: the safety net when webhooks are not forwarded.
         yield* Effect.forkScoped(
-          pollAll.pipe(Effect.repeat(Schedule.spaced(`${config.github.pollIntervalSeconds} seconds`)))
+          Effect.suspend(() => (gh.ready() ? pollAll : Effect.void)).pipe(
+            Effect.repeat(Schedule.spaced(`${config.github.pollIntervalSeconds} seconds`))
+          )
+        )
+        // After a sign-in: link the account, catch up on GitHub, and push what waited.
+        yield* Effect.forkScoped(
+          Stream.fromPubSub(auth.changes).pipe(
+            Stream.runForEach(() =>
+              Effect.gen(function*() {
+                yield* adoptCurrentViewer
+                if (!gh.ready()) return
+                yield* pollAll
+                yield* flushOutbox
+              })
+            )
+          )
         )
       }
 
@@ -395,17 +423,35 @@ export class GithubSync extends Context.Service<GithubSync, {
         })
 
       return GithubSync.of({
-        status: Effect.sync(() => ({
-          tokenSource: config.github.tokenSource,
-          login: viewerLogin,
-          webhookSecretSet: Option.isSome(config.github.webhookSecret),
-          pollIntervalSeconds: config.github.pollIntervalSeconds
-        })),
+        status: Effect.gen(function*() {
+          const viewer = yield* auth.viewer
+          return {
+            tokenSource: yield* auth.source,
+            login: viewer?.login ?? null,
+            avatarUrl: viewer?.avatarUrl ?? null,
+            signIn: {
+              available: auth.signInAvailable,
+              installUrl: auth.installUrl,
+              pending: yield* auth.pending
+            },
+            notice: yield* auth.notice,
+            webhookSecretSet: Option.isSome(config.github.webhookSecret),
+            pollIntervalSeconds: config.github.pollIntervalSeconds
+          }
+        }),
         linkRepo,
         unlinkRepo,
         syncNow,
         ingest,
-        flushOutbox
+        flushOutbox,
+        installedRepos: Effect.gen(function*() {
+          if ((yield* auth.source) !== "app") {
+            return yield* new GithubError({
+              message: "Sign in with GitHub to pick from the repositories the Gradient app is installed on."
+            })
+          }
+          return yield* gh.installedRepos
+        })
       })
     })
   )

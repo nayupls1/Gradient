@@ -91,5 +91,17 @@ export const migrations = {
       created_at INTEGER NOT NULL
     )`
     yield* sql`CREATE INDEX sync_log_client_tx ON sync_log (client_tx_id) WHERE client_tx_id IS NOT NULL`
+  }),
+  /** The token from "Sign in with GitHub". One row: Gradient is single-user for now. */
+  "0002_github_auth": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE github_auth (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      token TEXT NOT NULL,
+      login TEXT NOT NULL,
+      avatar_url TEXT,
+      expires_at INTEGER,
+      created_at INTEGER NOT NULL
+    )`
   })
 }

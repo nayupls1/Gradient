@@ -3,6 +3,8 @@ import { Effect, Layer } from "effect"
 import { McpProtocol, McpServer } from "effect/ai"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
+import { GithubAuth } from "../github/GithubAuth.ts"
+import { GithubSync } from "../github/GithubSync.ts"
 import { Mutations } from "../sync/Mutations.ts"
 import { GradientToolkit, type IssueDetail, type IssueSummary, ToolError } from "./tools.ts"
 
@@ -43,6 +45,8 @@ const ToolHandlers = GradientToolkit.toLayer(
     const db = yield* Db
     const mutations = yield* Mutations
     const config = yield* ServerConfig
+    const auth = yield* GithubAuth
+    const github = yield* GithubSync
 
     /** Everything needed to translate between names and ids. Small enough to load per call. */
     const workspace = Effect.gen(function*() {
@@ -220,6 +224,53 @@ const ToolHandlers = GradientToolkit.toLayer(
         if (input.archived === false && issue.archivedAt !== null) list.push({ _tag: "IssueUnarchive", id: issue.id })
         if (list.length > 0) yield* apply(ws, list)
         return yield* reload(ws, issue.id)
+      }),
+
+      github_status: Effect.fn("mcp.github_status")(function*() {
+        const ws = yield* workspace
+        const status = yield* github.status
+        const via = status.tokenSource === "app"
+          ? "Sign in with GitHub"
+          : status.tokenSource === "env"
+          ? "GITHUB_TOKEN"
+          : status.tokenSource === "gh-cli"
+          ? "GitHub CLI"
+          : null
+        const repo = ws.repo ? `${ws.repo.owner}/${ws.repo.name}` : null
+        const hint = status.signIn.pending
+          ? `Waiting for the user to enter ${status.signIn.pending.userCode} at ${status.signIn.pending.verificationUri}.`
+          : !status.tokenSource
+          ? status.notice ??
+            (status.signIn.available
+              ? "Not connected. Call github_sign_in, or ask the user to sign in under Settings → GitHub."
+              : "Not connected. The user can set GITHUB_TOKEN or run `gh auth login`, then restart Gradient.")
+          : !repo
+          ? "Connected, but no repository is linked. The user links one under Settings → GitHub."
+          : `Issues sync with ${repo}.`
+        return {
+          connected: status.tokenSource !== null,
+          login: status.login,
+          via,
+          repo,
+          sign_in_available: status.signIn.available,
+          pending_code: status.signIn.pending?.userCode ?? null,
+          hint
+        }
+      }),
+
+      github_sign_in: Effect.fn("mcp.github_sign_in")(function*() {
+        if ((yield* auth.source) === "app") {
+          const viewer = yield* auth.viewer
+          return yield* fail(`Already signed in as @${viewer?.login}. The user can sign out under Settings → GitHub.`)
+        }
+        const code = yield* auth.startSignIn.pipe(Effect.mapError((e) => new ToolError({ message: e.message })))
+        return {
+          user_code: code.userCode,
+          url: code.verificationUri,
+          expires_in_minutes: Math.round((code.expiresAt - Date.now()) / 60_000),
+          instructions: `Ask the user to open ${code.verificationUri} and enter ${code.userCode}, then approve Gradient. ` +
+            "Gradient picks up the sign-in by itself; call github_status to check."
+        }
       })
     })
   })

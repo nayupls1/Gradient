@@ -19,6 +19,8 @@ const server = ManagedRuntime.make(
         token: Option.none(),
         tokenSource: null,
         apiUrl: "http://127.0.0.1:1",
+        webUrl: "http://127.0.0.1:1",
+        app: { clientId: null, slug: null },
         webhookSecret: Option.none(),
         pollIntervalSeconds: 3600
       }
@@ -65,7 +67,16 @@ describe("MCP", () => {
   test("lists the tools with read-only hints", async () => {
     const { result } = await rpc("tools/list")
     const tools = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
-    expect(Object.keys(tools).sort()).toEqual(["create_issue", "describe_workspace", "get_issue", "list_issues", "update_issue"])
+    expect(Object.keys(tools).sort()).toEqual([
+      "create_issue",
+      "describe_workspace",
+      "get_issue",
+      "github_sign_in",
+      "github_status",
+      "list_issues",
+      "update_issue"
+    ])
+    expect(tools.github_status.annotations.readOnlyHint).toBe(true)
     expect(tools.list_issues.annotations.readOnlyHint).toBe(true)
     expect(tools.create_issue.annotations.destructiveHint).toBe(false)
   })
@@ -115,6 +126,18 @@ describe("MCP", () => {
     expect(JSON.stringify(result)).toContain("In Progress")
     const missing = await call("get_issue", { id: "GRD-999" })
     expect(missing.isError).toBe(true)
+  })
+})
+
+describe("GitHub tools", () => {
+  test("github_status explains how to connect, and sign-in errors say what is missing", async () => {
+    const status = await call("github_status")
+    expect(status.data.connected).toBe(false)
+    expect(status.data.sign_in_available).toBe(false)
+    expect(status.data.hint).toContain("GITHUB_TOKEN")
+    const signIn = await call("github_sign_in")
+    expect(signIn.isError).toBe(true)
+    expect(signIn.text).toContain("disabled")
   })
 })
 

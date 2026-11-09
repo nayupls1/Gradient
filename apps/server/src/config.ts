@@ -8,14 +8,30 @@ export interface ServerConfigShape {
   readonly webDist: string
   readonly seedSampleData: boolean
   readonly github: {
+    /** False when GRADIENT_GITHUB_DISABLED is set: no sync, no sign-in. */
     readonly enabled: boolean
+    /** A token from the environment or the gh CLI. A sign-in through the app takes precedence. */
     readonly token: Option.Option<string>
     readonly tokenSource: "env" | "gh-cli" | null
     readonly apiUrl: string
+    /** github.com itself (or a GitHub Enterprise host): device-flow sign-in lives here, not on the API. */
+    readonly webUrl: string
+    /** The Gradient GitHub App. Sign-in needs only its client id, which is public. */
+    readonly app: { readonly clientId: string | null; readonly slug: string | null }
     readonly webhookSecret: Option.Option<string>
     readonly pollIntervalSeconds: number
   }
 }
+
+/**
+ * The public Gradient GitHub App. Device-flow sign-in needs only the client id,
+ * so it is safe to ship. GITHUB_APP_CLIENT_ID and GITHUB_APP_SLUG override these.
+ */
+export const GITHUB_APP = { clientId: null as string | null, slug: null as string | null }
+
+/** GitHub Enterprise serves the API at <host>/api/v3; github.com at api.github.com. */
+export const webUrlFor = (apiUrl: string) =>
+  apiUrl === "https://api.github.com" ? "https://github.com" : apiUrl.replace(/\/api\/v3$/, "")
 
 export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShape>()("gradient/ServerConfig") {
   static readonly layer = Layer.effect(
@@ -30,7 +46,11 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
       const seedSampleData = yield* Config.Boolean("GRADIENT_SEED_SAMPLE").pipe(Config.withDefault(true))
       const disabled = yield* Config.Boolean("GRADIENT_GITHUB_DISABLED").pipe(Config.withDefault(false))
       const envToken = yield* Config.option(Config.Redacted("GITHUB_TOKEN"))
-      const apiUrl = yield* Config.String("GITHUB_API_URL").pipe(Config.withDefault("https://api.github.com"))
+      const apiUrl = (yield* Config.String("GITHUB_API_URL").pipe(Config.withDefault("https://api.github.com")))
+        .replace(/\/$/, "")
+      const webUrl = yield* Config.option(Config.String("GITHUB_WEB_URL"))
+      const appClientId = yield* Config.option(Config.String("GITHUB_APP_CLIENT_ID"))
+      const appSlug = yield* Config.option(Config.String("GITHUB_APP_SLUG"))
       const webhookSecret = yield* Config.option(Config.String("GITHUB_WEBHOOK_SECRET"))
       const pollIntervalSeconds = yield* Config.Number("GITHUB_POLL_INTERVAL").pipe(Config.withDefault(15))
 
@@ -50,10 +70,15 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
         webDist,
         seedSampleData,
         github: {
-          enabled: !disabled && Option.isSome(token),
+          enabled: !disabled,
           token: disabled ? Option.none() : token,
           tokenSource: disabled ? null : tokenSource,
-          apiUrl: apiUrl.replace(/\/$/, ""),
+          apiUrl,
+          webUrl: Option.getOrElse(webUrl, () => webUrlFor(apiUrl)).replace(/\/$/, ""),
+          app: {
+            clientId: Option.getOrElse(appClientId, () => GITHUB_APP.clientId) || null,
+            slug: Option.getOrElse(appSlug, () => GITHUB_APP.slug) || null
+          },
           webhookSecret,
           pollIntervalSeconds
         }
