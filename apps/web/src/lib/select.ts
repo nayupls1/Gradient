@@ -1,6 +1,7 @@
 import {
   identifier,
   type Issue,
+  type IssueComment,
   type IssueRelation,
   isOpenBlocker,
   parseIdentifier,
@@ -11,6 +12,7 @@ import {
   type WorkflowState
 } from "@gradient/domain"
 import type { SyncState } from "../sync/engine.ts"
+import { collectReferences, type MdRef, parseMarkdown } from "./markdown.ts"
 
 export const firstTeam = (state: SyncState) => Object.values(state.teams)[0]
 
@@ -161,4 +163,63 @@ export const resolveGithubRef = (
   const repo = Object.values(state.githubRepos).find((r) => sameRepo(ref, r.owner, r.name))
   const pullRequest = repo && Object.values(state.pullRequests).find((pr) => pr.repoId === repo.id && pr.number === ref.number)
   return pullRequest ? { pullRequest } : null
+}
+
+/** An issue's comments, oldest first. */
+export const commentsFor = (state: SyncState, issueId: string): Array<IssueComment> =>
+  Object.values(state.issueComments)
+    .filter((c) => c.issueId === issueId)
+    .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
+
+/** Every reference in an issue's description and comments, in reading order, each once. */
+export const issueReferences = (
+  description: string,
+  comments: ReadonlyArray<Pick<IssueComment, "body">>,
+  context: { owner: string; repo: string } | null
+): Array<MdRef> => {
+  const refs: Array<MdRef> = []
+  const seen = new Set<string>()
+  for (const text of [description, ...comments.map((c) => c.body)]) {
+    if (text.trim() !== "") collectReferences(parseMarkdown(text, context), refs, seen)
+  }
+  return refs
+}
+
+/** Something an issue mentions: a Gradient issue, a pull request, or anything else on GitHub. */
+export type Mention =
+  | { readonly kind: "issue"; readonly issue: Issue }
+  | { readonly kind: "pullRequest"; readonly pullRequest: PullRequest; readonly label: string }
+  | { readonly kind: "github"; readonly label: string; readonly url: string }
+
+/**
+ * What the references of an issue point at, each target once (`TES-3` and the
+ * `#3` it syncs with are one), never the issue itself. Identifiers that match
+ * no issue are left out.
+ */
+export const resolveMentions = (state: SyncState, issue: Issue, refs: ReadonlyArray<MdRef>): Array<Mention> => {
+  const context = issueRepo(state, issue)
+  const label = (ref: { owner: string; repo: string; number: number }) =>
+    context && sameRepo(context, ref.owner, ref.repo) ? `#${ref.number}` : `${ref.owner}/${ref.repo}#${ref.number}`
+  const out: Array<Mention> = []
+  const seen = new Set<string>([`issue:${issue.id}`])
+  const add = (key: string, mention: Mention) => {
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(mention)
+  }
+  for (const { ref } of refs) {
+    if (ref.kind === "identifier") {
+      const found = findIssue(state, `${ref.key}-${ref.number}`)
+      if (found) add(`issue:${found.id}`, { kind: "issue", issue: found })
+      continue
+    }
+    const target = resolveGithubRef(state, ref)
+    if (target && "issue" in target) add(`issue:${target.issue.id}`, { kind: "issue", issue: target.issue })
+    else if (target) add(`pr:${target.pullRequest.id}`, { kind: "pullRequest", pullRequest: target.pullRequest, label: label(ref) })
+    else {
+      const url = `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.number}`
+      add(url.toLowerCase(), { kind: "github", label: label(ref), url })
+    }
+  }
+  return out
 }

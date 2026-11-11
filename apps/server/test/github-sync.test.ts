@@ -709,3 +709,117 @@ describe("project icons", () => {
     expect(error.message).toContain("Link a GitHub repository first")
   })
 })
+
+describe("comments", () => {
+  const comments = () => ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.comments))
+  const loggedSince = (since: number) =>
+    ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.logSince(since, 100))).then((rows) => rows.map((r) => `${r.op}:${r.model}`))
+  const signed = async (event: string, payload: object, delivery: string) => {
+    const body = JSON.stringify(payload)
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)))
+    const signature = "sha256=" + Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("")
+    const res = await fetch(`http://127.0.0.1:${ctx.port}/webhooks/github`, {
+      method: "POST",
+      body,
+      headers: { "x-github-event": event, "x-github-delivery": delivery, "x-hub-signature-256": signature }
+    })
+    return { status: res.status, text: await res.text() }
+  }
+  const ghComment = (id: number, issue: number, body: string, updated = "2026-03-01T00:00:00Z") => ({
+    id,
+    html_url: `https://github.com/acme/widgets/issues/${issue}#issuecomment-${id}`,
+    issue_url: `https://api.github.com/repos/acme/widgets/issues/${issue}`,
+    body,
+    user: { login: "dev", avatar_url: "https://avatars/dev" },
+    created_at: "2026-03-01T00:00:00Z",
+    updated_at: updated
+  })
+
+  test("linking imports comments on issues, not on pull requests", async () => {
+    ctx.fake.seed({ title: "Crash on save" })
+    ctx.fake.seed({ title: "Fix crash", pull_request: { url: "x" } })
+    ctx.fake.comment(1, "Seen it too, see #2", { login: "dev" })
+    ctx.fake.comment(2, "LGTM")
+    ctx.fake.comment(1, "Still happens")
+    await link()
+
+    const issue = await issueByGh(1)
+    const list = await comments()
+    expect(list.map((c) => [c.body, c.author, c.issueId])).toEqual([
+      ["Seen it too, see #2", "dev", issue.id],
+      ["Still happens", "someone", issue.id]
+    ])
+    expect(list[0]!.url).toMatch(/\/issues\/1#issuecomment-\d+$/)
+    expect(list[0]!.authorAvatarUrl).toBe("https://avatars/dev")
+    expect(list[0]!.createdAt).toBeLessThan(list[1]!.createdAt)
+  })
+
+  test("polling picks up new and edited comments, and an unchanged poll logs no comment", async () => {
+    ctx.fake.seed({ title: "Crash on save" })
+    const first = ctx.fake.comment(1, "First")
+    await link()
+
+    let before = await logSize()
+    ctx.fake.editComment(first.id, "First, edited")
+    ctx.fake.comment(1, "Second")
+    await syncNow()
+    expect((await comments()).map((c) => c.body)).toEqual(["First, edited", "Second"])
+    expect((await loggedSince(before)).filter((m) => m.endsWith(":issueComment"))).toEqual(["upsert:issueComment", "upsert:issueComment"])
+
+    before = await logSize()
+    await syncNow()
+    expect((await loggedSince(before)).filter((m) => m.endsWith(":issueComment"))).toEqual([])
+    // Comments are read-only: nothing went to GitHub.
+    expect(ctx.fake.writes()).toHaveLength(0)
+  })
+
+  test("webhooks: issue_comment created, edited and deleted; stale edits are ignored", async () => {
+    ctx.fake.seed({ title: "Target" })
+    await link()
+    const repository = { name: "widgets", owner: { login: "acme" } }
+
+    const created = await signed("issue_comment", { action: "created", comment: ghComment(77, 1, "Hello"), repository }, "c-1")
+    expect(created).toEqual({ status: 202, text: "comment" })
+    expect((await comments()).map((c) => [c.body, c.issueId])).toEqual([["Hello", (await issueByGh(1)).id]])
+
+    const edited = await signed("issue_comment", {
+      action: "edited",
+      comment: ghComment(77, 1, "Hello again", "2026-03-02T00:00:00Z"),
+      repository
+    }, "c-2")
+    expect(edited).toEqual({ status: 202, text: "comment" })
+    const stale = await signed("issue_comment", { action: "edited", comment: ghComment(77, 1, "Old"), repository }, "c-3")
+    expect(stale).toEqual({ status: 202, text: "unchanged" })
+    expect((await comments()).map((c) => c.body)).toEqual(["Hello again"])
+
+    const onUnknown = await signed("issue_comment", { action: "created", comment: ghComment(78, 99, "Elsewhere"), repository }, "c-4")
+    expect(onUnknown).toEqual({ status: 202, text: "skipped" })
+
+    const before = await logSize()
+    const deleted = await signed("issue_comment", { action: "deleted", comment: ghComment(77, 1, "Hello again"), repository }, "c-5")
+    expect(deleted).toEqual({ status: 202, text: "comment deleted" })
+    expect(await comments()).toEqual([])
+    expect(await loggedSince(before)).toEqual(["delete:issueComment"])
+  })
+
+  test("deleting an issue or unlinking the repository removes its comments, and tells clients", async () => {
+    ctx.fake.seed({ title: "One" })
+    ctx.fake.seed({ title: "Two" })
+    ctx.fake.comment(1, "On one")
+    ctx.fake.comment(2, "On two")
+    await link()
+    expect(await comments()).toHaveLength(2)
+
+    let before = await logSize()
+    await mutate([{ _tag: "IssueDelete", id: (await issueByGh(1)).id }])
+    expect((await comments()).map((c) => c.body)).toEqual(["On two"])
+    expect((await loggedSince(before)).slice(0, 2)).toEqual(["delete:issueComment", "delete:issue"])
+
+    before = await logSize()
+    const id = await repoId()
+    await ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.unlinkRepo(id)))
+    expect(await comments()).toEqual([])
+    expect(await loggedSince(before)).toContain("delete:issueComment")
+  })
+})

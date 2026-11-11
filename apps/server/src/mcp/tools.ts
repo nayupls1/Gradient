@@ -53,6 +53,22 @@ export const IssueDetail = Schema.Struct({
     url: Schema.String
   })),
   description: Schema.String,
+  /** Comments from the issue's GitHub copy, oldest first. */
+  comments: Schema.Array(Schema.Struct({
+    author: Schema.NullOr(Schema.String),
+    body: Schema.String,
+    created: Schema.String,
+    url: Schema.String
+  })),
+  /** Issues and pull requests the description and comments refer to, in reading order. */
+  mentions: Schema.Array(Schema.Struct({
+    kind: Schema.Literals(["issue", "pull_request", "github"]),
+    /** "TES-12" for a Gradient issue, "acme/web#3" for anything on GitHub. */
+    ref: Schema.String,
+    title: Schema.NullOr(Schema.String),
+    state: Schema.NullOr(Schema.String),
+    url: Schema.NullOr(Schema.String)
+  })),
   creator: Schema.String,
   created: Schema.String,
   archived: Schema.Boolean,
@@ -117,7 +133,7 @@ export const ListIssues = Tool.make("list_issues", {
 
 export const GetIssue = Tool.make("get_issue", {
   description:
-    "Everything about one issue: its description, GitHub link, what blocks it, what it blocks, related issues and the pull requests that refer to it.",
+    "Everything about one issue: its description, GitHub link, what blocks it, what it blocks, related issues, the pull requests that refer to it, its comments (read from GitHub) and the issues and pull requests it mentions.",
   parameters: Schema.Struct({ id: IssueRef }),
   success: IssueDetail,
   failure: ToolError,

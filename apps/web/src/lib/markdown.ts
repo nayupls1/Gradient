@@ -1,3 +1,4 @@
+import { githubUrlReference, type RefContext, referenceKey, splitReferences, type TextRef } from "@gradient/domain"
 import { Lexer, type Token, type Tokens } from "marked"
 
 /*
@@ -14,27 +15,19 @@ import { Lexer, type Token, type Tokens } from "marked"
  * its own becomes one too. They are resolved against the store when rendered.
  */
 
-/** A reference written in text. */
-export type Reference =
-  | { readonly kind: "github"; readonly owner: string; readonly repo: string; readonly number: number }
-  | { readonly kind: "identifier"; readonly key: string; readonly number: number }
+export type { Reference, RefContext } from "@gradient/domain"
+export { githubUrlReference, splitReferences } from "@gradient/domain"
 
 export type MdElement = {
   readonly tag: string
   readonly attrs: Readonly<Record<string, string | boolean>>
   readonly children: Array<MdNode>
 }
-export type MdRef = { readonly ref: Reference; readonly text: string }
+export type MdRef = TextRef
 export type MdNode = string | MdElement | MdRef
 
 export const isElement = (node: MdNode): node is MdElement => typeof node === "object" && "tag" in node
 export const isRef = (node: MdNode): node is MdRef => typeof node === "object" && "ref" in node
-
-/** The repository `#12` points into: the issue's own, or its project's. */
-export interface RefContext {
-  readonly owner: string
-  readonly repo: string
-}
 
 /** Allowed tags and, for each, the attributes it keeps. */
 const TAGS: Record<string, ReadonlyArray<string>> = {
@@ -125,42 +118,6 @@ export const decodeEntities = (text: string) =>
       return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole
     })
     : text
-
-const REF = /(?<![\w/#-])(?:([A-Za-z0-9][\w.-]*)\/([\w.-]+))?#(\d+)\b|(?<![\w-])([A-Z][A-Z0-9]{1,9})-(\d+)(?![\w-])/g
-
-/** Split text into plain strings and references. `#12` needs a repository to point into. */
-export const splitReferences = (text: string, context: RefContext | null): Array<string | MdRef> => {
-  const out: Array<string | MdRef> = []
-  let last = 0
-  for (const m of text.matchAll(REF)) {
-    let ref: Reference | null = null
-    if (m[3] !== undefined) {
-      const owner = m[1] ?? context?.owner
-      const repo = m[2] ?? context?.repo
-      if (owner && repo) ref = { kind: "github", owner, repo, number: Number(m[3]) }
-    } else {
-      ref = { kind: "identifier", key: m[4]!, number: Number(m[5]) }
-    }
-    if (!ref) continue
-    if (m.index > last) out.push(text.slice(last, m.index))
-    out.push({ ref, text: m[0] })
-    last = m.index + m[0].length
-  }
-  if (last < text.length) out.push(text.slice(last))
-  return out
-}
-
-const GITHUB_URL = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/i
-
-/** A bare GitHub issue or pull request URL, shown the way GitHub shows it. */
-export const githubUrlReference = (url: string, context: RefContext | null): MdRef | null => {
-  const m = url.match(GITHUB_URL)
-  if (!m) return null
-  const [, owner, repo, n] = m
-  const same = context && context.owner.toLowerCase() === owner!.toLowerCase() &&
-    context.repo.toLowerCase() === repo!.toLowerCase()
-  return { ref: { kind: "github", owner: owner!, repo: repo!, number: Number(n) }, text: same ? `#${n}` : `${owner}/${repo}#${n}` }
-}
 
 // One HTML tag, comment or run of text. Anything else (a stray `<`) is text.
 const HTML = /<!--[\s\S]*?(?:-->|$)|<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>|[^<]+|</g
@@ -389,4 +346,19 @@ export const parseMarkdown = (source: string, context: RefContext | null = null)
   const builder = new Builder(context)
   builder.blocks(Lexer.lex(source, { gfm: true, breaks: true }))
   return builder.root.children
+}
+
+/** The references in a render tree, in order, each once (`#12` and its URL count as one). */
+export const collectReferences = (nodes: ReadonlyArray<MdNode>, into: Array<MdRef> = [], seen = new Set<string>()) => {
+  for (const node of nodes) {
+    if (typeof node === "string") continue
+    if (isRef(node)) {
+      const key = referenceKey(node.ref)
+      if (!seen.has(key)) {
+        seen.add(key)
+        into.push(node)
+      }
+    } else collectReferences(node.children, into, seen)
+  }
+  return into
 }

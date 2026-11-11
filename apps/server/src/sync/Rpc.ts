@@ -42,7 +42,8 @@ export const RpcHandlers = GradientRpcs.toLayer(
               issues: db.issues,
               githubRepos: db.githubRepos,
               issueRelations: db.relations,
-              pullRequests: db.pullRequests
+              pullRequests: db.pullRequests,
+              issueComments: db.comments
             })
           )
         }).pipe(Effect.orDie),

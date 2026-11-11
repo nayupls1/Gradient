@@ -51,8 +51,9 @@ installed, so `ui/` and its helpers in `lib/` are app code.
 
 ```
 packages/domain/src
-  models.ts            Team, User, WorkflowState, Label, Project, Issue, IssueRelation, PullRequest, GithubRepo, Entity
+  models.ts            Team, User, WorkflowState, Label, Project, Issue, IssueRelation, PullRequest, IssueComment, GithubRepo, Entity
   mutations.ts         Mutation union + applyIssueMutation (shared optimistic logic)
+  references.ts        refs in issue text (#12, acme/web#12, TES-12, GitHub URLs)
   relations.ts         pull request refs ("Fixes #12", TES-12), blocking loops, blocked state
   sync.ts              Delta, SyncEvent, Snapshot
   rpc.ts               GradientRpcs: Bootstrap, Subscribe, Mutate, Github*
@@ -82,7 +83,7 @@ apps/web/src
 ## Data model
 
 `team`, `user`, `workflow_state`, `label`, `project`, `issue` (label ids stored
-as JSON, optional `project_id`), `issue_relation`, `pull_request`,
+as JSON, optional `project_id`), `issue_relation`, `pull_request`, `issue_comment`,
 `sync_log`, plus `github_repo`, `github_issue_link` (with the shadows and the
 issue's GitHub id), `github_outbox`, `github_delivery` and `github_blob`
 (cached repository images, such as project icons). Timestamps are
@@ -99,6 +100,15 @@ that close its GitHub copy ("Fixes #12", "closes acme/web#3", an issue URL) or
 mention its identifier (TES-12, any key of the team). Refs are stored raw and
 resolved when read, so an issue imported later, or a renamed project key,
 still links.
+
+**Comments** are read-only copies of the comments on an issue's GitHub copy
+(author login and avatar, markdown body, link). The issue page shows them under
+the description, with a "Comment on GitHub" link (`o` opens the issue there).
+
+**Mentions** are the other way round: the issues and pull requests an issue's
+description and comments refer to (see Markdown below), in reading order, each
+target once and never the issue itself. The sidebar lists them under the pull
+requests that refer to the issue; `get_issue` returns them too.
 
 ## Sync engine
 
@@ -175,6 +185,7 @@ public URL, so a local install keeps polling.
 | `blocks` relations | issue dependencies ("blocked by"), when both issues are on GitHub |
 | `related` relations | Gradient only |
 | pull requests | read from GitHub (the issues endpoint lists them), never written |
+| comments | read from GitHub, never written |
 
 **Shadows stop echo loops.** Each linked issue stores the last version of its
 mapped fields that GitHub is known to have.
@@ -199,9 +210,13 @@ mapped fields that GitHub is known to have.
   polling sees them with the issue's next update, the `issue_dependencies`
   webhook at once. A blocker created on GitHub queues what it blocks again.
 - **Polling**: every 15s per repo, `since` the newest `updated_at` seen, with
-  ETags (304s are free).
+  ETags (304s are free). Comments are polled the same way, repository-wide
+  (`/issues/comments`), after the issues, so the issues they are on exist.
+  Comments on pull requests are skipped. Polling cannot see deleted comments;
+  the webhook removes them.
 - **Webhooks**: `POST /webhooks/github`, HMAC-SHA256 verified, deduped by
-  delivery id; handles `issues`, `pull_request` and `issue_dependencies`.
+  delivery id; handles `issues`, `issue_comment`, `pull_request` and
+  `issue_dependencies`.
   Locally, forward with `gh webhook forward`.
 
 Tested in `apps/server/test/github-sync.test.ts`: import, one-field PATCH with
@@ -240,7 +255,8 @@ through 2026-07-28). Tools: `describe_workspace`, `list_issues`, `get_issue`,
 `create_issue`, `update_issue`, `link_issues`, `unlink_issues`, `create_project`,
 `update_project` (name, key, color, icon: "auto", "none" or a repo path),
 `github_status`, `github_sign_in`. Issues report `blocked`, and `get_issue`
-lists blockers, blocked issues, related issues and pull requests. They take
+lists blockers, blocked issues, related issues, pull requests, comments and
+mentions. They take
 and return names (states, labels, people, GRD-12), never ids, and a bad name
 returns a tool error that lists the valid ones. Writes go through `Mutations.apply` with `origin: "mcp"`, so they
 appear live in the app and sync to GitHub. The server sends usage instructions
@@ -273,7 +289,7 @@ localStorage.
 
 ## Next
 
-- Comments, synced with GitHub (`issue_comment` webhook + list/create/edit).
+- Writing comments from Gradient (create/edit on GitHub, an MCP tool).
 - Board view, drag to reorder (the fractional `sortOrder` is already there).
 - Issue search in ⌘K, filters, more views (deliberately left to the user's design).
 - Markdown preview while editing; toggling task list checkboxes in place.

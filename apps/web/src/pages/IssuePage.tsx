@@ -1,14 +1,14 @@
 import * as stylex from "@stylexjs/stylex"
 import { Archive } from "lucide"
 import { useNavigate, useParams } from "@solidjs/router"
-import { createSignal, Show, useContext } from "solid-js"
+import { createSignal, For, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
-import { IssuePullRequests, IssueRelations, type RelationApis } from "../app/relations.tsx"
+import { IssueMentions, IssuePullRequests, IssueRelations, type RelationApis } from "../app/relations.tsx"
 import { KeyScope, useCommands, useScope } from "../keys/solid.tsx"
 import { Markdown } from "../app/Markdown.tsx"
-import { findIssue, formatRelative, issueKey, issueRepo, projectHref } from "../lib/select.ts"
+import { commentsFor, findIssue, formatRelative, issueKey, issueRepo, projectHref } from "../lib/select.ts"
 import { bareTextarea } from "../app/styles.ts"
 import { UserAvatar } from "../app/UserAvatar.tsx"
 import { colors } from "../lib/tokens.stylex.ts"
@@ -60,7 +60,30 @@ const s = stylex.create({
     fontSize: "0.75rem",
     minHeight: 26
   },
-  missing: { display: "grid", placeItems: "center", height: "60%", color: colors.mutedForeground }
+  missing: { display: "grid", placeItems: "center", height: "60%", color: colors.mutedForeground },
+  comments: { display: "flex", flexDirection: "column", gap: 4, marginTop: 8 },
+  commentsHeading: { color: colors.mutedForeground, fontSize: "0.75rem", fontWeight: 500, marginBottom: 6 },
+  comment: {
+    paddingBlock: 12,
+    paddingInline: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.border,
+    marginBottom: 8
+  },
+  commentMeta: { display: "flex", alignItems: "center", gap: 8, fontSize: "0.75rem", color: colors.mutedForeground, marginBottom: 8 },
+  commentAuthor: { color: colors.foreground, fontWeight: 500 },
+  commentTime: { color: { default: colors.mutedForeground, ":hover": colors.foreground } },
+  commentBody: { fontSize: 14, lineHeight: 1.6 },
+  addComment: {
+    alignSelf: "flex-start",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: "0.75rem",
+    color: { default: colors.mutedForeground, ":hover": colors.foreground }
+  }
 })
 
 export const IssuePage = () => {
@@ -69,6 +92,10 @@ export const IssuePage = () => {
   const navigate = useNavigate()
   const actions = useIssueActions()
   const issue = () => findIssue(sync.state, params.ref ?? "")
+  const comments = () => {
+    const current = issue()
+    return current ? commentsFor(sync.state, current.id) : []
+  }
   const apis: PickerApis = {}
   const relationApis: RelationApis = {}
   let titleEl: HTMLTextAreaElement | undefined
@@ -83,6 +110,18 @@ export const IssuePage = () => {
     { id: "issue.blockedBy", title: "Mark as blocked by…", group: "Issue", keys: ["b"], scope: "issue.detail", run: () => relationApis.blockedBy?.open() },
     { id: "issue.blocks", title: "Mark as blocking…", group: "Issue", keys: ["shift+b"], scope: "issue.detail", run: () => relationApis.blocks?.open() },
     { id: "issue.related", title: "Relate to…", group: "Issue", keys: ["shift+r"], scope: "issue.detail", run: () => relationApis.related?.open() },
+    {
+      id: "issue.openGithub",
+      title: "Open on GitHub",
+      group: "Issue",
+      keys: ["o"],
+      scope: "issue.detail",
+      when: () => issue()?.github != null,
+      run: () => {
+        const url = issue()?.github?.url
+        if (url) window.open(url, "_blank", "noopener,noreferrer")
+      }
+    },
     {
       id: "issue.blur",
       title: "Stop editing",
@@ -251,6 +290,47 @@ export const IssuePage = () => {
                     xstyle={[bareTextarea, s.description]}
                   />
                 </Show>
+                <Show when={comments().length > 0 || current().github}>
+                  <Separator xstyle={s.divider} />
+                  <section {...stylex.attrs(s.comments)} aria-label="Comments">
+                    <Show when={comments().length > 0}>
+                      <h2 {...stylex.attrs(s.commentsHeading)}>
+                        {comments().length === 1 ? "1 comment" : `${comments().length} comments`}
+                      </h2>
+                    </Show>
+                    <For each={comments()}>
+                      {(comment) => (
+                        <article {...stylex.attrs(s.comment)}>
+                          <div {...stylex.attrs(s.commentMeta)}>
+                            <UserAvatar name={comment.author ?? "ghost"} src={comment.authorAvatarUrl} size={18} />
+                            <span {...stylex.attrs(s.commentAuthor)}>{comment.author ?? "ghost"}</span>
+                            <a
+                              href={comment.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={new Date(comment.createdAt).toLocaleString()}
+                              {...stylex.attrs(s.commentTime)}
+                            >
+                              {formatRelative(comment.createdAt)}
+                              {comment.updatedAt - comment.createdAt > 60_000 ? " · edited" : ""}
+                            </a>
+                          </div>
+                          <Show when={comment.body.trim() !== ""} fallback={<span {...stylex.attrs(s.placeholder)}>No text.</span>}>
+                            <Markdown source={comment.body} repo={issueRepo(sync.state, current())} xstyle={s.commentBody} />
+                          </Show>
+                        </article>
+                      )}
+                    </For>
+                    <Show when={current().github}>
+                      {(gh) => (
+                        <a href={gh().url} target="_blank" rel="noreferrer" {...stylex.attrs(s.addComment)}>
+                          <GithubIcon size={13} />
+                          Comment on GitHub
+                        </a>
+                      )}
+                    </Show>
+                  </section>
+                </Show>
               </div>
             </div>
             <aside {...stylex.attrs(s.side)}>
@@ -277,6 +357,7 @@ export const IssuePage = () => {
               <Separator xstyle={s.divider} />
               <IssueRelations issue={current()} apis={relationApis} />
               <IssuePullRequests issue={current()} />
+              <IssueMentions issue={current()} />
               <Separator xstyle={s.divider} />
               <Show when={current().github}>
                 {(gh) => (

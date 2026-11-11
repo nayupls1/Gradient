@@ -3,6 +3,7 @@ import type {
   Entity,
   GithubRepo,
   Issue,
+  IssueComment,
   IssueRelation,
   Label,
   ModelName,
@@ -104,6 +105,18 @@ const toPullRequest = (r: Row): PullRequest => ({
   author: strOrNull(r.author),
   closes: JSON.parse(str(r.closes)) as PullRequest["closes"],
   mentions: JSON.parse(str(r.mentions)) as Array<string>,
+  updatedAt: num(r.updated_at)
+})
+
+const toComment = (r: Row): IssueComment => ({
+  id: str(r.id),
+  teamId: str(r.team_id),
+  issueId: str(r.issue_id),
+  author: strOrNull(r.author),
+  authorAvatarUrl: strOrNull(r.author_avatar_url),
+  body: str(r.body),
+  url: str(r.url),
+  createdAt: num(r.created_at),
   updatedAt: num(r.updated_at)
 })
 
@@ -260,6 +273,10 @@ const makeDb = Effect.gen(function*() {
     pullRequestsForTeam: (teamId: string) =>
       all(sql`SELECT * FROM pull_request WHERE team_id = ${teamId} ORDER BY updated_at DESC`, toPullRequest),
 
+    comments: all(sql`SELECT * FROM issue_comment ORDER BY created_at`, toComment),
+    commentsForTeam: (teamId: string) =>
+      all(sql`SELECT * FROM issue_comment WHERE team_id = ${teamId} ORDER BY created_at`, toComment),
+
     /** Read an entity back from its table, in the shape clients receive. */
     loadEntity: (model: ModelName, id: string): Effect.Effect<Entity | undefined, SqlError.SqlError> => {
       switch (model) {
@@ -281,6 +298,8 @@ const makeDb = Effect.gen(function*() {
           return one(sql`SELECT * FROM issue_relation WHERE id = ${id}`, (r) => ({ model, value: toRelation(r) }))
         case "pullRequest":
           return one(sql`SELECT * FROM pull_request WHERE id = ${id}`, (r) => ({ model, value: toPullRequest(r) }))
+        case "issueComment":
+          return one(sql`SELECT * FROM issue_comment WHERE id = ${id}`, (r) => ({ model, value: toComment(r) }))
       }
     },
 

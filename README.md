@@ -83,7 +83,7 @@ For instant updates, forward webhooks to your machine:
 
 ```bash
 export GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 16)   # set before starting the server
-gh webhook forward --repo=owner/repo --events=issues \
+gh webhook forward --repo=owner/repo --events=issues,issue_comment,pull_request,issue_dependencies \
   --url=http://localhost:4100/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
 ```
 

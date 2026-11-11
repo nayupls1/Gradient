@@ -20,7 +20,7 @@ import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
 import { Mutations, type Origin, type TxContext } from "../sync/Mutations.ts"
 import { GithubAuth, type Viewer } from "./GithubAuth.ts"
-import { type GhIssue, GithubClient, type IssueWrite, labelColor, labelName } from "./GithubClient.ts"
+import { type GhComment, type GhIssue, GithubClient, type IssueWrite, labelColor, labelName } from "./GithubClient.ts"
 import { autoIcon, iconCandidates, MAX_ICON_BYTES, type RepoFile } from "./icons.ts"
 import { diff, fromGithub, fromIssue, resolveState, type Shadow } from "./mapping.ts"
 
@@ -46,6 +46,9 @@ const coordsFromUrl = (url: string) => {
   const m = url.match(/\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)\/?$/)
   return m ? { owner: m[1]!, repo: m[2]!, number: Number(m[3]) } : null
 }
+
+/** "https://api.github.com/repos/acme/web/issues/12" → 12. */
+const issueNumberOf = (issueUrl: string) => Number(issueUrl.match(/\/issues\/(\d+)\/?$/)?.[1] ?? Number.NaN)
 
 const pullRequestState = (gh: GhIssue): PullRequest["state"] =>
   gh.pull_request?.merged_at ? "merged" : gh.state === "closed" ? "closed" : gh.draft ? "draft" : "open"
@@ -82,6 +85,13 @@ export class GithubSync extends Context.Service<GithubSync, {
   syncNow(repoId: string): Effect.Effect<void, GithubError>
   /** Apply one issue or pull request as GitHub sees it (from a webhook, poll or import). */
   ingest(repo: GithubRepo, gh: GhIssue): Effect.Effect<"created" | "updated" | "unchanged" | "skipped" | "pull_request">
+  /**
+   * Store a comment as GitHub sees it. Comments on pull requests, or on issues
+   * Gradient does not have, are skipped.
+   */
+  ingestComment(repo: GithubRepo, gh: GhComment): Effect.Effect<"comment" | "unchanged" | "skipped">
+  /** A comment was deleted on GitHub. */
+  removeComment(repo: GithubRepo, ghId: number): Effect.Effect<void>
   /** Read what blocks one linked issue on GitHub and apply the difference. */
   pullDependencies(repo: GithubRepo, ghNumber: number): Effect.Effect<void, GithubError>
   /** Push every due outbox entry to GitHub. */
@@ -201,6 +211,49 @@ export class GithubSync extends Context.Service<GithubSync, {
                          gh_updated_at = excluded.gh_updated_at, updated_at = excluded.updated_at`
             tx.touch("pullRequest", id)
           })).pipe(Effect.as("pull_request" as const))
+
+      /** Store a comment as GitHub sees it, on the Gradient issue linked to its GitHub issue. */
+      const ingestComment = (repo: GithubRepo, gh: GhComment) =>
+        mutations.transact({ origin: "github", actorId: null }, (tx) =>
+          Effect.gen(function*() {
+            const link = yield* getLinkByNumber(repo.id, issueNumberOf(gh.issue_url))
+            if (!link) return "skipped" as const
+            const rows = yield* sql`SELECT * FROM issue_comment WHERE repo_id = ${repo.id} AND gh_id = ${gh.id}`
+            const existing = rows[0]
+            if (existing && gh.updated_at < (existing.gh_updated_at as string)) return "unchanged" as const
+            const next = {
+              issue_id: link.issueId,
+              author: gh.user?.login ?? null,
+              author_avatar_url: gh.user?.avatar_url ?? null,
+              body: gh.body ?? "",
+              url: gh.html_url
+            }
+            const same = existing && (Object.keys(next) as Array<keyof typeof next>).every((k) => existing[k] === next[k])
+            if (existing && same) {
+              yield* sql`UPDATE issue_comment SET gh_updated_at = ${gh.updated_at} WHERE id = ${existing.id as string}`
+              return "unchanged" as const
+            }
+            const id = (existing?.id as string | undefined) ?? Bun.randomUUIDv7()
+            const issue = yield* db.getIssue(link.issueId)
+            if (!issue) return "skipped" as const
+            yield* sql`INSERT INTO issue_comment (id, team_id, issue_id, repo_id, gh_id, author, author_avatar_url, body, url,
+                                                 created_at, updated_at, gh_updated_at)
+                       VALUES (${id}, ${issue.teamId}, ${next.issue_id}, ${repo.id}, ${gh.id}, ${next.author},
+                               ${next.author_avatar_url}, ${next.body}, ${next.url}, ${Date.parse(gh.created_at)},
+                               ${Date.parse(gh.updated_at)}, ${gh.updated_at})
+                       ON CONFLICT (id) DO UPDATE SET issue_id = excluded.issue_id, author = excluded.author,
+                         author_avatar_url = excluded.author_avatar_url, body = excluded.body, url = excluded.url,
+                         updated_at = excluded.updated_at, gh_updated_at = excluded.gh_updated_at`
+            tx.touch("issueComment", id)
+            return "comment" as const
+          })).pipe(Effect.map((r) => r.value), Effect.orDie)
+
+      const removeComment = (repo: GithubRepo, ghId: number) =>
+        mutations.transact({ origin: "github", actorId: null }, (tx) =>
+          Effect.gen(function*() {
+            const rows = yield* sql`DELETE FROM issue_comment WHERE repo_id = ${repo.id} AND gh_id = ${ghId} RETURNING id`
+            for (const row of rows) tx.touch("issueComment", row.id as string, "delete")
+          })).pipe(Effect.asVoid, Effect.orDie)
 
       /** The Gradient issue a GitHub issue (from a dependency list) is linked to, if any. */
       const linkedIssueFor = (gh: GhIssue) =>
@@ -547,6 +600,33 @@ export class GithubSync extends Context.Service<GithubSync, {
             if (announce || error !== repo.lastError) tx.touch("githubRepo", repo.id)
           }))
 
+      /**
+       * Page through the repository's comments updated since the last poll, like
+       * issues. Deletions do not show up here; the issue_comment webhook brings them.
+       */
+      const pollComments = (repo: GithubRepo, options: { full: boolean }) =>
+        Effect.gen(function*() {
+          const rows = yield* sql`SELECT comments_since, comments_etag FROM github_repo WHERE id = ${repo.id}`
+          const since = options.full ? null : ((rows[0]?.comments_since as string | null) ?? null)
+          const etag = options.full ? null : ((rows[0]?.comments_etag as string | null) ?? null)
+          let page = 1
+          let newest = since
+          let firstEtag: string | null = etag
+          while (true) {
+            const result = yield* gh.listComments(repo.owner, repo.name, { since, etag: page === 1 ? etag : null, page })
+            if (result._tag === "NotModified") break
+            if (page === 1) firstEtag = result.etag
+            for (const comment of result.comments) {
+              yield* ingestComment(repo, comment)
+              if (!newest || comment.updated_at > newest) newest = comment.updated_at
+            }
+            if (!result.hasNext) break
+            page++
+          }
+          const keepEtag = newest === since ? firstEtag : null
+          yield* sql`UPDATE github_repo SET comments_since = ${newest}, comments_etag = ${keepEtag} WHERE id = ${repo.id}`
+        })
+
       /** Page through issues updated since the last poll. 304s are free against the rate limit. */
       const pollRepo = (repo: GithubRepo, options: { full: boolean }) =>
         Effect.gen(function*() {
@@ -575,6 +655,8 @@ export class GithubSync extends Context.Service<GithubSync, {
           }
           // Dependencies once every issue of this poll exists, so blockers resolve in any order.
           for (const issue of seen) yield* syncDependenciesOf(repo, issue)
+          // Comments last, so the issues they are on exist.
+          yield* pollComments(repo, options)
           // The ETag only applies to the exact URL, so drop it when `since` moves.
           const keepEtag = newest === since ? firstEtag : null
           yield* sql`UPDATE github_repo SET poll_since = ${newest}, poll_etag = ${keepEtag} WHERE id = ${repo.id}`
@@ -856,6 +938,8 @@ export class GithubSync extends Context.Service<GithubSync, {
             yield* sql`DELETE FROM github_issue_link WHERE repo_id = ${repoId}`
             const prs = yield* sql`DELETE FROM pull_request WHERE repo_id = ${repoId} RETURNING id`
             for (const row of prs) tx.touch("pullRequest", row.id as string, "delete")
+            const comments = yield* sql`DELETE FROM issue_comment WHERE repo_id = ${repoId} RETURNING id`
+            for (const row of comments) tx.touch("issueComment", row.id as string, "delete")
             yield* sql`DELETE FROM github_repo WHERE id = ${repoId}`
             tx.touch("githubRepo", repoId, "delete")
             // Its files are out of reach now: back to the cube, and to "auto" for the next repo.
@@ -899,6 +983,8 @@ export class GithubSync extends Context.Service<GithubSync, {
         unlinkRepo,
         syncNow,
         ingest,
+        ingestComment,
+        removeComment,
         pullDependencies,
         flushOutbox,
         availableRepos: Effect.suspend(() => gh.availableRepos),

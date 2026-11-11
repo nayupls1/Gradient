@@ -10,7 +10,9 @@ import {
   PROJECT_COLORS,
   projectKeyFor,
   pullRequestRefersTo,
+  type Reference,
   teamKeys,
+  textReferences,
   uuidv7
 } from "@gradient/domain"
 import { Effect, Layer } from "effect"
@@ -33,7 +35,7 @@ export const mcpUrl = (config: { host: string; port: number }) =>
 const INSTRUCTIONS = `Gradient is the user's issue tracker. Issues have identifiers like TES-12: the key of their project (or of the team, GRD, when they have none) and a number.
 Call describe_workspace once to learn workflow states, labels, people and projects, then use those names.
 Put issues in the project they belong to; a project with a linked repo syncs its issues to GitHub.
-Record dependencies with link_issues ("blocked_by"); get_issue shows blockers and the pull requests that refer to an issue.
+Record dependencies with link_issues ("blocked_by"); get_issue shows blockers, the pull requests that refer to an issue, its comments and what it mentions.
 Writes show up live in the user's app and sync to GitHub when a repo is linked, so keep titles short and specific, and put detail in the description (markdown).`
 
 const SKILL = `---
@@ -81,8 +83,9 @@ const ToolHandlers = GradientToolkit.toLayer(
       const relations = yield* db.relationsForTeam(team.id)
       const pullRequests = yield* db.pullRequestsForTeam(team.id)
       const issues = yield* db.issuesForTeam(team.id)
+      const comments = yield* db.commentsForTeam(team.id)
       const keys = teamKeys(team, projects)
-      return { team, viewerId, states, labels, users, projects, repos, relations, pullRequests, issues, keys }
+      return { team, viewerId, states, labels, users, projects, repos, relations, pullRequests, comments, issues, keys }
     }).pipe(Effect.catchTag("SqlError", Effect.die))
     type Workspace = Effect.Success<typeof workspace>
 
@@ -153,6 +156,53 @@ const ToolHandlers = GradientToolkit.toLayer(
       blocked: isBlocked(ws, issue),
       updated: iso(issue.updatedAt)
     })
+    const sameRepo = (a: { owner: string; repo: string }, owner: string, name: string) =>
+      a.owner.toLowerCase() === owner.toLowerCase() && a.repo.toLowerCase() === name.toLowerCase()
+    /** Where `#12` points in an issue's text: its GitHub copy's repository, else its project's. */
+    const refContext = (ws: Workspace, issue: Issue) => {
+      if (issue.github) return { owner: issue.github.owner, repo: issue.github.repo }
+      const repo = ws.repos.find((r) => r.projectId === issue.projectId)
+      return repo ? { owner: repo.owner, repo: repo.name } : null
+    }
+    /** What an issue's description and comments mention, each target once, never the issue itself. */
+    const mentions = (ws: Workspace, issue: Issue, comments: ReadonlyArray<{ body: string }>): IssueDetail["mentions"] => {
+      const context = refContext(ws, issue)
+      const seen = new Set<string>([issue.id])
+      const out: Array<IssueDetail["mentions"][number]> = []
+      const resolve = (ref: Reference) => {
+        if (ref.kind === "identifier") {
+          if (!ws.keys.has(ref.key.toUpperCase())) return
+          const found = ws.issues.find((i) => i.number === ref.number)
+          if (found && !seen.has(found.id)) {
+            seen.add(found.id)
+            out.push({ kind: "issue", ref: keyOf(ws, found), title: found.title, state: ws.states.find((s) => s.id === found.stateId)?.name ?? null, url: found.github?.url ?? null })
+          }
+          return
+        }
+        const name = `${ref.owner}/${ref.repo}#${ref.number}`
+        const synced = ws.issues.find((i) => i.github && i.github.number === ref.number && sameRepo(i.github, ref.owner, ref.repo))
+        if (synced) {
+          if (seen.has(synced.id)) return
+          seen.add(synced.id)
+          out.push({ kind: "issue", ref: keyOf(ws, synced), title: synced.title, state: ws.states.find((s) => s.id === synced.stateId)?.name ?? null, url: synced.github!.url })
+          return
+        }
+        if (seen.has(name.toLowerCase())) return
+        seen.add(name.toLowerCase())
+        const repo = ws.repos.find((r) => sameRepo(ref, r.owner, r.name))
+        const pr = repo && ws.pullRequests.find((p) => p.repoId === repo.id && p.number === ref.number)
+        out.push(
+          pr
+            ? { kind: "pull_request", ref: name, title: pr.title, state: pr.state, url: pr.url }
+            : { kind: "github", ref: name, title: null, state: null, url: `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.number}` }
+        )
+      }
+      for (const text of [issue.description, ...comments.map((c) => c.body)]) {
+        for (const { ref } of textReferences(text, context)) resolve(ref)
+      }
+      return out
+    }
+
     const detail = (ws: Workspace, issue: Issue): IssueDetail => ({
       ...summary(ws, issue),
       blocked_by: related(ws, blockersOf(ws, issue)),
@@ -183,6 +233,13 @@ const ToolHandlers = GradientToolkit.toLayer(
         }
       }),
       description: issue.description,
+      comments: ws.comments.filter((c) => c.issueId === issue.id).map((c) => ({
+        author: c.author,
+        body: c.body,
+        created: iso(c.createdAt),
+        url: c.url
+      })),
+      mentions: mentions(ws, issue, ws.comments.filter((c) => c.issueId === issue.id)),
       creator: ws.users.find((u) => u.id === issue.creatorId)?.name ?? "unknown",
       created: iso(issue.createdAt),
       archived: issue.archivedAt !== null,
