@@ -182,10 +182,17 @@ const makeAuth = Effect.gen(function*() {
       return user ? yield* accountOf({ id: String(user.id), name: String(user.name) }) : null
     })
 
+  /** For the sign-in screen: whether it may offer sign-up, and whether this would be the first account. */
+  const publicConfig = Effect.map(db.accountCount, (n) => ({
+    signUpOpen: n === 0 || config.auth.allowSignUp,
+    firstAccount: n === 0
+  })).pipe(Effect.orDie)
+
   return {
     auth,
     handler: (request: Request) => auth.handler(request),
     signUpOpen,
+    publicConfig,
     viewerFromHeaders,
     viewerFromApiKey
   }

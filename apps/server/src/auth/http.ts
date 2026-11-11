@@ -29,7 +29,7 @@ export const AuthConfigRoute = HttpRouter.add(
   "/api/auth-config",
   Effect.gen(function*() {
     const auth = yield* Auth
-    return HttpServerResponse.jsonUnsafe({ signUpOpen: yield* auth.signUpOpen })
+    return HttpServerResponse.jsonUnsafe(yield* auth.publicConfig)
   })
 )
 

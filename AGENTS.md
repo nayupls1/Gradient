@@ -34,6 +34,13 @@ Run both checks before you push.
   call `Mutations.apply` with `origin: "mcp"`. Tools take and return human
   names, never internal ids, and errors list the valid values. A new feature
   that users can do in the UI should get a tool too.
+- **Auth on every data route.** Browser routes that read or write workspace
+  data need a session (`RequireSession`, and RPCs get `CurrentViewer` from
+  `AuthMiddleware`); MCP needs an agent key (`RequireApiKey`). Act as the
+  viewer (`CurrentViewer.userId`), never as `meta.viewer_id`, which is only the
+  workspace's original user. Accounts are Better Auth's: change them through
+  `/api/auth/*` or `auth.api`, not its tables, and add its new tables in a
+  migration (`auth_*`, snake_case; `auth/adapter.ts` maps the names).
 - **Keyboard first.** New actions are commands registered with `useCommands`
   (stable id, title, group, scope, optional default keys), never ad-hoc
   `keydown` listeners. The command then shows up in ⌘K, in `?`, and can be

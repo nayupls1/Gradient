@@ -22,6 +22,10 @@ import {
   GitPullRequestDraft,
   type IconNode,
   Keyboard,
+  KeyRound,
+  Laptop,
+  LockKeyhole,
+  LogOut,
   Minus,
   Monitor,
   Moon,
@@ -115,6 +119,10 @@ export const PencilIcon = wrap(Pencil)
 export const RefreshIcon = wrap(RefreshCw)
 export const UnlinkIcon = wrap(Unlink)
 export const ProjectIcon = wrap(Box)
+export const KeyIcon = wrap(KeyRound)
+export const LockIcon = wrap(LockKeyhole)
+export const SignOutIcon = wrap(LogOut)
+export const DeviceIcon = wrap(Laptop)
 /** An issue waiting on another one. Takes the surrounding text color. */
 export const BlockedIcon = wrap(OctagonMinus)
 

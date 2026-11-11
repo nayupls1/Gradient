@@ -5,7 +5,8 @@ next.
 
 Gradient is a minimal, agent-first issue tracker. It syncs issues both ways
 with GitHub, as close to realtime as GitHub allows, and exposes everything to
-coding agents over MCP. It runs locally, for one user, for now.
+coding agents over MCP. It runs locally; people sign in with accounts (email
+and password), and agents with agent keys.
 
 ## Principles
 
@@ -33,14 +34,16 @@ coding agents over MCP. It runs locally, for one user, for now.
 | Icons | `lucide` icon data, drawn by shadcn-solid's `Icon` |
 | Markdown | `marked`'s lexer only; our own tree builder and Solid renderer (no HTML strings) |
 | Agents | MCP over Streamable HTTP with `effect/ai`'s `McpServer` (no extra package) |
+| Accounts | Better Auth (email and password, sessions) and its API key plugin (agent keys), on our SQLite connection |
 | Font | Inter, bundled (`@fontsource-variable/inter`) |
 | Build | Vite 8 with `vite-plugin-solid` |
 | Tests | `bun test`, with a fake GitHub server |
 
-Runtime dependencies: server 3 (`effect`, `@effect/platform-bun`,
-`@effect/sql-sqlite-bun`); web 9 (`effect`, `solid-js`, `@solidjs/web`,
-`@solidjs/router`, `@stylexjs/stylex`, `base-ui-solidjs`, `lucide`, `marked`,
-the font).
+Runtime dependencies: server 5 (`effect`, `@effect/platform-bun`,
+`@effect/sql-sqlite-bun`, `better-auth`, `@better-auth/api-key`); web 11
+(`effect`, `solid-js`, `@solidjs/web`, `@solidjs/router`, `@stylexjs/stylex`,
+`base-ui-solidjs`, `lucide`, `marked`, the font, and Better Auth's client with
+its API key plugin).
 
 The components come from shadcn-solid (a Solid 2 port of shadcn/ui) and run on
 base-ui-solidjs (a Solid 2 port of Base UI). Like shadcn/ui, they are copied
@@ -67,7 +70,10 @@ apps/server/src
   github/              auth (device-flow sign-in), client, field mapping, GithubSync (import/poll/push), webhook route,
                        project icons (icons.ts picks a favicon; files.ts serves repo images)
   mcp/                 MCP tools (names in, names out), instructions, the gradient skill
-  http/guard.ts        local-only guard: refuses foreign browser origins and rebound hosts
+  auth/                Better Auth: Auth.ts (instance, sign-up policy, account ↔ user), adapter.ts (its
+                       database adapter over Effect SQL), http.ts (auth routes, session and agent-key guards,
+                       the RPC AuthMiddleware)
+  http/guard.ts        origin guard: refuses foreign browser origins and rebound hosts
   seed.ts, app.ts, main.ts
 apps/web/src
   sync/replica.ts      pure client copy: base + pending transactions, confirm/rollback (unit tested)
@@ -77,14 +83,17 @@ apps/web/src
   ui/                  shadcn-solid components (Button, Dialog, Popover, Command, Sidebar…), icons
   lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts), list windowing (window.ts), markdown tree (markdown.ts)
   app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, Markdown, router
-  pages/               IssuesPage (keyboard-driven, virtualized list), IssuePage, SettingsPage
+  app/auth.ts          Better Auth client and the session signal (main.tsx shows AuthPage without one)
+  pages/               IssuesPage (keyboard-driven, virtualized list), IssuePage, SettingsPage,
+                       AuthPage (sign in / create account), ProfilePage (name, password, sessions, agent keys)
 ```
 
 ## Data model
 
 `team`, `user`, `workflow_state`, `label`, `project`, `issue` (label ids stored
 as JSON, optional `project_id`), `issue_relation`, `pull_request`, `issue_comment`,
-`sync_log`, plus `github_repo`, `github_issue_link` (with the shadows and the
+`sync_log`, the accounts tables (`auth_user`, `auth_session`, `auth_account`,
+`auth_verification`, `auth_api_key`; see Accounts), plus `github_repo`, `github_issue_link` (with the shadows and the
 issue's GitHub id), `github_outbox`, `github_delivery` and `github_blob`
 (cached repository images, such as project icons). Timestamps are
 epoch milliseconds.
@@ -265,9 +274,50 @@ on initialize and publishes a `gradient` skill (MCP skills extension).
 Install: `claude mcp add --transport http --scope user gradient http://127.0.0.1:4100/mcp`
 or `codex mcp add gradient --url http://127.0.0.1:4100/mcp`.
 
-There is no auth yet, so the server binds to loopback and `http/guard.ts`
-refuses requests whose `Origin` or `Host` is not local. CLI clients send no
-`Origin` and pass.
+`/mcp` needs an agent key (`Authorization: Bearer grd_…`, or `x-api-key`):
+without one it answers 401 with `WWW-Authenticate: Bearer`. The key's owner is
+the actor of every write, and "me" in the tools. The server binds to loopback
+by default, and `http/guard.ts` refuses requests whose `Origin` is not local
+(or `GRADIENT_URL`'s), or whose `Host` is not local on a loopback bind. CLI
+clients send no `Origin` and pass.
+
+## Accounts
+
+Better Auth (`auth/Auth.ts`) serves `/api/auth/*`: email and password
+sign-up and sign-in, sessions, profile updates, password changes, session
+lists and revocation, and agent keys (its API key plugin, stored hashed,
+prefixed `grd_`). It runs on Gradient's own SQLite connection through
+`auth/adapter.ts`, a Better Auth adapter over Effect SQL: its tables
+(`auth_*`, snake_case, dates as ISO strings) come from our migrations, share
+the write lock, and work in an in-memory test database. Better Auth's
+transactions run inside `sql.withTransaction`.
+
+- **Accounts and users.** A Gradient `user` (assignees, authors, the sync
+  log's actor) acts for at most one account (`user.account_id`); users without
+  one are people known from GitHub. The first account takes over the
+  workspace's original user (`meta.viewer_id`, seeded as "Me"), with its issues
+  and GitHub connection. Later accounts get a user of their own. Linking runs
+  through `Mutations.transact`, and so does renaming (the account's name is
+  copied to the user), so clients see both live.
+- **Sign-up** is open until the first account exists, then only with
+  `GRADIENT_ALLOW_SIGNUP=true` (checked before Better Auth's transaction).
+  `/api/auth-config` tells the sign-in page which form to show.
+- **The sync socket** only opens with a session cookie (`RequireSession`),
+  and `AuthMiddleware` resolves the session again on every RPC call and
+  provides `CurrentViewer`; the handlers act as that user. A subscription
+  rechecks its session every 30 seconds, so signing out elsewhere or revoking
+  the session ends it with `Unauthorized`; the client then shows the sign-in
+  page. Repository images (`/repo-files`) need a session too.
+- **Base URL.** Without `GRADIENT_URL`, Better Auth answers whichever loopback
+  host and port the browser used (Vite on 4200, the server on 4100); with it,
+  that URL is the one origin and cookies are `Secure` when it is https.
+- **Secret.** `GRADIENT_AUTH_SECRET`, else a random one made once and kept in
+  `meta.auth_secret`.
+- **Rate limits.** Sign-in (10/min), sign-up (5/min) and password changes
+  (5/min) per client address, read from the socket (the server sets the header
+  Better Auth reads and drops any copy the client sent). Agent keys are not
+  rate limited.
+- **GitHub stays one connection per workspace**, owned by the first account.
 
 ## Keyboard
 
@@ -294,7 +344,9 @@ localStorage.
 - Issue search in ⌘K, filters, more views (deliberately left to the user's design).
 - Markdown preview while editing; toggling task list checkboxes in place.
 - Offline cache of the store in IndexedDB.
-- Multiple users with sessions, and a hosted relay for app webhooks and
-  installation tokens (the private key cannot ship in a local app).
+- More sign-in methods (GitHub OAuth, passkeys), password reset by email, and
+  an owner screen to invite or remove people.
+- A hosted relay for app webhooks and installation tokens (the private key
+  cannot ship in a local app).
 - Cycles; project descriptions, leads and target dates.
 - Postgres if it outgrows SQLite (the SQL layer is Effect's, so the queries stay).

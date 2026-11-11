@@ -60,7 +60,9 @@ restate the code. For UI changes, include a screenshot
 - Small, focused pull requests. Lead the description with the problem, then
   the fix.
 - Commit messages: a short summary line, then why. Mention new dependencies.
-- Keep the server bound to loopback by default. There is no auth yet.
+- Keep the server bound to loopback by default. Every route that reads or
+  writes workspace data needs a session (browser) or an agent key (MCP); see
+  `apps/server/src/auth/`.
 
 ## License
 

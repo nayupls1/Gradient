@@ -57,8 +57,9 @@ const mcp = (base: string, key: string | null, body: object, session?: string) =
 describe("accounts", () => {
   test("the first account takes over the workspace user; then sign-up closes", async () => {
     const server = await start()
-    const config = async () => (await (await fetch(`${server.base}/api/auth-config`)).json()) as { signUpOpen: boolean }
-    expect((await config()).signUpOpen).toBe(true)
+    const config = async () =>
+      (await (await fetch(`${server.base}/api/auth-config`)).json()) as { signUpOpen: boolean; firstAccount: boolean }
+    expect(await config()).toEqual({ signUpOpen: true, firstAccount: true })
 
     const owner = await db(server, (d) => d.getMeta("viewer_id"))
     const cookie = await signUp(server.base)
@@ -68,7 +69,7 @@ describe("accounts", () => {
     expect(snap.users.find((u) => u.id === owner)?.name).toBe(OWNER.name)
     expect(snap.issues.some((i) => i.assigneeId === owner)).toBe(true)
 
-    expect((await config()).signUpOpen).toBe(false)
+    expect(await config()).toEqual({ signUpOpen: false, firstAccount: false })
     const refused = await authPost(server.base, "/sign-up/email", SECOND)
     expect(refused.status).toBe(403)
     expect(((await refused.json()) as { message: string }).message).toContain("GRADIENT_ALLOW_SIGNUP")
