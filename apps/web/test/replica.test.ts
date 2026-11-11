@@ -35,7 +35,8 @@ const snapshot = (issues: Array<Issue>, lastSyncId = 10): Snapshot => ({
   githubRepos: [],
   issueRelations: [],
   pullRequests: [],
-  issueComments: []
+  issueComments: [],
+  linkedPullRequests: []
 })
 
 const upsert = (syncId: number, value: Issue, clientTxId: string | null = null): Delta => ({

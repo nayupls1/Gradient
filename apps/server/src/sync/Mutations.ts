@@ -388,6 +388,8 @@ export class Mutations extends Context.Service<Mutations, {
               // Its comments go with it (the foreign key cascades); tell clients.
               const comments = yield* db.sql`SELECT id FROM issue_comment WHERE issue_id = ${m.id}`
               for (const c of comments) tx.touch("issueComment", c.id as string, "delete")
+              const linked = yield* db.sql`SELECT id FROM linked_pull_request WHERE issue_id = ${m.id}`
+              for (const l of linked) tx.touch("linkedPullRequest", l.id as string, "delete")
               yield* db.deleteIssue(m.id)
               tx.touch("issue", m.id, "delete")
               return

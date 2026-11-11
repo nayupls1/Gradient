@@ -80,6 +80,49 @@ export const GhComment = Schema.Struct({
 })
 export type GhComment = typeof GhComment.Type
 
+/** A pull request on an issue's "Development" list, as GraphQL reports it. */
+export interface GhLinkedPullRequest {
+  readonly owner: string
+  readonly repo: string
+  readonly number: number
+  readonly title: string
+  readonly url: string
+  readonly state: "open" | "draft" | "merged" | "closed"
+  readonly author: string | null
+  readonly updatedAt: string
+}
+
+const GhGraphqlPullRequest = Schema.Struct({
+  number: Schema.Int,
+  title: Schema.String,
+  url: Schema.String,
+  state: Schema.String,
+  isDraft: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  updatedAt: Schema.String,
+  author: Schema.optionalKey(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
+  repository: Schema.Struct({ name: Schema.String, owner: Schema.Struct({ login: Schema.String }) })
+})
+const GhGraphqlIssue = Schema.NullOr(Schema.Struct({
+  closedByPullRequestsReferences: Schema.NullOr(Schema.Struct({
+    nodes: Schema.NullOr(Schema.Array(Schema.NullOr(GhGraphqlPullRequest)))
+  }))
+}))
+const GhLinkedResponse = Schema.Struct({
+  data: Schema.optionalKey(Schema.NullOr(Schema.Struct({
+    repository: Schema.NullOr(Schema.Record(Schema.String, GhGraphqlIssue))
+  }))),
+  errors: Schema.optionalKey(Schema.Array(Schema.Struct({ message: Schema.String })))
+})
+
+/** How many issues one GraphQL request asks about. */
+export const LINKED_BATCH = 50
+
+/**
+ * The base URL `/graphql` hangs off: the REST base on github.com, its parent on
+ * Enterprise Server (REST at /api/v3, GraphQL at /api/graphql).
+ */
+export const graphqlBaseFor = (apiUrl: string) => apiUrl.replace(/\/$/, "").replace(/(\/api)\/v3$/, "$1")
+
 export const labelName = (l: typeof GhLabel.Type) => (typeof l === "string" ? l : l.name)
 export const labelColor = (l: typeof GhLabel.Type) => (typeof l === "string" ? null : l.color ?? null)
 
@@ -137,33 +180,49 @@ export class GithubClient extends Context.Service<GithubClient, {
   addBlockedBy(owner: string, repo: string, number: number, blockerId: number): Effect.Effect<void, GithubError>
   /** Succeeds when the dependency is already gone. */
   removeBlockedBy(owner: string, repo: string, number: number, blockerId: number): Effect.Effect<void, GithubError>
+  /**
+   * The pull requests on each issue's "Development" list (closing keywords or
+   * linked by hand, in any repository the token can see), by issue number.
+   * Issues GitHub does not know are left out of the map. Only REST covers the
+   * rest of Gradient; this list exists in GraphQL alone.
+   */
+  linkedPullRequests(
+    owner: string,
+    repo: string,
+    numbers: ReadonlyArray<number>
+  ): Effect.Effect<ReadonlyMap<number, ReadonlyArray<GhLinkedPullRequest>>, GithubError>
 }>()("gradient/GithubClient") {
   static readonly layer = Layer.effect(
     GithubClient,
     Effect.gen(function*() {
       const config = (yield* ServerConfig).github
       const auth = yield* GithubAuth
-      const client = (yield* HttpClient.HttpClient).pipe(
-        HttpClient.mapRequest((req) => {
-          // Read per request, so a sign-in or sign-out applies to the next call.
-          const token = auth.tokenUnsafe()
-          return req.pipe(
-            HttpClientRequest.prependUrl(config.apiUrl),
-            HttpClientRequest.setHeaders({
-              accept: "application/vnd.github+json",
-              "x-github-api-version": "2022-11-28",
-              "user-agent": "gradient"
-            }),
-            token ? HttpClientRequest.bearerToken(token) : (r) => r
-          )
-        }),
-        // An expired or revoked sign-in: drop it, so the UI asks to sign in again.
-        HttpClient.tap((res) => {
-          const sent = res.request.headers["authorization"]?.replace(/^Bearer /, "")
-          return res.status === 401 && sent ? auth.rejected(sent) : Effect.void
-        })
-      )
+      const authed = (base: HttpClient.HttpClient, prefix: string) =>
+        base.pipe(
+          HttpClient.mapRequest((req) => {
+            // Read per request, so a sign-in or sign-out applies to the next call.
+            const token = auth.tokenUnsafe()
+            return req.pipe(
+              HttpClientRequest.prependUrl(prefix),
+              HttpClientRequest.setHeaders({
+                accept: "application/vnd.github+json",
+                "x-github-api-version": "2022-11-28",
+                "user-agent": "gradient"
+              }),
+              token ? HttpClientRequest.bearerToken(token) : (r) => r
+            )
+          }),
+          // An expired or revoked sign-in: drop it, so the UI asks to sign in again.
+          HttpClient.tap((res) => {
+            const sent = res.request.headers["authorization"]?.replace(/^Bearer /, "")
+            return res.status === 401 && sent ? auth.rejected(sent) : Effect.void
+          })
+        )
+      const base = yield* HttpClient.HttpClient
+      const client = authed(base, config.apiUrl)
       const ok = HttpClient.filterStatusOk(client)
+      // GraphQL lives beside the REST base, not under it (Enterprise Server: /api/graphql next to /api/v3).
+      const graphql = HttpClient.filterStatusOk(authed(base, graphqlBaseFor(config.apiUrl)))
       const disabled = Effect.fail(
         new GithubError({
           message: "GitHub is not connected. Sign in with GitHub in Settings, set GITHUB_TOKEN, or run `gh auth login`."
@@ -193,6 +252,40 @@ export class GithubClient extends Context.Service<GithubClient, {
         })
 
       const decodeIssue = HttpClientResponse.schemaBodyJson(GhIssue)
+
+      const linkedBatch = (owner: string, repo: string, numbers: ReadonlyArray<number>) =>
+        Effect.gen(function*() {
+          const fields = numbers.map((n) =>
+            `i${n}: issue(number: ${n}) { closedByPullRequestsReferences(first: 25, includeClosedPrs: true) { nodes {
+              number title url state isDraft updatedAt author { login } repository { name owner { login } } } } }`
+          )
+          const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields.join("\n")} } }`
+          const res = yield* HttpClientRequest.post("/graphql").pipe(
+            HttpClientRequest.bodyJsonUnsafe({ query, variables: { owner, name: repo } }),
+            graphql.execute
+          )
+          const body = yield* HttpClientResponse.schemaBodyJson(GhLinkedResponse)(res)
+          const issues = body.data?.repository
+          // Partial answers are normal (an issue number that is a pull request): keep what came back.
+          if (!issues) throw new Error(body.errors?.map((e) => e.message).join("; ") ?? "no data")
+          const out = new Map<number, ReadonlyArray<GhLinkedPullRequest>>()
+          for (const n of numbers) {
+            const issue = issues[`i${n}`]
+            if (!issue) continue
+            const nodes = issue.closedByPullRequestsReferences?.nodes ?? []
+            out.set(n, nodes.flatMap((pr) => pr ? [{
+              owner: pr.repository.owner.login,
+              repo: pr.repository.name,
+              number: pr.number,
+              title: pr.title,
+              url: pr.url,
+              state: pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : pr.isDraft ? "draft" : "open",
+              author: pr.author?.login ?? null,
+              updatedAt: pr.updatedAt
+            } as const] : []))
+          }
+          return out
+        })
 
       return GithubClient.of({
         ready,
@@ -363,6 +456,17 @@ export class GithubClient extends Context.Service<GithubClient, {
               ),
               Effect.mapError(toError(`Removing a blocker from ${owner}/${repo}#${number} failed`))
             )
+          ),
+        linkedPullRequests: (owner, repo, numbers) =>
+          guard(
+            Effect.gen(function*() {
+              const all = new Map<number, ReadonlyArray<GhLinkedPullRequest>>()
+              for (let i = 0; i < numbers.length; i += LINKED_BATCH) {
+                const batch = yield* linkedBatch(owner, repo, numbers.slice(i, i + LINKED_BATCH))
+                for (const [n, prs] of batch) all.set(n, prs)
+              }
+              return all as ReadonlyMap<number, ReadonlyArray<GhLinkedPullRequest>>
+            }).pipe(Effect.mapError(toError(`Reading the linked pull requests of ${owner}/${repo} failed`)))
           )
       })
     })

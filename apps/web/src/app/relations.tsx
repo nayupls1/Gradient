@@ -8,6 +8,7 @@ import {
   issueReferences,
   issueRepo,
   openBlockers,
+  pullRequestLabelFor,
   pullRequestsFor,
   relationsOf,
   type RelatedIssue,
@@ -177,14 +178,14 @@ export const IssueRelations = (props: { issue: Issue; apis: RelationApis }) => {
   )
 }
 
-/** Pull requests that close this issue on GitHub or mention its identifier. Hidden when there are none. */
+/**
+ * Pull requests of this issue: the ones that close its GitHub copy or mention
+ * its identifier, and the ones on its GitHub "Development" list (any
+ * repository). Hidden when there are none.
+ */
 export const IssuePullRequests = (props: { issue: Issue }) => {
   const sync = useContext(Sync)
   const pullRequests = () => pullRequestsFor(sync.state, props.issue)
-  const repoName = (repoId: string) => {
-    const repo = sync.state.githubRepos[repoId]
-    return repo ? `${repo.owner}/${repo.name}` : ""
-  }
   return (
     <Show when={pullRequests().length > 0}>
       <div {...stylex.attrs(s.section)}>
@@ -198,10 +199,10 @@ export const IssuePullRequests = (props: { issue: Issue }) => {
               target="_blank"
               rel="noreferrer"
               {...stylex.attrs(s.item)}
-              title={`${pullRequestLabel[pr.state]} · ${repoName(pr.repoId)}#${pr.number}${pr.author ? ` by @${pr.author}` : ""}`}
+              title={`${pullRequestLabel[pr.state]} · ${pr.owner}/${pr.repo}#${pr.number}${pr.author ? ` by @${pr.author}` : ""}`}
             >
               <PullRequestIcon state={pr.state} />
-              <span {...stylex.attrs(s.key)}>#{pr.number}</span>
+              <span {...stylex.attrs(s.key)}>{pullRequestLabelFor(sync.state, props.issue, pr)}</span>
               <span {...stylex.attrs(s.title)}>{pr.title}</span>
             </a>
           )}
@@ -213,8 +214,9 @@ export const IssuePullRequests = (props: { issue: Issue }) => {
 
 /**
  * Issues and pull requests mentioned in the description or the comments
- * (`#12`, `acme/web#3`, `TES-12`, a GitHub link), in reading order. Hidden
- * when there are none.
+ * (`#12`, `acme/web#3`, `TES-12`, a GitHub link), in any repository, in
+ * reading order. Each target once, and nothing the sidebar already lists
+ * above (relations, pull requests). Hidden when there are none.
  */
 export const IssueMentions = (props: { issue: Issue }) => {
   const sync = useContext(Sync)
@@ -222,7 +224,13 @@ export const IssueMentions = (props: { issue: Issue }) => {
   const refs = createMemo(() =>
     issueReferences(props.issue.description, commentsFor(sync.state, props.issue.id), issueRepo(sync.state, props.issue))
   )
-  const mentions = () => resolveMentions(sync.state, props.issue, refs())
+  const mentions = () => {
+    const related = relationsOf(sync.state, props.issue.id)
+    return resolveMentions(sync.state, props.issue, refs(), {
+      issueIds: [...related.blockedBy, ...related.blocks, ...related.related].map((r) => r.issue.id),
+      pullRequests: pullRequestsFor(sync.state, props.issue)
+    })
+  }
   return (
     <Show when={mentions().length > 0}>
       <div {...stylex.attrs(s.section)}>

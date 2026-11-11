@@ -1,9 +1,9 @@
-import type { Issue, PullRequest } from "@gradient/domain"
+import type { Issue } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { Dynamic, type JSX } from "@solidjs/web"
 import { createMemo, For, Match, Show, Switch, useContext } from "solid-js"
 import { isElement, isRef, type MdElement, type MdNode, type MdRef, parseMarkdown, type RefContext } from "../lib/markdown.ts"
-import { findIssue, issueHref, issueKey, resolveGithubRef } from "../lib/select.ts"
+import { findIssue, issueHref, issueKey, type IssuePullRequest, resolveGithubRef } from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { font } from "../theme/tokens.stylex.ts"
 import { GithubIcon, PullRequestIcon, pullRequestLabel, StateIcon } from "../ui/icons.tsx"
@@ -170,7 +170,7 @@ const RefIcon = (props: { children: JSX.Element }) => <span {...stylex.attrs(s.r
 /** `#12`, `acme/web#12` or `TES-12`, linked with an icon for what it points at. */
 const Reference = (props: { node: MdRef }) => {
   const sync = useContext(Sync)
-  const target = createMemo((): { issue?: Issue; pullRequest?: PullRequest; url?: string } | null => {
+  const target = createMemo((): { issue?: Issue; pullRequest?: IssuePullRequest; url?: string } | null => {
     const ref = props.node.ref
     if (ref.kind === "identifier") {
       const issue = findIssue(sync.state, `${ref.key}-${ref.number}`)

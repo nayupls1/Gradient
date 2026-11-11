@@ -601,6 +601,78 @@ describe("relations and pull requests", () => {
     await ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.unlinkRepo(id)))
     expect(await pullRequests()).toEqual([])
   })
+
+  const linkedPullRequests = () => ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.linkedPullRequests))
+  const linkedOf = async (n: number) => {
+    const issue = await issueByGh(n)
+    return (await linkedPullRequests())
+      .filter((l) => l.issueId === issue.id)
+      .map((l) => `${l.owner}/${l.repo}#${l.number} ${l.state} ${l.title}`)
+      .sort()
+  }
+
+  test("GitHub's Development list is read on link, in any repository, and follows changes", async () => {
+    ctx.fake.addRepo("acme", "backend")
+    ctx.fake.seed({ title: "Search cases" })
+    ctx.fake.seed({ title: "Wire it up", body: "no keywords here", pull_request: { url: "x" } })
+    ctx.fake.seed({ title: "Server-side search", pull_request: { url: "y" } }, { owner: "acme", name: "backend" })
+    ctx.fake.linkPullRequest(1, { owner: "acme", name: "widgets", number: 2 })
+    ctx.fake.linkPullRequest(1, { owner: "acme", name: "backend", number: 1 })
+    await link()
+    expect(await linkedOf(1)).toEqual(["acme/backend#1 open Server-side search", "acme/widgets#2 open Wire it up"])
+
+    // Unchanged on the next poll: nothing logged.
+    const before = await logSize()
+    ctx.fake.edit(1, { body: "bump" })
+    await syncNow()
+    expect(await loggedSince(before)).toEqual(["issue", "githubRepo"])
+
+    // Unlinked by hand on GitHub: gone after the next poll.
+    ctx.fake.unlinkPullRequest(1, { owner: "acme", name: "widgets", number: 2 })
+    await syncNow()
+    expect(await linkedOf(1)).toEqual(["acme/backend#1 open Server-side search"])
+
+    // Removing the issue's repository removes its Development lists.
+    const id = await repoId()
+    await ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.unlinkRepo(id)))
+    expect(await linkedPullRequests()).toEqual([])
+  })
+
+  test("repositories linked before Development lists existed catch up once; GraphQL failures never fail a poll", async () => {
+    ctx.fake.disableGraphql()
+    ctx.fake.seed({ title: "Old issue" })
+    ctx.fake.seed({ title: "Its PR", pull_request: { url: "x" } })
+    ctx.fake.linkPullRequest(1, { owner: "acme", name: "widgets", number: 2 })
+    await link()
+    expect(await linkedPullRequests()).toEqual([])
+    const repo = (await ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.githubRepos)))[0]!
+    expect(repo.lastError).toBeNull()
+
+    ctx.fake.enableGraphql()
+    // Nothing changed on GitHub, but the repository never had its lists read.
+    await syncNow()
+    expect(await linkedOf(1)).toEqual(["acme/widgets#2 open Its PR"])
+    const graphqlCalls = () => ctx.fake.requests.filter((r) => r.path === "/graphql").length
+    const calls = graphqlCalls()
+    await syncNow()
+    expect(graphqlCalls()).toBe(calls)
+  })
+
+  test("webhooks: an issues event re-reads that issue's Development list", async () => {
+    ctx.fake.seed({ title: "Target" })
+    ctx.fake.seed({ title: "Its PR", pull_request: { url: "x" } })
+    await link()
+    expect(await linkedPullRequests()).toEqual([])
+    ctx.fake.linkPullRequest(1, { owner: "acme", name: "widgets", number: 2 })
+    const target = ctx.fake.issues[0]!
+    const res = await signed("issues", {
+      action: "edited",
+      issue: { ...target, html_url: "https://github.com/acme/widgets/issues/1" },
+      repository: { name: "widgets", owner: { login: "acme" } }
+    }, "issue-dev-1")
+    expect(res.status).toBe(202)
+    expect(await linkedOf(1)).toEqual(["acme/widgets#2 open Its PR"])
+  })
 })
 
 describe("project icons", () => {

@@ -207,6 +207,31 @@ describe("MCP", () => {
     ])
   })
 
+  test("get_issue lists GitHub's Development list with its pull requests, from any repository", async () => {
+    const created = await call("create_issue", { title: "Search cases", description: "Backend: acme/api#738" })
+    const key = created.data.id as string
+    await server.runtime.runPromise(
+      Effect.gen(function*() {
+        const db = yield* Db
+        const issue = (yield* db.issues).find((i) => i.title === "Search cases")!
+        const repoId = crypto.randomUUID()
+        yield* db.sql`INSERT INTO github_repo (id, team_id, project_id, owner, name, created_at)
+                      VALUES (${repoId}, ${issue.teamId}, ${issue.projectId}, 'acme', 'web', 1)`
+        yield* db.sql`INSERT INTO linked_pull_request (id, team_id, issue_id, repo_id, owner, repo, number, title, url, state,
+                                                     author, updated_at)
+                      VALUES (${crypto.randomUUID()}, ${issue.teamId}, ${issue.id}, ${repoId}, 'acme', 'api', 738,
+                              'Server-side search', 'https://github.com/acme/api/pull/738', 'open', 'dev', 1)`
+      })
+    )
+    const got = await call("get_issue", { id: key })
+    expect(got.data.pull_requests).toEqual([
+      { repo: "acme/api", number: 738, title: "Server-side search", state: "open", url: "https://github.com/acme/api/pull/738" }
+    ])
+    expect(got.data.mentions).toEqual([
+      { kind: "pull_request", ref: "acme/api#738", title: "Server-side search", state: "open", url: "https://github.com/acme/api/pull/738" }
+    ])
+  })
+
   test("bad names come back as tool errors that list the valid values", async () => {
     const result = await call("update_issue", { id: "GRD-1", state: "Doing" })
     expect(result.isError).toBe(true)

@@ -363,5 +363,29 @@ export const migrations = {
       accepted_at INTEGER,
       accepted_by TEXT REFERENCES user(id) ON DELETE SET NULL
     )`
+  }),
+  /**
+   * The pull requests GitHub links to each issue (its "Development" list), in
+   * any repository. `development_synced_at` stays NULL until a repository's
+   * issues have all been read once, so repositories linked earlier catch up.
+   */
+  "0010_linked_pull_requests": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE linked_pull_request (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL REFERENCES team(id),
+      issue_id TEXT NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
+      repo_id TEXT NOT NULL REFERENCES github_repo(id) ON DELETE CASCADE,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      state TEXT NOT NULL,
+      author TEXT,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (issue_id, url)
+    )`
+    yield* sql`ALTER TABLE github_repo ADD COLUMN development_synced_at INTEGER`
   })
 }

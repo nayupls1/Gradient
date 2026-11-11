@@ -15,6 +15,8 @@ export interface FakeIssue {
   draft?: boolean
   /** Global ids of the issues that block this one. */
   blocked_by?: Array<number>
+  /** Pull requests on its "Development" list, in any repository the fake knows. */
+  linked?: Array<{ owner: string; name: string; number: number }>
 }
 
 export interface FakeComment {
@@ -57,6 +59,7 @@ export const makeFakeGithub = (
     new Bun.CryptoHasher("sha1").update(`blob ${content.byteLength}\0`).update(content).digest("hex")
   const requests: Array<{ method: string; path: string; body: any }> = []
   let failWrites = 0
+  let graphqlEnabled = true
   // Device-flow sign-in: one outstanding code at a time is enough for tests.
   let device: { code: string; userCode: string; state: "pending" | "approved" | "denied"; issuedAt: number } | null = null
   let tokenCounter = 0
@@ -77,7 +80,7 @@ export const makeFakeGithub = (
     return undefined
   }
   const toJson = (r: { owner: string; name: string }, i: FakeIssue) => {
-    const { blocked_by, ...rest } = i
+    const { blocked_by, linked: _linked, ...rest } = i
     const open = (blocked_by ?? []).filter((id) => byId(id)?.issue.state === "open").length
     return {
       ...rest,
@@ -148,6 +151,39 @@ export const makeFakeGithub = (
 
       const token = req.headers.get("authorization")?.replace(/^Bearer /, "") ?? null
       if (!token || revoked.has(token)) return new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 })
+
+      // GraphQL: only the "Development" lists Gradient reads (`iN: issue(number: N)` aliases).
+      if (url.pathname === "/graphql" && req.method === "POST") {
+        if (!graphqlEnabled) return Response.json({ message: "Not Found" }, { status: 404 })
+        const r = repos.get(`${body.variables.owner}/${body.variables.name}`.toLowerCase())
+        if (!r) return Response.json({ data: { repository: null }, errors: [{ message: "Could not resolve to a Repository" }] })
+        const repository: Record<string, unknown> = {}
+        for (const m of String(body.query).matchAll(/(\w+): issue\(number: (\d+)\)/g)) {
+          const issue = r.issues.find((i) => i.number === Number(m[2]) && !i.pull_request)
+          repository[m[1]!] = issue
+            ? {
+              closedByPullRequestsReferences: {
+                nodes: (issue.linked ?? []).flatMap((l) => {
+                  const pr = repos.get(`${l.owner}/${l.name}`.toLowerCase())
+                  const found = pr?.issues.find((i) => i.number === l.number && i.pull_request)
+                  if (!pr || !found) return []
+                  return [{
+                    number: found.number,
+                    title: found.title,
+                    url: `https://github.com/${pr.owner}/${pr.name}/pull/${found.number}`,
+                    state: found.pull_request?.merged_at ? "MERGED" : found.state === "closed" ? "CLOSED" : "OPEN",
+                    isDraft: found.draft ?? false,
+                    updatedAt: found.updated_at,
+                    author: { login: found.user.login },
+                    repository: { name: pr.name, owner: { login: pr.owner } }
+                  }]
+                })
+              }
+            }
+            : null
+        }
+        return Response.json({ data: { repository } })
+      }
 
       if (req.method !== "GET" && failWrites > 0) {
         failWrites--
@@ -353,6 +389,28 @@ export const makeFakeGithub = (
       const r = repoOf(inRepo)
       r.comments = r.comments.filter((c) => c.id !== id)
     },
+    /**
+     * Someone links a pull request (in this or another repository) to issue
+     * `number` on github.com, as its "Development" list shows. Like GitHub, it
+     * touches the issue.
+     */
+    linkPullRequest(number: number, pr: { owner: string; name: string; number: number }, inRepo?: { owner: string; name: string }) {
+      const issue = issuesOf(inRepo).find((i) => i.number === number)!
+      issue.linked = [...(issue.linked ?? []), pr]
+      issue.updated_at = tick()
+    },
+    unlinkPullRequest(number: number, pr: { owner: string; name: string; number: number }, inRepo?: { owner: string; name: string }) {
+      const issue = issuesOf(inRepo).find((i) => i.number === number)!
+      issue.linked = (issue.linked ?? []).filter((l) => !(l.owner === pr.owner && l.name === pr.name && l.number === pr.number))
+      issue.updated_at = tick()
+    },
+    /** Answer GraphQL with 404, like a server without it. */
+    disableGraphql() {
+      graphqlEnabled = false
+    },
+    enableGraphql() {
+      graphqlEnabled = true
+    },
     /** Someone marks `number` as blocked by `blocker` on github.com. Like GitHub, it does not touch updated_at. */
     block(number: number, blocker: number, inRepo?: { owner: string; name: string }) {
       const issue = issuesOf(inRepo).find((i) => i.number === number)!
@@ -369,7 +427,8 @@ export const makeFakeGithub = (
       const list = issuesOf(inRepo)
       return (list.find((i) => i.number === number)!.blocked_by ?? []).map((id) => list.find((i) => i.id === id)?.number)
     },
-    writes: () => requests.filter((r) => r.method !== "GET"),
+    /** Calls that change something (GraphQL only reads here). */
+    writes: () => requests.filter((r) => r.method !== "GET" && r.path !== "/graphql"),
     /** The user approves the pending device-flow code on github.com. */
     approveDevice() {
       if (device) device.state = "approved"

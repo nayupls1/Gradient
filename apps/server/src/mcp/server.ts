@@ -121,8 +121,23 @@ const ToolHandlers = GradientToolkit.toLayer(
         const pullRequests = yield* db.pullRequestsForTeam(team.id)
         const issues = yield* db.issuesForTeam(team.id)
         const comments = yield* db.commentsForTeam(team.id)
+        const linkedPullRequests = yield* db.linkedPullRequestsForTeam(team.id)
         const keys = teamKeys(team, projects)
-        return { team, viewerId: viewer, states, labels, users, projects, repos, relations, pullRequests, comments, issues, keys }
+        return {
+          team,
+          viewerId: viewer,
+          states,
+          labels,
+          users,
+          projects,
+          repos,
+          relations,
+          pullRequests,
+          linkedPullRequests,
+          comments,
+          issues,
+          keys
+        }
       }).pipe(Effect.catchTag("SqlError", Effect.die))
 
     /** The workspace of the team an identifier belongs to: GRD-12 by the team key, TES-12 by a project's. */
@@ -252,7 +267,8 @@ const ToolHandlers = GradientToolkit.toLayer(
         if (seen.has(name.toLowerCase())) return
         seen.add(name.toLowerCase())
         const repo = ws.repos.find((r) => sameRepo(ref, r.owner, r.name))
-        const pr = repo && ws.pullRequests.find((p) => p.repoId === repo.id && p.number === ref.number)
+        const pr = (repo && ws.pullRequests.find((p) => p.repoId === repo.id && p.number === ref.number)) ??
+          ws.linkedPullRequests.find((l) => l.number === ref.number && sameRepo(ref, l.owner, l.repo))
         out.push(
           pr
             ? { kind: "pull_request", ref: name, title: pr.title, state: pr.state, url: pr.url }
@@ -263,6 +279,26 @@ const ToolHandlers = GradientToolkit.toLayer(
         for (const { ref } of textReferences(text, context)) resolve(ref)
       }
       return out
+    }
+
+    /**
+     * The pull requests of an issue, each once: the ones that close it or mention
+     * its identifier, and its GitHub "Development" list (any repository).
+     */
+    const pullRequestsOf = (ws: Workspace, issue: Issue): IssueDetail["pull_requests"] => {
+      const out = new Map<string, IssueDetail["pull_requests"][number]>()
+      for (const pr of ws.pullRequests) {
+        if (!pullRequestRefersTo(pr, issue, ws.keys)) continue
+        const repo = ws.repos.find((r) => r.id === pr.repoId)
+        const name = repo ? `${repo.owner}/${repo.name}` : "?"
+        out.set(`${name}#${pr.number}`.toLowerCase(), { repo: name, number: pr.number, title: pr.title, state: pr.state, url: pr.url })
+      }
+      for (const l of ws.linkedPullRequests) {
+        const key = `${l.owner}/${l.repo}#${l.number}`.toLowerCase()
+        if (l.issueId !== issue.id || out.has(key)) continue
+        out.set(key, { repo: `${l.owner}/${l.repo}`, number: l.number, title: l.title, state: l.state, url: l.url })
+      }
+      return [...out.values()]
     }
 
     const detail = (ws: Workspace, issue: Issue): IssueDetail => ({
@@ -284,16 +320,7 @@ const ToolHandlers = GradientToolkit.toLayer(
             : []
         )
       ),
-      pull_requests: ws.pullRequests.filter((pr) => pullRequestRefersTo(pr, issue, ws.keys)).map((pr) => {
-        const repo = ws.repos.find((r) => r.id === pr.repoId)
-        return {
-          repo: repo ? `${repo.owner}/${repo.name}` : "?",
-          number: pr.number,
-          title: pr.title,
-          state: pr.state,
-          url: pr.url
-        }
-      }),
+      pull_requests: pullRequestsOf(ws, issue),
       description: issue.description,
       comments: ws.comments.filter((c) => c.issueId === issue.id).map((c) => ({
         author: c.author,

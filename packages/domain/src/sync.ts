@@ -6,6 +6,7 @@ import {
   IssueComment,
   IssueRelation,
   Label,
+  LinkedPullRequest,
   ModelName,
   Project,
   PullRequest,
@@ -43,6 +44,7 @@ export const Snapshot = Schema.Struct({
   githubRepos: Schema.Array(GithubRepo),
   issueRelations: Schema.Array(IssueRelation),
   pullRequests: Schema.Array(PullRequest),
-  issueComments: Schema.Array(IssueComment)
+  issueComments: Schema.Array(IssueComment),
+  linkedPullRequests: Schema.Array(LinkedPullRequest)
 })
 export type Snapshot = typeof Snapshot.Type

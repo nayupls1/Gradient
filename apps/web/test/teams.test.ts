@@ -80,7 +80,8 @@ const snapshot = (): Snapshot => ({
   githubRepos: [],
   issueRelations: [],
   pullRequests: [],
-  issueComments: []
+  issueComments: [],
+  linkedPullRequests: []
 })
 
 describe("team changes in the replica", () => {

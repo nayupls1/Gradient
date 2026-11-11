@@ -7,6 +7,7 @@ import {
   type Mutation,
   type Project,
   type IssueComment,
+  type LinkedPullRequest,
   type PullRequest,
   type Snapshot,
   type Team,
@@ -38,6 +39,7 @@ export interface SyncState {
   issueRelations: Record<string, IssueRelation>
   pullRequests: Record<string, PullRequest>
   issueComments: Record<string, IssueComment>
+  linkedPullRequests: Record<string, LinkedPullRequest>
   errors: Array<{ id: string; message: string }>
 }
 
@@ -79,6 +81,7 @@ export const createSyncEngine = (options: SyncEngineOptions = {}) => {
     issueRelations: {},
     pullRequests: {},
     issueComments: {},
+    linkedPullRequests: {},
     errors: []
   })
 
