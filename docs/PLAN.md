@@ -71,9 +71,9 @@ apps/web/src
   keys/                command registry: chords, sequences, scopes, remaps (core.ts), Solid hooks
   theme/               tokens (StyleX vars), palettes (also feed shadcn's tokens), mode + palette switching
   ui/                  shadcn-solid components (Button, Dialog, Popover, Command, Sidebar…), icons
-  lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts)
+  lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts) and list windowing (window.ts)
   app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, router
-  pages/               IssuesPage (keyboard-driven list), IssuePage, SettingsPage
+  pages/               IssuesPage (keyboard-driven, virtualized list), IssuePage, SettingsPage
 ```
 
 ## Data model

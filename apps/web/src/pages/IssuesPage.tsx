@@ -1,7 +1,7 @@
 import type { Issue, StateType, WorkflowState } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { useNavigate, useParams } from "@solidjs/router"
-import { createEffect, createMemo, createSignal, For, Show, untrack, useContext } from "solid-js"
+import { createEffect, createMemo, createSignal, flush, For, onSettled, Show, untrack, useContext } from "solid-js"
 import { ComposerContext, ProjectDialogsContext, Sync } from "../app/context.ts"
 import { github } from "../app/github.ts"
 import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
@@ -22,6 +22,7 @@ import {
 } from "../lib/select.ts"
 import { KeyScope } from "../keys/solid.tsx"
 import { colors } from "../lib/tokens.stylex.ts"
+import { type RowRange, rowOffsets, sameRange, scrollToReveal, visibleRows } from "../lib/window.ts"
 import { color } from "../theme/tokens.stylex.ts"
 import { Badge } from "../ui/badge.tsx"
 import { Button, type ButtonProps } from "../ui/button.tsx"
@@ -53,13 +54,24 @@ import {
 } from "../ui/icons.tsx"
 import { PageHeader } from "./Header.tsx"
 
+/**
+ * The list is virtualized: each group renders only the rows near the viewport,
+ * with spacers for the rest. That needs fixed heights, so these two are the
+ * source of truth for the header and row styles below.
+ */
+const HEADER_HEIGHT = 36
+const ROW_HEIGHT = 40
+/** Rows rendered beyond each edge of the viewport, in pixels, so fast scrolling does not show blanks. */
+const OVERSCAN = 480
+
 const s = stylex.create({
-  list: { flexGrow: 1, overflowY: "auto", paddingBottom: 40, outline: "none" },
+  // overflowAnchor: rows come and go as the list scrolls; anchoring to one would make the browser fight the scroll.
+  list: { flexGrow: 1, overflowY: "auto", overflowAnchor: "none", paddingBottom: 40, outline: "none" },
   group: {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    height: 36,
+    height: HEADER_HEIGHT,
     paddingLeft: 14,
     paddingRight: 12,
     position: "sticky",
@@ -81,7 +93,7 @@ const s = stylex.create({
     display: "flex",
     alignItems: "center",
     gap: 10,
-    height: 40,
+    height: ROW_HEIGHT,
     paddingLeft: 12,
     paddingRight: 16,
     borderBottomWidth: 1,
@@ -184,27 +196,21 @@ const IssueRow = (props: {
   showProject: boolean
   focused: boolean
   onFocus: () => void
-  apis: (apis: PickerApis) => void
+  /** Registers the row's picker handles; the returned function drops them when the row unmounts. */
+  apis: (apis: PickerApis) => () => void
 }) => {
   const sync = useContext(Sync)
   const actions = useIssueActions()
   const navigate = useNavigate()
   const apis: PickerApis = {}
-  untrack(() => props.apis(apis))
-  let el: HTMLDivElement | undefined
-  createEffect(
-    () => props.focused,
-    (focused) => {
-      if (focused) el?.scrollIntoView({ block: "nearest" })
-    }
-  )
+  const release = untrack(() => props.apis(apis))
+  onSettled(() => release)
   const labels = () => props.issue.labelIds.map((id) => sync.state.labels[id]).filter((l) => l !== undefined)
   const blockers = () => openBlockers(sync.state, props.issue.id)
   /** The most relevant pull request that refers to the issue: an open one before a merged or closed one. */
   const pullRequest = () => pullRequestsFor(sync.state, props.issue)[0]
   return (
     <div
-      ref={el}
       role="link"
       aria-current={props.focused ? "true" : undefined}
       data-issue={props.issue.id}
@@ -287,9 +293,19 @@ const Group = (props: {
   onToggle: () => void
   focusedId: string | null
   onFocus: (id: string) => void
-  registerApis: (id: string, apis: PickerApis) => void
+  registerApis: (id: string, apis: PickerApis) => () => void
+  /** Where the group's first row sits in the list. */
+  rowsTop: number
+  /** The part of the list to render rows for: the viewport plus overscan. */
+  viewTop: number
+  viewBottom: number
 }) => {
   const composer = useContext(ComposerContext)
+  const range = createMemo(
+    (): RowRange => visibleRows(props.rowsTop, props.issues.length, ROW_HEIGHT, props.viewTop, props.viewBottom),
+    { equals: sameRange }
+  )
+  const shown = createMemo(() => props.issues.slice(range().start, range().end))
   return (
     <Collapsible render={<section />} open={!props.collapsed} onOpenChange={() => props.onToggle()}>
       <div {...stylex.attrs(s.group)}>
@@ -309,7 +325,8 @@ const Group = (props: {
         </Button>
       </div>
       <CollapsibleContent>
-        <For each={props.issues}>
+        <div aria-hidden="true" style={{ height: `${range().start * ROW_HEIGHT}px` }} />
+        <For each={shown()}>
           {(issue) => (
             <IssueRow
               issue={issue}
@@ -320,6 +337,7 @@ const Group = (props: {
             />
           )}
         </For>
+        <div aria-hidden="true" style={{ height: `${(props.issues.length - range().end) * ROW_HEIGHT}px` }} />
       </CollapsibleContent>
     </Collapsible>
   )
@@ -479,6 +497,44 @@ export const IssuesPage = () => {
       .filter((g) => g.issues.length > 0)
   })
   const total = () => groups().reduce((n, g) => n + g.issues.length, 0)
+
+  let listEl: HTMLDivElement | undefined
+  const [scrollTop, setScrollTop] = createSignal(0)
+  const [viewportHeight, setViewportHeight] = createSignal(window.innerHeight)
+  onSettled(() => {
+    if (!listEl) return
+    const el = listEl
+    setViewportHeight(el.clientHeight)
+    const observer = new ResizeObserver(() => setViewportHeight(el.clientHeight))
+    observer.observe(el)
+    return () => observer.disconnect()
+  })
+  /** Where each group's rows start in the list, by state id. Collapsed groups are just a header. */
+  const rowsTop = createMemo(() => {
+    const gs = groups()
+    const offsets = rowOffsets(
+      gs.map((g) => ({ rows: isCollapsed(g.state) ? 0 : g.issues.length })),
+      { headerHeight: HEADER_HEIGHT, rowHeight: ROW_HEIGHT }
+    )
+    return new Map(gs.map((g, i) => [g.state.id, offsets[i]!]))
+  })
+
+  /**
+   * Scrolls the focused row into view by its position, since a row off screen
+   * is not in the DOM. The sticky header must not cover it.
+   */
+  const reveal = (issue: Issue) => {
+    const el = listEl
+    const group = groups().find((g) => g.state.id === issue.stateId)
+    if (!el || !group || isCollapsed(group.state)) return
+    const index = group.issues.findIndex((i) => i.id === issue.id)
+    const top = rowsTop().get(group.state.id)
+    if (index === -1 || top === undefined) return
+    const next = scrollToReveal(el.scrollTop, el.clientHeight, top + index * ROW_HEIGHT, ROW_HEIGHT, HEADER_HEIGHT)
+    if (next === null) return
+    el.scrollTop = next
+    setScrollTop(el.scrollTop)
+  }
   /** Rows the keyboard can reach, top to bottom. */
   const order = createMemo(() => groups().flatMap((g) => (isCollapsed(g.state) ? [] : g.issues.map((i) => i.id))))
   /** The focused row, dropped automatically when that issue leaves the list. */
@@ -489,6 +545,28 @@ export const IssuesPage = () => {
   const focused = () => {
     const id = focusedId()
     return id ? sync.state.issues[id] : undefined
+  }
+  /**
+   * Keep the focused row in view when the keyboard moves focus, or when the
+   * issue moves to another group (a status change). Focus that follows the
+   * pointer is already on screen, so it does not scroll.
+   */
+  let pointerFocus = false
+  const focusKey = createMemo(() => {
+    const issue = focused()
+    return issue ? `${issue.id} ${issue.stateId}` : null
+  })
+  createEffect(
+    () => focusKey(),
+    () => {
+      const issue = untrack(focused)
+      if (issue && !pointerFocus) reveal(issue)
+      pointerFocus = false
+    }
+  )
+  const focusFromPointer = (id: string) => {
+    pointerFocus = true
+    setFocusedId(id)
   }
 
   const move = (delta: number) => {
@@ -530,7 +608,21 @@ export const IssuesPage = () => {
     },
     { id: "list.clearFocus", title: "Clear focus", group, keys: ["escape"], scope, hidden: true, when: () => focusedId() !== null, run: () => setFocusedId(null) }
   ])
-  useIssueCommands({ scope, issue: focused, apis: () => apis.get(focusedId() ?? "") })
+  useIssueCommands({
+    scope,
+    issue: focused,
+    apis: () => {
+      const issue = focused()
+      if (!issue) return undefined
+      // Scrolled away with the wheel, the focused row is unmounted and its pickers with it:
+      // bring it back and render it now, so the picker opens on the row.
+      if (!apis.has(issue.id)) {
+        reveal(issue)
+        flush()
+      }
+      return apis.get(issue.id)
+    }
+  })
 
   return (
     <>
@@ -564,7 +656,7 @@ export const IssuesPage = () => {
           </>
         }
       />
-      <div {...stylex.attrs(s.list)}>
+      <div ref={listEl} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} {...stylex.attrs(s.list)}>
         <Show
           when={!projectId() || project()}
           fallback={<div {...stylex.attrs(s.empty)}>This project does not exist, or was deleted.</div>}
@@ -587,8 +679,16 @@ export const IssuesPage = () => {
                 collapsed={isCollapsed(g().state)}
                 onToggle={() => toggleCollapsed(g().state)}
                 focusedId={focusedId()}
-                onFocus={setFocusedId}
-                registerApis={(id, a) => apis.set(id, a)}
+                onFocus={focusFromPointer}
+                registerApis={(id, a) => {
+                  apis.set(id, a)
+                  return () => {
+                    if (apis.get(id) === a) apis.delete(id)
+                  }
+                }}
+                rowsTop={rowsTop().get(g().state.id) ?? 0}
+                viewTop={scrollTop() - OVERSCAN}
+                viewBottom={scrollTop() + viewportHeight() + OVERSCAN}
               />
             )}
           </For>
