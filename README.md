@@ -32,13 +32,17 @@ Open http://localhost:4200. The API server runs on 127.0.0.1:4100 and Vite
 proxies to it. The database is `apps/server/gradient.db`, created and seeded
 on first start.
 
-To run the compiled versions, build both once and start the server, which
-then serves the UI too:
+To run the compiled versions, build both once, then start both:
 
 ```bash
 bun run build   # web app to apps/web/dist, server bundle to apps/server/dist
-bun run start   # http://localhost:4100
+bun run start   # http://localhost:4200, like dev
 ```
+
+`start` runs the server bundle and `vite preview` of the built app, which
+proxies to the server just as dev does. The server also serves the built UI
+itself on http://localhost:4100, so `bun run --filter '@gradient/server' start`
+alone is enough for a single process.
 
 ## GitHub sync
 
