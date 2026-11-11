@@ -135,3 +135,30 @@ export const pullRequestsFor = (state: SyncState, issue: Issue): Array<PullReque
     .filter((pr) => pullRequestRefersTo(pr, issue, keys))
     .sort((a, b) => pullRequestRank[a.state] - pullRequestRank[b.state] || b.updatedAt - a.updatedAt || b.number - a.number)
 }
+
+const sameRepo = (a: { owner: string; repo: string }, owner: string, name: string) =>
+  a.owner.toLowerCase() === owner.toLowerCase() && a.repo.toLowerCase() === name.toLowerCase()
+
+/** The repository `#12` in an issue's description points into: the one it syncs with, else its project's. */
+export const issueRepo = (state: SyncState, issue: Issue): { owner: string; repo: string } | null => {
+  if (issue.github) return { owner: issue.github.owner, repo: issue.github.repo }
+  const repo = projectRepo(state, issue.projectId)
+  return repo ? { owner: repo.owner, repo: repo.name } : null
+}
+
+/**
+ * What a GitHub reference (owner/repo#12) points at: the Gradient issue synced
+ * with it, else a pull request of a linked repository, else nothing known.
+ */
+export const resolveGithubRef = (
+  state: SyncState,
+  ref: { owner: string; repo: string; number: number }
+): { issue: Issue } | { pullRequest: PullRequest } | null => {
+  const issue = Object.values(state.issues).find((i) =>
+    i.github !== null && i.github.number === ref.number && sameRepo(i.github, ref.owner, ref.repo)
+  )
+  if (issue) return { issue }
+  const repo = Object.values(state.githubRepos).find((r) => sameRepo(ref, r.owner, r.name))
+  const pullRequest = repo && Object.values(state.pullRequests).find((pr) => pr.repoId === repo.id && pr.number === ref.number)
+  return pullRequest ? { pullRequest } : null
+}

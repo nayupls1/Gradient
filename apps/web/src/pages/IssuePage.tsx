@@ -7,7 +7,8 @@ import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
 import { IssuePullRequests, IssueRelations, type RelationApis } from "../app/relations.tsx"
 import { KeyScope, useCommands, useScope } from "../keys/solid.tsx"
-import { findIssue, formatRelative, issueKey, projectHref } from "../lib/select.ts"
+import { Markdown } from "../app/Markdown.tsx"
+import { findIssue, formatRelative, issueKey, issueRepo, projectHref } from "../lib/select.ts"
 import { bareTextarea } from "../app/styles.ts"
 import { UserAvatar } from "../app/UserAvatar.tsx"
 import { colors } from "../lib/tokens.stylex.ts"
@@ -33,6 +34,8 @@ const s = stylex.create({
   column: { display: "flex", flexDirection: "column", maxWidth: 720, marginInline: "auto", paddingInline: 32 },
   title: { fontSize: 22, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3 },
   description: { marginTop: 14, minHeight: 120, fontSize: 14, lineHeight: 1.65 },
+  rendered: { cursor: "text", paddingBottom: 24 },
+  placeholder: { color: colors.mutedForeground },
   archived: { marginBottom: 16 },
   side: {
     overflowY: "auto",
@@ -76,7 +79,7 @@ export const IssuePage = () => {
   useCommands([
     { id: "issue.back", title: "Back to issues", group: "Navigation", keys: ["escape", "u"], scope: "issue.detail", run: () => navigate("/") },
     { id: "issue.editTitle", title: "Edit title", group: "Issue", keys: ["e"], scope: "issue.detail", run: () => titleEl?.focus() },
-    { id: "issue.editDescription", title: "Edit description", group: "Issue", keys: ["d"], scope: "issue.detail", run: () => descriptionEl?.focus() },
+    { id: "issue.editDescription", title: "Edit description", group: "Issue", keys: ["d"], scope: "issue.detail", run: () => editDescription() },
     { id: "issue.blockedBy", title: "Mark as blocked by…", group: "Issue", keys: ["b"], scope: "issue.detail", run: () => relationApis.blockedBy?.open() },
     { id: "issue.blocks", title: "Mark as blocking…", group: "Issue", keys: ["shift+b"], scope: "issue.detail", run: () => relationApis.blocks?.open() },
     { id: "issue.related", title: "Relate to…", group: "Issue", keys: ["shift+r"], scope: "issue.detail", run: () => relationApis.related?.open() },
@@ -107,6 +110,19 @@ export const IssuePage = () => {
   const commitDescription = () => {
     const current = issue()
     if (current && description() !== current.description) actions.update(current, { description: description() })
+  }
+
+  // The description shows as markdown and turns into a textarea while edited.
+  const [editingDescription, setEditingDescription] = createSignal(false)
+  const editDescription = () => {
+    if (editingDescription()) descriptionEl?.focus()
+    else setEditingDescription(true)
+  }
+  /** Clicks on the rendered description edit it, unless they hit a link or control, or end a text selection. */
+  const onDescriptionClick = (e: MouseEvent) => {
+    if ((e.target as Element).closest("a, summary, input, button")) return
+    if (window.getSelection()?.isCollapsed === false) return
+    setEditingDescription(true)
   }
 
   return (
@@ -205,15 +221,36 @@ export const IssuePage = () => {
                   }}
                   xstyle={[bareTextarea, s.title]}
                 />
-                <Textarea
-                  ref={(el: HTMLTextAreaElement) => (descriptionEl = el)}
-                  aria-label="Description"
-                  placeholder="Add a description…"
-                  value={description()}
-                  onInput={(e) => setDescription(e.currentTarget.value)}
-                  onBlur={commitDescription}
-                  xstyle={[bareTextarea, s.description]}
-                />
+                <Show
+                  when={editingDescription()}
+                  fallback={
+                    <div {...stylex.attrs(s.description, s.rendered)} onClick={onDescriptionClick}>
+                      <Show when={description().trim() !== ""} fallback={<span {...stylex.attrs(s.placeholder)}>Add a description…</span>}>
+                        <Markdown source={description()} repo={issueRepo(sync.state, current())} />
+                      </Show>
+                    </div>
+                  }
+                >
+                  <Textarea
+                    ref={(el: HTMLTextAreaElement) => {
+                      descriptionEl = el
+                      // Focus once mounted, with the caret at the end, without jumping the page there.
+                      requestAnimationFrame(() => {
+                        el.focus({ preventScroll: true })
+                        el.setSelectionRange(el.value.length, el.value.length)
+                      })
+                    }}
+                    aria-label="Description"
+                    placeholder="Add a description…"
+                    value={description()}
+                    onInput={(e) => setDescription(e.currentTarget.value)}
+                    onBlur={() => {
+                      commitDescription()
+                      setEditingDescription(false)
+                    }}
+                    xstyle={[bareTextarea, s.description]}
+                  />
+                </Show>
               </div>
             </div>
             <aside {...stylex.attrs(s.side)}>

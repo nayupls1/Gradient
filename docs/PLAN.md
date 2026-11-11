@@ -31,14 +31,16 @@ coding agents over MCP. It runs locally, for one user, for now.
 | Styles | StyleX, compiled by `@stylexjs/unplugin` |
 | Components | shadcn-solid's StyleX components (copied into `ui/`), on `base-ui-solidjs` |
 | Icons | `lucide` icon data, drawn by shadcn-solid's `Icon` |
+| Markdown | `marked`'s lexer only; our own tree builder and Solid renderer (no HTML strings) |
 | Agents | MCP over Streamable HTTP with `effect/ai`'s `McpServer` (no extra package) |
 | Font | Inter, bundled (`@fontsource-variable/inter`) |
 | Build | Vite 8 with `vite-plugin-solid` |
 | Tests | `bun test`, with a fake GitHub server |
 
 Runtime dependencies: server 3 (`effect`, `@effect/platform-bun`,
-`@effect/sql-sqlite-bun`); web 8 (`effect`, `solid-js`, `@solidjs/web`,
-`@solidjs/router`, `@stylexjs/stylex`, `base-ui-solidjs`, `lucide`, the font).
+`@effect/sql-sqlite-bun`); web 9 (`effect`, `solid-js`, `@solidjs/web`,
+`@solidjs/router`, `@stylexjs/stylex`, `base-ui-solidjs`, `lucide`, `marked`,
+the font).
 
 The components come from shadcn-solid (a Solid 2 port of shadcn/ui) and run on
 base-ui-solidjs (a Solid 2 port of Base UI). Like shadcn/ui, they are copied
@@ -71,8 +73,8 @@ apps/web/src
   keys/                command registry: chords, sequences, scopes, remaps (core.ts), Solid hooks
   theme/               tokens (StyleX vars), palettes (also feed shadcn's tokens), mode + palette switching
   ui/                  shadcn-solid components (Button, Dialog, Popover, Command, Sidebar…), icons
-  lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts) and list windowing (window.ts)
-  app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, router
+  lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts), list windowing (window.ts), markdown tree (markdown.ts)
+  app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, Markdown, router
   pages/               IssuesPage (keyboard-driven, virtualized list), IssuePage, SettingsPage
 ```
 
@@ -192,6 +194,29 @@ both surviving, creating on GitHub, webhook signatures and dedupe, blockers
 both ways (in any import order, without echo, never touching blockers Gradient
 does not know) and pull request linking.
 
+## Markdown
+
+Descriptions render like GitHub renders issue bodies: GFM, single newlines as
+line breaks, and the inline HTML issue templates use (`<details>`, `<kbd>`,
+`<img>`, `<br>`…). `marked` tokenizes; `lib/markdown.ts` builds a plain tree of
+allowlisted tags and attributes (http(s) and mailto URLs only, `<script>` and
+friends dropped with their content, comments dropped), and `app/Markdown.tsx`
+renders it as Solid elements, so nothing is ever set as HTML. HTML blocks share
+one stack with the markdown, so a `<details>` opened in one block wraps the
+markdown up to its `</details>`.
+
+Text outside links and code is scanned for references, resolved live against
+the store when rendered:
+
+- `#12` (in the issue's repo, else its project's), `owner/repo#12`, and a bare
+  GitHub issue or pull request URL: the Gradient issue synced with it (in-app
+  link, state icon), else a synced pull request (GitHub link, state icon), else
+  a plain GitHub link.
+- `TES-12`, any key of a team: the Gradient issue, or plain text if none.
+
+The issue page shows the rendered description; a click (not on a link, and not
+ending a selection) or `d` turns it into the textarea, and blur saves.
+
 ## Agents (MCP)
 
 `POST /mcp` speaks MCP over Streamable HTTP (protocol revisions 2025-03-26
@@ -234,7 +259,7 @@ localStorage.
 - Comments, synced with GitHub (`issue_comment` webhook + list/create/edit).
 - Board view, drag to reorder (the fractional `sortOrder` is already there).
 - Issue search in ⌘K, filters, more views (deliberately left to the user's design).
-- Markdown rendering for descriptions.
+- Markdown preview while editing; toggling task list checkboxes in place.
 - Offline cache of the store in IndexedDB.
 - Multiple users with sessions, and a hosted relay for app webhooks and
   installation tokens (the private key cannot ship in a local app).
