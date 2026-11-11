@@ -67,6 +67,19 @@ export const GhIssue = Schema.Struct({
 })
 export type GhIssue = typeof GhIssue.Type
 
+/** A comment on an issue or pull request (the issues endpoints treat both alike). */
+export const GhComment = Schema.Struct({
+  id: Schema.Int,
+  html_url: Schema.String,
+  /** API URL of the issue it is on; it ends in the issue's number. */
+  issue_url: Schema.String,
+  body: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  user: Schema.NullOr(GhUser),
+  created_at: Schema.String,
+  updated_at: Schema.String
+})
+export type GhComment = typeof GhComment.Type
+
 export const labelName = (l: typeof GhLabel.Type) => (typeof l === "string" ? l : l.name)
 export const labelColor = (l: typeof GhLabel.Type) => (typeof l === "string" ? null : l.color ?? null)
 
@@ -82,6 +95,10 @@ export interface IssueWrite {
 export type ListResult =
   | { readonly _tag: "NotModified" }
   | { readonly _tag: "Page"; readonly issues: ReadonlyArray<GhIssue>; readonly etag: string | null; readonly hasNext: boolean }
+
+export type CommentsResult =
+  | { readonly _tag: "NotModified" }
+  | { readonly _tag: "Page"; readonly comments: ReadonlyArray<GhComment>; readonly etag: string | null; readonly hasNext: boolean }
 
 const toError = (context: string) => (cause: unknown) =>
   new GithubError({ message: `${context}: ${cause instanceof Error ? cause.message : String(cause)}` })
@@ -106,6 +123,12 @@ export class GithubClient extends Context.Service<GithubClient, {
     readonly etag: string | null
     readonly page: number
   }): Effect.Effect<ListResult, GithubError>
+  /** Comments on every issue and pull request of a repository, oldest update first. */
+  listComments(owner: string, repo: string, options: {
+    readonly since: string | null
+    readonly etag: string | null
+    readonly page: number
+  }): Effect.Effect<CommentsResult, GithubError>
   createIssue(owner: string, repo: string, body: IssueWrite): Effect.Effect<GhIssue, GithubError>
   updateIssue(owner: string, repo: string, number: number, body: IssueWrite): Effect.Effect<GhIssue, GithubError>
   getIssue(owner: string, repo: string, number: number): Effect.Effect<GhIssue, GithubError>
@@ -262,6 +285,33 @@ export class GithubClient extends Context.Service<GithubClient, {
                 hasNext: /rel="next"/.test(res.headers["link"] ?? "")
               } as const
             }).pipe(Effect.mapError((e) => (e instanceof GithubError ? e : toError("Listing issues failed")(e))))
+          ),
+        listComments: (owner, repo, { since, etag, page }) =>
+          guard(
+            Effect.gen(function*() {
+              const req = HttpClientRequest.get(`/repos/${owner}/${repo}/issues/comments`).pipe(
+                HttpClientRequest.setUrlParams({
+                  sort: "updated",
+                  direction: "asc",
+                  per_page: "100",
+                  page: String(page),
+                  ...(since ? { since } : {})
+                }),
+                etag ? HttpClientRequest.setHeader("if-none-match", etag) : (r) => r
+              )
+              const res = yield* client.execute(req)
+              if (res.status === 304) return { _tag: "NotModified" } as const
+              if (res.status !== 200) {
+                return yield* new GithubError({ message: `Listing comments of ${owner}/${repo} failed (${res.status})` })
+              }
+              const comments = yield* HttpClientResponse.schemaBodyJson(Schema.Array(GhComment))(res)
+              return {
+                _tag: "Page",
+                comments,
+                etag: res.headers["etag"] ?? null,
+                hasNext: /rel="next"/.test(res.headers["link"] ?? "")
+              } as const
+            }).pipe(Effect.mapError((e) => (e instanceof GithubError ? e : toError("Listing comments failed")(e))))
           ),
         createIssue: (owner, repo, body) =>
           guard(

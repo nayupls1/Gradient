@@ -10,6 +10,7 @@ import {
   type Label,
   type Mutation,
   type Project,
+  type IssueComment,
   type PullRequest,
   type Snapshot,
   type Team,
@@ -39,6 +40,7 @@ export interface Tables {
   githubRepos: GithubRepo
   issueRelations: IssueRelation
   pullRequests: PullRequest
+  issueComments: IssueComment
 }
 export type TableName = keyof Tables
 export type Changes = Map<TableName, Set<string>>
@@ -59,7 +61,8 @@ export const TABLES: ReadonlyArray<TableName> = [
   "issues",
   "githubRepos",
   "issueRelations",
-  "pullRequests"
+  "pullRequests",
+  "issueComments"
 ]
 
 const tableOf: Record<string, TableName> = {
@@ -71,7 +74,8 @@ const tableOf: Record<string, TableName> = {
   issue: "issues",
   githubRepo: "githubRepos",
   issueRelation: "issueRelations",
-  pullRequest: "pullRequests"
+  pullRequest: "pullRequests",
+  issueComment: "issueComments"
 }
 
 const emptyBase = () => Object.fromEntries(TABLES.map((t) => [t, new Map()])) as { [K in TableName]: Map<string, Tables[K]> }
@@ -151,6 +155,7 @@ export const createReplica = (options: { now?: () => number } = {}) => {
     for (const r of snap.githubRepos) base.githubRepos.set(r.id, r)
     for (const r of snap.issueRelations) base.issueRelations.set(r.id, r)
     for (const p of snap.pullRequests) base.pullRequests.set(p.id, p)
+    for (const c of snap.issueComments) base.issueComments.set(c.id, c)
     for (const t of TABLES) for (const id of base[t].keys()) mark(c, t, id)
     lastSyncId = snap.lastSyncId
     viewerId = snap.viewerId

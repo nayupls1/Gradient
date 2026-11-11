@@ -1,16 +1,27 @@
 import { type Issue, uuidv7, wouldCycle } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
-import { For, Show, untrack, useContext } from "solid-js"
-import { issueHref, issueKey, openBlockers, pullRequestsFor, relationsOf, type RelatedIssue } from "../lib/select.ts"
+import { createMemo, For, Match, Show, Switch, untrack, useContext } from "solid-js"
+import {
+  commentsFor,
+  issueHref,
+  issueKey,
+  issueReferences,
+  issueRepo,
+  openBlockers,
+  pullRequestsFor,
+  relationsOf,
+  type RelatedIssue,
+  resolveMentions
+} from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { Button, type ButtonProps } from "../ui/button.tsx"
-import { BlockedIcon, PlusIcon, PullRequestIcon, pullRequestLabel, StateIcon, XIcon } from "../ui/icons.tsx"
+import { BlockedIcon, GithubIcon, PlusIcon, PullRequestIcon, pullRequestLabel, StateIcon, XIcon } from "../ui/icons.tsx"
 import { Sync } from "./context.ts"
 import { Picker, type PickerApi } from "./Picker.tsx"
 
 /*
- * The issue sidebar's relations (blocked by, blocking, related) and the pull
- * requests that refer to the issue. Relations are edited here and through the
+ * The issue sidebar's relations (blocked by, blocking, related), the pull
+ * requests that refer to the issue, and what the issue itself mentions. Relations are edited here and through the
  * issue.blockedBy / issue.blocks / issue.related commands.
  */
 
@@ -34,6 +45,8 @@ const s = stylex.create({
   link: { display: "flex", alignItems: "center", gap: 8, flexGrow: 1, minWidth: 0, minHeight: 28, color: "inherit" },
   key: { color: colors.mutedForeground, fontSize: "0.75rem", fontVariantNumeric: "tabular-nums", flexShrink: 0 },
   title: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  muted: { color: colors.mutedForeground },
+  glyph: { display: "inline-flex", width: 14, justifyContent: "center", flexShrink: 0 },
   remove: { opacity: { default: 0.5, ":hover": 1 } }
 })
 
@@ -191,6 +204,72 @@ export const IssuePullRequests = (props: { issue: Issue }) => {
               <span {...stylex.attrs(s.key)}>#{pr.number}</span>
               <span {...stylex.attrs(s.title)}>{pr.title}</span>
             </a>
+          )}
+        </For>
+      </div>
+    </Show>
+  )
+}
+
+/**
+ * Issues and pull requests mentioned in the description or the comments
+ * (`#12`, `acme/web#3`, `TES-12`, a GitHub link), in reading order. Hidden
+ * when there are none.
+ */
+export const IssueMentions = (props: { issue: Issue }) => {
+  const sync = useContext(Sync)
+  // Parse only when the text changes; resolve against the store on every change.
+  const refs = createMemo(() =>
+    issueReferences(props.issue.description, commentsFor(sync.state, props.issue.id), issueRepo(sync.state, props.issue))
+  )
+  const mentions = () => resolveMentions(sync.state, props.issue, refs())
+  return (
+    <Show when={mentions().length > 0}>
+      <div {...stylex.attrs(s.section)}>
+        <div {...stylex.attrs(s.header)}>
+          <span {...stylex.attrs(s.heading)}>Mentions</span>
+        </div>
+        <For each={mentions()}>
+          {(m) => (
+            <Switch>
+              <Match when={m.kind === "issue" && m}>
+                {(entry) => (
+                  <a href={issueHref(sync.state, entry().issue)} {...stylex.attrs(s.item)} title={entry().issue.title}>
+                    <Show when={sync.state.workflowStates[entry().issue.stateId]}>
+                      {(st) => <StateIcon type={st().type} color={st().color} size={14} />}
+                    </Show>
+                    <span {...stylex.attrs(s.key)}>{issueKey(sync.state, entry().issue)}</span>
+                    <span {...stylex.attrs(s.title)}>{entry().issue.title}</span>
+                  </a>
+                )}
+              </Match>
+              <Match when={m.kind === "pullRequest" && m}>
+                {(entry) => (
+                  <a
+                    href={entry().pullRequest.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    {...stylex.attrs(s.item)}
+                    title={`${pullRequestLabel[entry().pullRequest.state]} pull request${entry().pullRequest.author ? ` by @${entry().pullRequest.author}` : ""}`}
+                  >
+                    <PullRequestIcon state={entry().pullRequest.state} />
+                    <span {...stylex.attrs(s.key)}>{entry().label}</span>
+                    <span {...stylex.attrs(s.title)}>{entry().pullRequest.title}</span>
+                  </a>
+                )}
+              </Match>
+              <Match when={m.kind === "github" && m}>
+                {(entry) => (
+                  <a href={entry().url} target="_blank" rel="noreferrer" {...stylex.attrs(s.item)} title="Open on GitHub">
+                    <span {...stylex.attrs(s.glyph)}>
+                      <GithubIcon size={13} />
+                    </span>
+                    <span {...stylex.attrs(s.key)}>{entry().label}</span>
+                    <span {...stylex.attrs(s.title, s.muted)}>on GitHub</span>
+                  </a>
+                )}
+              </Match>
+            </Switch>
           )}
         </For>
       </div>

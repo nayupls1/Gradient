@@ -27,6 +27,8 @@ fake.seed({ title: "Support SSO for enterprise workspaces", labels: [{ name: "en
 fake.seed({ title: "Docs: explain webhook forwarding", state: "closed", state_reason: "completed", labels: [{ name: "documentation", color: "0075ca" }] })
 fake.block(2, 1) // SSO waits on the crash fix
 fake.seed({ title: "Keep drafts when offline", body: "Fixes #1", draft: false, pull_request: { url: "x", merged_at: null } })
+fake.comment(1, "Reproduced on macOS too. The fix in #4 should cover it; acme/gadgets#1 has the same symptom.", { login: "dev" })
+fake.comment(1, "Confirmed, see https://github.com/acme/widgets/issues/2 for the SSO side.")
 const svg = (fill: string, shape: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="${fill}"/>${shape}</svg>`
 fake.putFile("README.md", "# widgets")

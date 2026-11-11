@@ -17,6 +17,16 @@ export interface FakeIssue {
   blocked_by?: Array<number>
 }
 
+export interface FakeComment {
+  id: number
+  /** Number of the issue or pull request it is on. */
+  issue: number
+  body: string
+  user: { login: string; avatar_url: string }
+  created_at: string
+  updated_at: string
+}
+
 export const makeFakeGithub = (
   repo = { owner: "acme", name: "widgets" },
   port = 0,
@@ -28,11 +38,12 @@ export const makeFakeGithub = (
     name: string
     private: boolean
     issues: Array<FakeIssue>
+    comments: Array<FakeComment>
     /** Files on the default branch, by path. */
     files: Map<string, Uint8Array>
   }>()
   const addRepo = (owner: string, name: string, isPrivate = false) => {
-    const entry = { owner, name, private: isPrivate, issues: [] as Array<FakeIssue>, files: new Map<string, Uint8Array>() }
+    const entry = { owner, name, private: isPrivate, issues: [] as Array<FakeIssue>, comments: [] as Array<FakeComment>, files: new Map<string, Uint8Array>() }
     repos.set(`${owner}/${name}`.toLowerCase(), entry)
     return entry
   }
@@ -206,6 +217,26 @@ export const makeFakeGithub = (
         if (!content) return new Response("not found", { status: 404 })
         return Response.json({ sha: git[4], size: content.byteLength, encoding: "base64", content: Buffer.from(content).toString("base64") })
       }
+      const commentsRoute = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/comments$/)
+      if (commentsRoute && req.method === "GET") {
+        const r = repos.get(`${commentsRoute[1]}/${commentsRoute[2]}`.toLowerCase())
+        if (!r) return new Response("not found", { status: 404 })
+        const since = url.searchParams.get("since")
+        const page = Number(url.searchParams.get("page") ?? 1)
+        const list = r.comments
+          .filter((c) => !since || c.updated_at >= since)
+          .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
+          .slice((page - 1) * 100, page * 100)
+          .map(({ issue, ...c }) => ({
+            ...c,
+            html_url: `https://github.com/${r.owner}/${r.name}/issues/${issue}#issuecomment-${c.id}`,
+            issue_url: `https://api.github.com/repos/${r.owner}/${r.name}/issues/${issue}`
+          }))
+        const text = JSON.stringify(list)
+        const etag = `"${Bun.hash(text + page)}"`
+        if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304 })
+        return new Response(text, { headers: { "content-type": "application/json", etag } })
+      }
       const route = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/issues(?:\/(\d+))?)?$/)
       const target = route ? repos.get(`${route[1]}/${route[2]}`.toLowerCase()) : undefined
       if (route && !target) return new Response("not found", { status: 404 })
@@ -293,6 +324,34 @@ export const makeFakeGithub = (
     },
     edit(number: number, body: any, inRepo?: { owner: string; name: string }) {
       apply(issuesOf(inRepo).find((i) => i.number === number)!, body)
+    },
+    /** Someone comments on an issue or pull request on github.com. Like GitHub, it bumps the issue's updated_at. */
+    comment(number: number, body: string, options: { login?: string; inRepo?: { owner: string; name: string } } = {}) {
+      const r = repoOf(options.inRepo)
+      const at = tick()
+      const login = options.login ?? "someone"
+      const comment: FakeComment = {
+        id: nextId++,
+        issue: number,
+        body,
+        user: { login, avatar_url: `https://avatars/${login}` },
+        created_at: at,
+        updated_at: at
+      }
+      r.comments.push(comment)
+      const issue = r.issues.find((i) => i.number === number)
+      if (issue) issue.updated_at = tick()
+      return comment
+    },
+    editComment(id: number, body: string, inRepo?: { owner: string; name: string }) {
+      const comment = repoOf(inRepo).comments.find((c) => c.id === id)!
+      comment.body = body
+      comment.updated_at = tick()
+      return comment
+    },
+    deleteComment(id: number, inRepo?: { owner: string; name: string }) {
+      const r = repoOf(inRepo)
+      r.comments = r.comments.filter((c) => c.id !== id)
     },
     /** Someone marks `number` as blocked by `blocker` on github.com. Like GitHub, it does not touch updated_at. */
     block(number: number, blocker: number, inRepo?: { owner: string; name: string }) {

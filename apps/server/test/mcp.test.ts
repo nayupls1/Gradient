@@ -200,6 +200,21 @@ describe("MCP", () => {
     expect(again.text).toContain("are not related")
   })
 
+  test("get_issue lists what an issue mentions, and its comments", async () => {
+    const target = (await call("create_issue", { title: "Mentioned one" })).data.id as string
+    const number = target.split("-")[1]
+    const source = await call("create_issue", {
+      title: "Mentions things",
+      description: `Depends on ${target} (also GRD-${number}), see acme/web#3.\n\n\`GRD-999\` is code.`
+    })
+    const got = await call("get_issue", { id: source.data.id })
+    expect(got.data.comments).toEqual([])
+    expect(got.data.mentions).toEqual([
+      { kind: "issue", ref: target, title: "Mentioned one", state: "Todo", url: null },
+      { kind: "github", ref: "acme/web#3", title: null, state: null, url: "https://github.com/acme/web/issues/3" }
+    ])
+  })
+
   test("bad names come back as tool errors that list the valid values", async () => {
     const result = await call("update_issue", { id: "GRD-1", state: "Doing" })
     expect(result.isError).toBe(true)

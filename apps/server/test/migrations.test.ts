@@ -130,3 +130,26 @@ test("0006 gives existing projects the automatic icon, with no file until a repo
   expect(after.project).toEqual({ icon_mode: "auto", icon_path: null, icon_sha: null })
   expect(after.blobs).toEqual([])
 })
+
+test("0007 adds issue comments; linked repositories poll comments from the start", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gradient-migrate-"))
+  dirs.push(dir)
+  const file = join(dir, "comments.db")
+  const before = ["0001_init", "0002_github_auth", "0003_projects", "0004_project_keys", "0005_relations", "0006_project_icons"] as const
+  await withDb(file, [...before], Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`INSERT INTO team (id, key, name, issue_counter) VALUES ('t1', 'GRD', 'Gradient', 0)`
+    yield* sql`INSERT INTO project (id, team_id, key, name, color, created_at) VALUES ('p1', 't1', 'WEB', 'Web', '#0090ff', 1)`
+    yield* sql`INSERT INTO github_repo (id, team_id, project_id, owner, name, poll_since, created_at)
+               VALUES ('r1', 't1', 'p1', 'acme', 'widgets', '2026-01-01T00:00:00Z', 1)`
+  }))
+  const after = await withDb(file, Object.keys(migrations) as Array<keyof typeof migrations>, Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    return {
+      repo: (yield* sql`SELECT comments_since, comments_etag FROM github_repo`)[0],
+      comments: yield* sql`SELECT * FROM issue_comment`
+    }
+  }))
+  expect(after.repo).toEqual({ comments_since: null, comments_etag: null })
+  expect(after.comments).toEqual([])
+})

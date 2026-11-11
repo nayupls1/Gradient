@@ -210,5 +210,31 @@ export const migrations = {
       fetched_at INTEGER NOT NULL,
       PRIMARY KEY (repo_id, sha)
     )`
+  }),
+  /**
+   * Comments on issues, read from GitHub (Gradient does not write them), and
+   * the cursor of the repository-wide comment poll: the newest `updated_at`
+   * seen and the ETag of that request.
+   */
+  "0007_issue_comments": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE issue_comment (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL REFERENCES team(id),
+      issue_id TEXT NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
+      repo_id TEXT NOT NULL REFERENCES github_repo(id) ON DELETE CASCADE,
+      gh_id INTEGER NOT NULL,
+      author TEXT,
+      author_avatar_url TEXT,
+      body TEXT NOT NULL,
+      url TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      gh_updated_at TEXT NOT NULL,
+      UNIQUE (repo_id, gh_id)
+    )`
+    yield* sql`CREATE INDEX issue_comment_issue ON issue_comment (issue_id, created_at)`
+    yield* sql`ALTER TABLE github_repo ADD COLUMN comments_since TEXT`
+    yield* sql`ALTER TABLE github_repo ADD COLUMN comments_etag TEXT`
   })
 }

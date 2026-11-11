@@ -2,7 +2,7 @@ import { Effect, Option, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
-import { GhIssue } from "./GithubClient.ts"
+import { GhComment, GhIssue } from "./GithubClient.ts"
 import { GithubSync } from "./GithubSync.ts"
 
 const Repository = Schema.Struct({ name: Schema.String, owner: Schema.Struct({ login: Schema.String }) })
@@ -27,6 +27,13 @@ const PullRequestEvent = Schema.Struct({
     user: Schema.NullOr(Schema.Struct({ login: Schema.String })),
     updated_at: Schema.String
   }),
+  repository: Repository
+})
+
+/** A comment was created, edited or deleted, on an issue or a pull request. */
+const IssueCommentEvent = Schema.Struct({
+  action: Schema.String,
+  comment: GhComment,
   repository: Repository
 })
 
@@ -55,7 +62,7 @@ export const verifySignature = async (secret: string, body: string, header: stri
 
 /**
  * Receives GitHub webhooks. Locally, forward them with
- * `gh webhook forward --repo owner/name --events issues,pull_request,issue_dependencies --url http://localhost:4100/webhooks/github --secret $GITHUB_WEBHOOK_SECRET`.
+ * `gh webhook forward --repo owner/name --events issues,issue_comment,pull_request,issue_dependencies --url http://localhost:4100/webhooks/github --secret $GITHUB_WEBHOOK_SECRET`.
  */
 export const WebhookRoute = HttpRouter.add(
   "POST",
@@ -104,6 +111,17 @@ export const WebhookRoute = HttpRouter.add(
         draft: pr.draft ?? null,
         pull_request: { merged_at: pr.merged_at ?? null }
       })
+      return HttpServerResponse.text(outcome, { status: 202 })
+    }
+    if (event === "issue_comment") {
+      const { action, comment, repository } = yield* Schema.decodeUnknownEffect(IssueCommentEvent)(JSON.parse(body))
+      const repo = yield* db.repoByName(repository.owner.login, repository.name)
+      if (!repo) return notLinked
+      if (action === "deleted") {
+        yield* sync.removeComment(repo, comment.id)
+        return HttpServerResponse.text("comment deleted", { status: 202 })
+      }
+      const outcome = yield* sync.ingestComment(repo, comment)
       return HttpServerResponse.text(outcome, { status: 202 })
     }
     if (event === "issue_dependencies") {

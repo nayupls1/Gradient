@@ -260,6 +260,9 @@ export class Mutations extends Context.Service<Mutations, {
                 // What it blocked is free now, on GitHub too.
                 if (r.type === "blocks" && r.issueId === m.id) tx.enqueue(r.relatedIssueId)
               }
+              // Its comments go with it (the foreign key cascades); tell clients.
+              const comments = yield* db.sql`SELECT id FROM issue_comment WHERE issue_id = ${m.id}`
+              for (const c of comments) tx.touch("issueComment", c.id as string, "delete")
               yield* db.deleteIssue(m.id)
               tx.touch("issue", m.id, "delete")
               return

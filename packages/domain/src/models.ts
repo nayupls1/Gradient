@@ -180,6 +180,24 @@ export const PullRequest = Schema.Struct({
 })
 export type PullRequest = typeof PullRequest.Type
 
+/**
+ * A comment on an issue, read from its GitHub copy. Gradient shows comments
+ * but does not write them; they are edited on GitHub.
+ */
+export const IssueComment = Schema.Struct({
+  id: Schema.String,
+  teamId: Schema.String,
+  issueId: Schema.String,
+  /** GitHub login of the author, or null for a deleted account. */
+  author: Schema.NullOr(Schema.String),
+  authorAvatarUrl: Schema.NullOr(Schema.String),
+  body: Schema.String,
+  url: Schema.String,
+  createdAt: Millis,
+  updatedAt: Millis
+})
+export type IssueComment = typeof IssueComment.Type
+
 export const ModelName = Schema.Literals([
   "team",
   "user",
@@ -189,7 +207,8 @@ export const ModelName = Schema.Literals([
   "issue",
   "githubRepo",
   "issueRelation",
-  "pullRequest"
+  "pullRequest",
+  "issueComment"
 ])
 export type ModelName = typeof ModelName.Type
 
@@ -203,7 +222,8 @@ export const Entity = Schema.Union([
   Schema.Struct({ model: Schema.Literal("issue"), value: Issue }),
   Schema.Struct({ model: Schema.Literal("githubRepo"), value: GithubRepo }),
   Schema.Struct({ model: Schema.Literal("issueRelation"), value: IssueRelation }),
-  Schema.Struct({ model: Schema.Literal("pullRequest"), value: PullRequest })
+  Schema.Struct({ model: Schema.Literal("pullRequest"), value: PullRequest }),
+  Schema.Struct({ model: Schema.Literal("issueComment"), value: IssueComment })
 ])
 export type Entity = typeof Entity.Type
 
