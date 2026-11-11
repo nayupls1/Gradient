@@ -45,6 +45,31 @@ export const Label = Schema.Struct({
 export type Label = typeof Label.Type
 
 /**
+ * How a project picks its icon. `auto`: Gradient finds one in the linked
+ * repository (a favicon, else a logo) and follows it when it changes. `repo`:
+ * a file the user picked in the repository. `none`: the plain cube.
+ */
+export const ProjectIconMode = Schema.Literals(["auto", "repo", "none"])
+export type ProjectIconMode = typeof ProjectIconMode.Type
+
+/** An image file in the project's linked repository, as of the last check. */
+export const ProjectIconFile = Schema.Struct({
+  /** Path in the repository, e.g. "public/favicon.svg". */
+  path: Schema.String,
+  /** Git blob id of the file. It changes with the content, so it also versions the image URL. */
+  sha: Schema.String
+})
+export type ProjectIconFile = typeof ProjectIconFile.Type
+
+/** File types a project icon can be. */
+export const PROJECT_ICON_EXTENSIONS = ["svg", "png", "ico", "webp", "jpg", "jpeg", "gif", "avif"] as const
+
+export const isProjectIconPath = (path: string) => {
+  const ext = path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1]
+  return ext !== undefined && (PROJECT_ICON_EXTENSIONS as ReadonlyArray<string>).includes(ext)
+}
+
+/**
  * A group of issues inside a team, such as one product or repository. An issue
  * belongs to at most one project. A project can link one GitHub repository;
  * its issues sync there.
@@ -56,6 +81,9 @@ export const Project = Schema.Struct({
   key: Schema.String,
   name: Schema.String,
   color: Schema.String,
+  iconMode: ProjectIconMode,
+  /** The image shown for the project, or null for the cube in its color. Set by the server from the repository. */
+  icon: Schema.NullOr(ProjectIconFile),
   createdAt: Millis
 })
 export type Project = typeof Project.Type

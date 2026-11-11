@@ -8,7 +8,7 @@ import { updateTheme, activeScheme } from "../theme/theme.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { color } from "../theme/tokens.stylex.ts"
 import { Button } from "../ui/button.tsx"
-import { GithubIcon, PlusIcon, ProjectIcon, SettingsIcon } from "../ui/icons.tsx"
+import { GithubIcon, PlusIcon, SettingsIcon } from "../ui/icons.tsx"
 import {
   Sidebar,
   SidebarContent,
@@ -32,6 +32,7 @@ import { CommandSurfaces } from "./CommandMenu.tsx"
 import { Composer } from "./Composer.tsx"
 import { type ComposerDefaults, ComposerContext, ProjectDialogsContext, Sync } from "./context.ts"
 import { ProjectDialog, type ProjectDialogMode } from "./ProjectDialog.tsx"
+import { ProjectGlyph } from "./ProjectGlyph.tsx"
 import { github } from "./github.ts"
 
 const s = stylex.create({
@@ -136,7 +137,8 @@ export const Shell = (props: { children: JSX.Element }) => {
   const [projectDialog, setProjectDialog] = createSignal<ProjectDialogMode | null>(null)
   const projectDialogs = {
     create: () => setProjectDialog({ kind: "create" }),
-    edit: (projectId: string) => setProjectDialog({ kind: "edit", projectId })
+    edit: (projectId: string, focus?: "icon") =>
+      setProjectDialog({ kind: "edit", projectId, ...(focus ? { focus } : {}) })
   }
 
   useCommands([
@@ -219,7 +221,7 @@ export const Shell = (props: { children: JSX.Element }) => {
                   {(project) => (
                     <SidebarMenuItem>
                       <NavLink href={projectHref(project().id)}>
-                        <ProjectIcon size={14} color={project().color} />
+                        <ProjectGlyph project={project()} size={14} />
                         <span {...stylex.attrs(s.projectName)}>{project().name}</span>
                         <Show when={projectRepo(sync.state, project().id)}>
                           {(r) => (

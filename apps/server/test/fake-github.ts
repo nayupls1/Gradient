@@ -23,15 +23,27 @@ export const makeFakeGithub = (
   options: { autoApproveDeviceAfterMs?: number; tokenExpiresIn?: number } = {}
 ) => {
   // Every repository the fake knows, by "owner/name" (lowercase). The first is the default one.
-  const repos = new Map<string, { owner: string; name: string; private: boolean; issues: Array<FakeIssue> }>()
+  const repos = new Map<string, {
+    owner: string
+    name: string
+    private: boolean
+    issues: Array<FakeIssue>
+    /** Files on the default branch, by path. */
+    files: Map<string, Uint8Array>
+  }>()
   const addRepo = (owner: string, name: string, isPrivate = false) => {
-    const entry = { owner, name, private: isPrivate, issues: [] as Array<FakeIssue> }
+    const entry = { owner, name, private: isPrivate, issues: [] as Array<FakeIssue>, files: new Map<string, Uint8Array>() }
     repos.set(`${owner}/${name}`.toLowerCase(), entry)
     return entry
   }
   const issues = addRepo(repo.owner, repo.name).issues
   const issuesOf = (r?: { owner: string; name: string }) =>
     r ? repos.get(`${r.owner}/${r.name}`.toLowerCase())!.issues : issues
+  const repoOf = (r?: { owner: string; name: string }) =>
+    repos.get(r ? `${r.owner}/${r.name}`.toLowerCase() : `${repo.owner}/${repo.name}`.toLowerCase())!
+  /** Git's blob id: sha1 of "blob <size>\0<content>". */
+  const blobSha = (content: Uint8Array) =>
+    new Bun.CryptoHasher("sha1").update(`blob ${content.byteLength}\0`).update(content).digest("hex")
   const requests: Array<{ method: string; path: string; body: any }> = []
   let failWrites = 0
   // Device-flow sign-in: one outstanding code at a time is enough for tests.
@@ -178,6 +190,22 @@ export const makeFakeGithub = (
           return Response.json(toJson(byId(id)!.repo, byId(id)!.issue))
         }
       }
+      const git = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/git\/(trees|blobs)\/([^/]+)$/)
+      if (git && req.method === "GET") {
+        const r = repos.get(`${git[1]}/${git[2]}`.toLowerCase())
+        if (!r) return new Response("not found", { status: 404 })
+        if (git[3] === "trees") {
+          if (r.files.size === 0) return Response.json({ message: "Git Repository is empty." }, { status: 409 })
+          return Response.json({
+            sha: "tree",
+            truncated: false,
+            tree: [...r.files].map(([path, content]) => ({ path, mode: "100644", type: "blob", sha: blobSha(content), size: content.byteLength }))
+          })
+        }
+        const content = [...r.files.values()].find((c) => blobSha(c) === git[4])
+        if (!content) return new Response("not found", { status: 404 })
+        return Response.json({ sha: git[4], size: content.byteLength, encoding: "base64", content: Buffer.from(content).toString("base64") })
+      }
       const route = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/issues(?:\/(\d+))?)?$/)
       const target = route ? repos.get(`${route[1]}/${route[2]}`.toLowerCase()) : undefined
       if (route && !target) return new Response("not found", { status: 404 })
@@ -236,6 +264,15 @@ export const makeFakeGithub = (
     },
     /** Issues of one repository (the default one when omitted). */
     issuesOf,
+    /** Commit a file to the default branch. Returns its blob sha. */
+    putFile(path: string, content: string | Uint8Array, inRepo?: { owner: string; name: string }) {
+      const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content
+      repoOf(inRepo).files.set(path, bytes)
+      return blobSha(bytes)
+    },
+    deleteFile(path: string, inRepo?: { owner: string; name: string }) {
+      repoOf(inRepo).files.delete(path)
+    },
     /** Simulate someone editing on github.com. */
     seed(partial: Partial<FakeIssue> & { title: string }, inRepo?: { owner: string; name: string }) {
       const list = issuesOf(inRepo)

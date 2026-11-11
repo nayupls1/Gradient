@@ -109,3 +109,24 @@ test("0005 adds relations and pull requests; existing links have no GitHub id or
   expect(after.relations).toEqual([])
   expect(after.pullRequests).toEqual([])
 })
+
+test("0006 gives existing projects the automatic icon, with no file until a repository is checked", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gradient-migrate-"))
+  dirs.push(dir)
+  const file = join(dir, "icons.db")
+  const before = ["0001_init", "0002_github_auth", "0003_projects", "0004_project_keys", "0005_relations"] as const
+  await withDb(file, [...before], Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`INSERT INTO team (id, key, name, issue_counter) VALUES ('t1', 'GRD', 'Gradient', 0)`
+    yield* sql`INSERT INTO project (id, team_id, key, name, color, created_at) VALUES ('p1', 't1', 'WEB', 'Web', '#0090ff', 1)`
+  }))
+  const after = await withDb(file, Object.keys(migrations) as Array<keyof typeof migrations>, Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    return {
+      project: (yield* sql`SELECT icon_mode, icon_path, icon_sha FROM project`)[0],
+      blobs: yield* sql`SELECT * FROM github_blob`
+    }
+  }))
+  expect(after.project).toEqual({ icon_mode: "auto", icon_path: null, icon_sha: null })
+  expect(after.blobs).toEqual([])
+})

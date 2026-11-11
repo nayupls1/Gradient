@@ -12,6 +12,7 @@ export default defineConfig({
     proxy: {
       "/rpc": { target: `ws://localhost:${serverPort}`, ws: true },
       "/webhooks": `http://localhost:${serverPort}`,
+      "/repo-files": `http://localhost:${serverPort}`,
       "/health": `http://localhost:${serverPort}`
     }
   },

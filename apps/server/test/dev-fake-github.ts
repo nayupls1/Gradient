@@ -4,6 +4,8 @@
  *   bun apps/server/test/dev-fake-github.ts
  *   GITHUB_API_URL=http://127.0.0.1:4300 GITHUB_TOKEN=fake bun run dev
  * then create a project from a repository (acme/widgets, acme/gadgets, acme/docs).
+ * widgets has a favicon and gadgets a logo, which become the projects' icons;
+ * docs has no image, so its project keeps the cube.
  *
  * To try "Sign in with GitHub" instead of a token (the fake approves the code
  * after 3 seconds, and the app is "installed" on acme/widgets):
@@ -25,4 +27,10 @@ fake.seed({ title: "Support SSO for enterprise workspaces", labels: [{ name: "en
 fake.seed({ title: "Docs: explain webhook forwarding", state: "closed", state_reason: "completed", labels: [{ name: "documentation", color: "0075ca" }] })
 fake.block(2, 1) // SSO waits on the crash fix
 fake.seed({ title: "Keep drafts when offline", body: "Fixes #1", draft: false, pull_request: { url: "x", merged_at: null } })
+const svg = (fill: string, shape: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="${fill}"/>${shape}</svg>`
+fake.putFile("README.md", "# widgets")
+fake.putFile("web/public/favicon.svg", svg("#f76b15", `<circle cx="16" cy="16" r="7" fill="#fff"/>`))
+fake.putFile("docs/logo.svg", svg("#0090ff", `<path d="M9 22 16 8l7 14z" fill="#fff"/>`))
+fake.putFile("assets/logo.svg", svg("#8e4ec6", `<rect x="9" y="9" width="14" height="14" rx="2" fill="#fff"/>`), { owner: "acme", name: "gadgets" })
 console.log(`Fake GitHub on ${fake.url} with ${fake.issues.length} issues and pull requests in acme/widgets`)

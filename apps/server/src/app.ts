@@ -8,6 +8,7 @@ import { ServerConfig } from "./config.ts"
 import { DbLive } from "./db/Db.ts"
 import { GithubAuth } from "./github/GithubAuth.ts"
 import { GithubClient } from "./github/GithubClient.ts"
+import { RepoFileRoute } from "./github/files.ts"
 import { GithubSync } from "./github/GithubSync.ts"
 import { WebhookRoute } from "./github/webhook.ts"
 import { localOnly } from "./http/guard.ts"
@@ -46,7 +47,7 @@ export const AppServices = Layer.mergeAll(Seed, Layer.empty).pipe(
   Layer.provideMerge(DbLive)
 )
 
-export const Routes = Layer.mergeAll(RpcRoute, McpRoute, HealthRoute, WebhookRoute, StaticRoute)
+export const Routes = Layer.mergeAll(RpcRoute, McpRoute, HealthRoute, WebhookRoute, RepoFileRoute, StaticRoute)
 
 export const HttpLive = Layer.unwrap(
   Effect.gen(function*() {

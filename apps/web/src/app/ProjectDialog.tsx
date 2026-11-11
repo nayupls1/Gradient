@@ -1,9 +1,15 @@
-import { type GithubAvailableRepo, isValidProjectKey, PROJECT_COLORS, uuidv7 } from "@gradient/domain"
+import {
+  type GithubAvailableRepo,
+  isValidProjectKey,
+  PROJECT_COLORS,
+  type ProjectIconChoices,
+  uuidv7
+} from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createSignal, createUniqueId, For, Show, useContext } from "solid-js"
 import { KeyScope, useCommands } from "../keys/solid.tsx"
-import { firstTeam, projectHref, suggestProjectKey, teamProjects } from "../lib/select.ts"
+import { firstTeam, projectHref, projectRepo, suggestProjectKey, teamProjects } from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { font } from "../theme/tokens.stylex.ts"
 import { Button, type ButtonProps } from "../ui/button.tsx"
@@ -14,6 +20,8 @@ import { Label } from "../ui/label.tsx"
 import { Sync } from "./context.ts"
 import { github } from "./github.ts"
 import { GithubRepoPicker } from "./GithubRepoPicker.tsx"
+import { Picker, type PickerApi } from "./Picker.tsx"
+import { ProjectGlyph, repoFileUrl } from "./ProjectGlyph.tsx"
 
 const s = stylex.create({
   dialog: { gap: 16 },
@@ -39,14 +47,22 @@ const s = stylex.create({
   muted: { color: colors.mutedForeground },
   error: { color: colors.destructive, fontSize: "0.75rem" },
   keyRow: { display: "flex", alignItems: "center", gap: 10 },
-  keyInput: { width: 90, flexShrink: 0, fontFamily: font.mono, letterSpacing: "0.06em", textTransform: "uppercase" }
+  keyInput: { width: 90, flexShrink: 0, fontFamily: font.mono, letterSpacing: "0.06em", textTransform: "uppercase" },
+  thumb: { width: 16, height: 16, flexShrink: 0, objectFit: "contain", borderRadius: 3 }
 })
 
-export type ProjectDialogMode = { kind: "create" } | { kind: "edit"; projectId: string }
+/** What the icon picker holds: "auto", "none", or a repository path. */
+type IconPick = { mode: "auto" } | { mode: "none" } | { mode: "repo"; path: string }
+const iconValue = (pick: IconPick) => (pick.mode === "repo" ? `repo:${pick.path}` : pick.mode)
+const fileName = (path: string) => path.split("/").pop() ?? path
+
+export type ProjectDialogMode = { kind: "create" } | { kind: "edit"; projectId: string; focus?: "icon" }
 
 /**
  * Create a project (optionally linked to a GitHub repository, whose issues are
- * imported into it), or rename and recolor one.
+ * imported into it), or rename, recolor and pick the icon of one. Icons come
+ * from the linked repository: its favicon by default, any image in it, or the
+ * plain cube.
  */
 export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: () => void }) => {
   const sync = useContext(Sync)
@@ -62,6 +78,12 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
   const [repo, setRepo] = createSignal<GithubAvailableRepo | null>(null)
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
+  const [icon, setIcon] = createSignal<IconPick>({ mode: "auto" })
+  const [iconChoices, setIconChoices] = createSignal<ProjectIconChoices | null>(null)
+  const [iconError, setIconError] = createSignal<string | null>(null)
+  let iconPicker: PickerApi | undefined
+  /** The repository an edited project takes its icon from. */
+  const editingRepo = () => (editing() ? projectRepo(sync.state, editing()!.id) : undefined)
 
   // Fill the form each time the dialog opens.
   createEffect(
@@ -77,8 +99,51 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
       setRepo(null)
       setError(null)
       setBusy(false)
+      setIcon(
+        project?.iconMode === "repo" && project.icon
+          ? { mode: "repo", path: project.icon.path }
+          : { mode: project?.iconMode === "none" ? "none" : "auto" }
+      )
+      setIconChoices(null)
+      setIconError(null)
+      if (project && projectRepo(sync.state, project.id)) {
+        sync.call((c) => c.GithubProjectIcons({ projectId: project.id })).then(
+          (choices) => setIconChoices(choices),
+          (e) => setIconError((e as { message?: string }).message ?? String(e))
+        )
+        if (mode.kind === "edit" && mode.focus === "icon") requestAnimationFrame(() => iconPicker?.open())
+      }
     }
   )
+
+  /** The file an icon pick shows, for previews: auto's find, the picked file, or none. */
+  const iconFile = (pick: IconPick) => {
+    if (pick.mode === "none") return null
+    if (pick.mode === "auto") return iconChoices()?.auto ?? (editing()?.iconMode === "auto" ? editing()!.icon : null)
+    return iconChoices()?.images.find((f) => f.path === pick.path) ??
+      (editing()?.icon?.path === pick.path ? editing()!.icon : null)
+  }
+  const iconPreview = (pick: IconPick, size: number) => {
+    const file = iconFile(pick)
+    const r = editingRepo()
+    return file && r
+      ? <img src={repoFileUrl(r.id, file)} alt="" loading="lazy" width={size} height={size} {...stylex.attrs(s.thumb)} />
+      : <ProjectIcon size={size} color={colorValue()} />
+  }
+  const iconLabel = (pick: IconPick) => {
+    if (pick.mode === "none") return "Cube"
+    if (pick.mode === "repo") return pick.path
+    const found = iconFile(pick)
+    return found ? `Automatic · ${found.path}` : "Automatic"
+  }
+  const iconChanged = () => {
+    const project = editing()
+    if (!project) return false
+    const initial: IconPick = project.iconMode === "repo" && project.icon
+      ? { mode: "repo", path: project.icon.path }
+      : { mode: project.iconMode === "none" ? "none" : "auto" }
+    return iconValue(initial) !== iconValue(icon())
+  }
 
   /** What the key will be: the user's, or one derived from the name (or the picked repo's). */
   const effectiveKey = () => {
@@ -110,7 +175,22 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
         id: project.id,
         patch: { name: trimmed, color: colorValue(), ...(effectiveKey() !== project.key ? { key: effectiveKey() } : {}) }
       })
-      return props.onClose()
+      if (!iconChanged()) return props.onClose()
+      // The server looks the file up in the repository, then saves it through the usual write path.
+      const pick = icon()
+      setBusy(true)
+      setError(null)
+      try {
+        await sync.call((c) =>
+          c.GithubSetProjectIcon({ projectId: project.id, mode: pick.mode, ...(pick.mode === "repo" ? { path: pick.path } : {}) })
+        )
+        props.onClose()
+      } catch (e) {
+        setError((e as { message?: string }).message ?? String(e))
+      } finally {
+        setBusy(false)
+      }
+      return
     }
     const picked = repo()
     if (!picked) {
@@ -154,7 +234,9 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
       <KeyScope name="project-dialog" blocking>
       <DialogHeader>
         <DialogTitle xstyle={s.title}>
-          <ProjectIcon size={16} color={colorValue()} />
+          <Show when={editing()} fallback={<ProjectIcon size={16} color={colorValue()} />}>
+            {iconPreview(icon(), 16)}
+          </Show>
           {editing() ? "Edit project" : "New project"}
         </DialogTitle>
       </DialogHeader>
@@ -214,6 +296,47 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
             </For>
           </div>
         </div>
+        <Show when={editingRepo()}>
+          {(r) => (
+            <div {...stylex.attrs(s.field)}>
+              <Label>Icon</Label>
+              <Picker<string>
+                apiRef={(api) => (iconPicker = api)}
+                placeholder="Search images…"
+                emptyText={iconError() ?? (iconChoices() ? "No matching image" : "Loading images…")}
+                items={[
+                  {
+                    value: "auto",
+                    label: "Automatic",
+                    hint: iconChoices() ? (iconChoices()!.auto ? fileName(iconChoices()!.auto!.path) : "no favicon found") : "",
+                    keywords: "favicon logo default",
+                    icon: () => iconPreview({ mode: "auto" }, 16)
+                  },
+                  { value: "none", label: "Cube", keywords: "none plain box", icon: () => <ProjectIcon size={16} color={colorValue()} /> },
+                  ...(iconChoices()?.images ?? []).map((f) => ({
+                    value: `repo:${f.path}`,
+                    label: f.path,
+                    hint: `${Math.max(1, Math.round(f.size / 1024))} KB`,
+                    icon: () => <img src={repoFileUrl(r().id, f)} alt="" loading="lazy" width={16} height={16} {...stylex.attrs(s.thumb)} />
+                  }))
+                ]}
+                selected={[iconValue(icon())]}
+                onPick={(value) =>
+                  setIcon(value === "auto" || value === "none" ? { mode: value } : { mode: "repo", path: value.slice("repo:".length) })}
+                trigger={(p) => (
+                  <Button {...(p as ButtonProps)} variant="outline" xstyle={s.repoButton}>
+                    {iconPreview(icon(), 14)}
+                    <span {...stylex.attrs(s.grow)}>{iconLabel(icon())}</span>
+                    <ChevronDownIcon size={14} />
+                  </Button>
+                )}
+              />
+              <span {...stylex.attrs(s.hint)}>
+                From {r().owner}/{r().name}. Automatic uses its favicon (else a logo) and follows it when it changes.
+              </span>
+            </div>
+          )}
+        </Show>
         <Show when={!editing()}>
           <div {...stylex.attrs(s.field)}>
             <Label>GitHub repository (optional)</Label>
@@ -244,7 +367,7 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
         <DialogFooter>
           <Button variant="ghost" onClick={props.onClose}>Cancel</Button>
           <Button type="submit" disabled={busy() || (!name().trim() && !repo())}>
-            {busy() ? "Importing…" : editing() ? "Save" : "Create project"}
+            {busy() ? (editing() ? "Saving…" : "Importing…") : editing() ? "Save" : "Create project"}
           </Button>
         </DialogFooter>
       </form>

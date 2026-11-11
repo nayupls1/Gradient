@@ -2,6 +2,7 @@ import {
   identifier,
   isOpenBlocker,
   type Issue,
+  type Project,
   keyBetween,
   type Mutation,
   parseIdentifier,
@@ -200,6 +201,9 @@ const ToolHandlers = GradientToolkit.toLayer(
         return issue ? detail(ws, issue) : yield* fail("The issue disappeared.")
       })
 
+    /** How an agent reads a project's icon: "auto", "none", or the picked file. */
+    const iconName = (p: Project) => (p.iconMode === "repo" ? p.icon?.path ?? "auto" : p.iconMode)
+
     const isOpen = (ws: Workspace, issue: Issue) => {
       const type = ws.states.find((s) => s.id === issue.stateId)?.type
       return type !== "completed" && type !== "canceled"
@@ -221,6 +225,7 @@ const ToolHandlers = GradientToolkit.toLayer(
             name: p.name,
             key: p.key,
             githubRepo: repoName(ws, p.id),
+            icon: iconName(p),
             openIssues: issues.filter((i) => i.projectId === p.id && i.archivedAt === null && isOpen(ws, i)).length
           })),
           openIssues: issues.filter((i) => i.archivedAt === null && isOpen(ws, i)).length
@@ -413,6 +418,39 @@ const ToolHandlers = GradientToolkit.toLayer(
           color: PROJECT_COLORS[ws.projects.length % PROJECT_COLORS.length]!
         }])
         return { name: input.name.trim(), github_repo: null, imported: 0 }
+      }),
+
+      update_project: Effect.fn("mcp.update_project")(function*(input) {
+        const ws = yield* workspace
+        const projectId = yield* resolveProject(ws, input.project)
+        const project = ws.projects.find((p) => p.id === projectId)
+        if (!project) return yield* fail(`Name a project. Valid: ${names(ws.projects)}.`)
+        const patch: { name?: string; key?: string; color?: string } = {}
+        if (input.name !== undefined) patch.name = input.name.trim()
+        if (input.key !== undefined) patch.key = input.key.trim().toUpperCase()
+        if (input.color !== undefined) {
+          if (!/^#[0-9a-fA-F]{6}$/.test(input.color.trim())) return yield* fail(`Use a hex color like "#0090ff", not "${input.color}".`)
+          patch.color = input.color.trim()
+        }
+        if (Object.keys(patch).length > 0) yield* apply(ws, [{ _tag: "ProjectUpdate", id: project.id, patch }])
+        if (input.icon !== undefined) {
+          const wanted = input.icon.trim()
+          const choice = wanted.toLowerCase() === "auto" || wanted.toLowerCase() === "none"
+            ? { mode: wanted.toLowerCase() as "auto" | "none" }
+            : { mode: "repo" as const, path: wanted }
+          yield* github.setProjectIcon(project.id, choice, { origin: "mcp", actorId: ws.viewerId }).pipe(
+            Effect.mapError((e) => new ToolError({ message: e.message }))
+          )
+        }
+        const now = (yield* db.getProject(project.id).pipe(Effect.orDie))!
+        return {
+          name: now.name,
+          key: now.key,
+          color: now.color,
+          github_repo: repoName(ws, now.id),
+          icon: iconName(now),
+          icon_file: now.icon?.path ?? null
+        }
       }),
 
       github_sign_in: Effect.fn("mcp.github_sign_in")(function*() {

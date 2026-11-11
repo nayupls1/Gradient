@@ -77,7 +77,8 @@ describe("MCP", () => {
       "link_issues",
       "list_issues",
       "unlink_issues",
-      "update_issue"
+      "update_issue",
+      "update_project"
     ])
     expect(tools.github_status.annotations.readOnlyHint).toBe(true)
     expect(tools.list_issues.annotations.readOnlyHint).toBe(true)
@@ -115,6 +116,23 @@ describe("MCP", () => {
     const unknown = await call("list_issues", { project: "Nope" })
     expect(unknown.isError).toBe(true)
     expect(unknown.text).toContain("Agents")
+  })
+
+  test("update_project renames and recolors; icons need a linked repository", async () => {
+    await call("create_project", { name: "Docs" })
+    const updated = await call("update_project", { project: "docs", name: "Handbook", key: "HBK", color: "#46a758" })
+    expect(updated.data).toMatchObject({ name: "Handbook", key: "HBK", color: "#46a758", icon: "auto", icon_file: null })
+    const ws = await call("describe_workspace")
+    expect(ws.data.projects.find((p: any) => p.name === "Handbook")).toMatchObject({ key: "HBK", icon: "auto" })
+
+    const cube = await call("update_project", { project: "Handbook", icon: "none" })
+    expect(cube.data.icon).toBe("none")
+    const file = await call("update_project", { project: "Handbook", icon: "public/logo.svg" })
+    expect(file.isError).toBe(true)
+    expect(file.text).toContain("Link a GitHub repository")
+    const bad = await call("update_project", { project: "Nope", name: "x" })
+    expect(bad.isError).toBe(true)
+    expect(bad.text).toContain("Handbook")
   })
 
   test("create, update and read back an issue through the shared write path", async () => {

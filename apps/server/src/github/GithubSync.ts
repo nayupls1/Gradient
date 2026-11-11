@@ -5,6 +5,9 @@ import {
   type GithubStatus,
   type Issue,
   keyBetween,
+  type Project,
+  type ProjectIconChoices,
+  type ProjectIconFile,
   parsePullRequestRefs,
   PROJECT_COLORS,
   projectKeyFor,
@@ -15,9 +18,10 @@ import { Context, Effect, Layer, Option, Queue, Schedule, Semaphore, Stream } fr
 import type { SqlError } from "effect/sql"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
-import { Mutations, type TxContext } from "../sync/Mutations.ts"
+import { Mutations, type Origin, type TxContext } from "../sync/Mutations.ts"
 import { GithubAuth, type Viewer } from "./GithubAuth.ts"
 import { type GhIssue, GithubClient, type IssueWrite, labelColor, labelName } from "./GithubClient.ts"
+import { autoIcon, iconCandidates, MAX_ICON_BYTES, type RepoFile } from "./icons.ts"
 import { diff, fromGithub, fromIssue, resolveState, type Shadow } from "./mapping.ts"
 
 interface LinkRow {
@@ -46,6 +50,19 @@ const coordsFromUrl = (url: string) => {
 const pullRequestState = (gh: GhIssue): PullRequest["state"] =>
   gh.pull_request?.merged_at ? "merged" : gh.state === "closed" ? "closed" : gh.draft ? "draft" : "open"
 
+/** How often "auto" icons are looked up again while polling. Linking and "Sync now" always look. */
+const ICON_CHECK_INTERVAL_MS = 60 * 60 * 1000
+/** A repository's file list is reused this long, so opening the picker and saving read it once. */
+const FILES_TTL_MS = 60 * 1000
+
+export type IconChoice =
+  | { readonly mode: "auto" }
+  | { readonly mode: "none" }
+  | { readonly mode: "repo"; readonly path: string }
+
+const sameIcon = (a: ProjectIconFile | null, b: ProjectIconFile | null) => a?.path === b?.path && a?.sha === b?.sha
+const toIconFile = (f: RepoFile | null | undefined): ProjectIconFile | null => (f ? { path: f.path, sha: f.sha } : null)
+
 const fallbackColors = ["#8b8d98", "#e5484d", "#f76b15", "#ffc53d", "#46a758", "#0090ff", "#8e4ec6", "#d6409f"]
 
 export class GithubSync extends Context.Service<GithubSync, {
@@ -71,6 +88,18 @@ export class GithubSync extends Context.Service<GithubSync, {
   readonly flushOutbox: Effect.Effect<number>
   /** Repositories the connected account can link, for the repo picker. */
   readonly availableRepos: Effect.Effect<ReadonlyArray<GithubAvailableRepo>, GithubError>
+  /** The images in a project's repository that can be its icon, and the one "auto" picks. */
+  projectIcons(projectId: string): Effect.Effect<ProjectIconChoices, GithubError>
+  /** Choose a project's icon, looking the file up in its repository. */
+  setProjectIcon(
+    projectId: string,
+    choice: IconChoice,
+    options: { readonly origin: Origin; readonly actorId: string | null }
+  ): Effect.Effect<Project, GithubError>
+  /** Look the icon of a repository's project up again ("auto" follows the favicon; a picked file follows its path). */
+  refreshIcon(repo: GithubRepo): Effect.Effect<void, GithubError>
+  /** The bytes of a file in a linked repository, cached by blob sha. */
+  fileBytes(repoId: string, sha: string): Effect.Effect<Uint8Array, GithubError>
 }>()("gradient/GithubSync") {
   static readonly layer = Layer.effect(
     GithubSync,
@@ -556,9 +585,121 @@ export class GithubSync extends Context.Service<GithubSync, {
           Effect.catchTag("SqlError", Effect.die)
         )
 
+      // Icons: the repository's file list, a little cached, and when each repo was last checked.
+      const filesCache = new Map<string, { at: number; files: ReadonlyArray<RepoFile> }>()
+      const iconCheckedAt = new Map<string, number>()
+      const filesOf = (repo: GithubRepo, options: { fresh: boolean }) =>
+        Effect.gen(function*() {
+          const cached = filesCache.get(repo.id)
+          if (!options.fresh && cached && Date.now() - cached.at < FILES_TTL_MS) return cached.files
+          const files = yield* gh.listFiles(repo.owner, repo.name)
+          filesCache.set(repo.id, { at: Date.now(), files })
+          return files
+        })
+
+      /** Set a project's icon if its mode is still `mode`, so a choice made meanwhile wins. */
+      const putIcon = (projectId: string, mode: Project["iconMode"], icon: ProjectIconFile | null) =>
+        mutations.transact({ origin: "system", actorId: null }, (tx) =>
+          Effect.gen(function*() {
+            const project = yield* db.getProject(projectId)
+            if (!project || project.iconMode !== mode || sameIcon(project.icon, icon)) return
+            yield* db.putProject({ ...project, icon })
+            tx.touch("project", projectId)
+          })).pipe(Effect.asVoid)
+
+      const refreshIcon = (repo: GithubRepo) =>
+        Effect.gen(function*() {
+          iconCheckedAt.set(repo.id, Date.now())
+          const project = yield* db.getProject(repo.projectId).pipe(Effect.orDie)
+          if (!project || project.iconMode === "none") return
+          const files = yield* filesOf(repo, { fresh: true })
+          if (project.iconMode === "auto") return yield* putIcon(project.id, "auto", toIconFile(autoIcon(files)))
+          // A picked file follows its path; when it is gone, the last version stays.
+          const file = files.find((f) => f.path === project.icon?.path)
+          if (file) yield* putIcon(project.id, "repo", toIconFile(file))
+        }).pipe(Effect.catchTag("SqlError", Effect.die))
+
+      const projectIcons = (projectId: string) =>
+        Effect.gen(function*() {
+          const repo = yield* db.repoForProject(projectId).pipe(Effect.orDie)
+          if (!repo) return yield* new GithubError({ message: "The project has no linked repository to take an icon from." })
+          const files = yield* filesOf(repo, { fresh: false })
+          return {
+            auto: toIconFile(autoIcon(files)),
+            images: iconCandidates(files).map((f) => ({ path: f.path, sha: f.sha, size: f.size }))
+          }
+        })
+
+      const setProjectIcon = (
+        projectId: string,
+        choice: IconChoice,
+        options: { readonly origin: Origin; readonly actorId: string | null }
+      ) =>
+        Effect.gen(function*() {
+          const project = yield* db.getProject(projectId).pipe(Effect.orDie)
+          if (!project) return yield* new GithubError({ message: "Unknown project." })
+          let icon: ProjectIconFile | null = null
+          if (choice.mode !== "none") {
+            const repo = yield* db.repoForProject(projectId).pipe(Effect.orDie)
+            if (!repo) {
+              return yield* new GithubError({
+                message: `Link a GitHub repository to "${project.name}" first: project icons come from its files.`
+              })
+            }
+            const files = yield* filesOf(repo, { fresh: true })
+            if (choice.mode === "auto") {
+              icon = toIconFile(autoIcon(files))
+            } else {
+              const path = choice.path.trim().replace(/^\.?\//, "")
+              const images = iconCandidates(files)
+              const file = images.find((f) => f.path === path) ??
+                images.find((f) => f.path.toLowerCase() === path.toLowerCase())
+              if (!file) {
+                const tooBig = files.find((f) => f.path === path && f.size > MAX_ICON_BYTES)
+                const list = images.slice(0, 15).map((f) => `"${f.path}"`).join(", ")
+                return yield* new GithubError({
+                  message: tooBig
+                    ? `${path} is larger than ${MAX_ICON_BYTES / 1024} KB.`
+                    : `No image "${path}" in ${repo.owner}/${repo.name}. ` +
+                      (list ? `Images: ${list}${images.length > 15 ? `, and ${images.length - 15} more` : ""}.` : "It has no images.")
+                })
+              }
+              icon = toIconFile(file)
+            }
+          }
+          yield* mutations.apply(
+            { origin: options.origin, actorId: options.actorId },
+            [{ _tag: "ProjectUpdate", id: projectId, patch: { iconMode: choice.mode, icon } }]
+          ).pipe(Effect.mapError((e) => new GithubError({ message: e.message })))
+          return (yield* db.getProject(projectId).pipe(Effect.orDie))!
+        })
+
+      const fileBytes = (repoId: string, sha: string) =>
+        Effect.gen(function*() {
+          const cached = yield* db.getBlob(repoId, sha)
+          if (cached) return cached
+          const repo = yield* db.getRepo(repoId)
+          if (!repo) return yield* new GithubError({ message: "Repository is not linked." })
+          // Only the project's icon and images the picker offers: never other files, never huge ones.
+          const project = yield* db.getProject(repo.projectId)
+          if (project?.icon?.sha !== sha && !iconCandidates(yield* filesOf(repo, { fresh: false })).some((f) => f.sha === sha)) {
+            return yield* new GithubError({ message: "Not an image of this repository." })
+          }
+          const bytes = yield* gh.getBlob(repo.owner, repo.name, sha)
+          if (bytes.byteLength > MAX_ICON_BYTES) return yield* new GithubError({ message: "The file is too large." })
+          const now = Date.now()
+          yield* db.putBlob(repoId, sha, bytes, now)
+          // Keep the project's icon; let files only seen in the picker go after a day.
+          yield* db.pruneBlobs(repoId, project?.icon?.sha ?? null, now - 24 * 60 * 60 * 1000)
+          return bytes
+        }).pipe(Effect.catchTag("SqlError", Effect.die))
+
       const pollAll = Effect.gen(function*() {
         for (const repo of yield* db.githubRepos.pipe(Effect.orDie)) {
           yield* pollRepo(repo, { full: false }).pipe(Effect.ignore)
+          if (Date.now() - (iconCheckedAt.get(repo.id) ?? 0) >= ICON_CHECK_INTERVAL_MS) {
+            yield* refreshIcon(repo).pipe(Effect.ignore)
+          }
         }
       })
 
@@ -687,6 +828,8 @@ export class GithubSync extends Context.Service<GithubSync, {
             }))
           const repo = (yield* db.getRepo(id))!
           const { created } = yield* pollRepo(repo, { full: true })
+          // A missing icon never fails the link.
+          yield* refreshIcon(repo).pipe(Effect.ignore)
           let pushed = 0
           if (input.pushExisting) {
             const now = Date.now()
@@ -715,6 +858,14 @@ export class GithubSync extends Context.Service<GithubSync, {
             for (const row of prs) tx.touch("pullRequest", row.id as string, "delete")
             yield* sql`DELETE FROM github_repo WHERE id = ${repoId}`
             tx.touch("githubRepo", repoId, "delete")
+            // Its files are out of reach now: back to the cube, and to "auto" for the next repo.
+            const project = yield* db.getProject(repo.projectId)
+            if (project && (project.icon || project.iconMode === "repo")) {
+              yield* db.putProject({ ...project, iconMode: project.iconMode === "repo" ? "auto" : project.iconMode, icon: null })
+              tx.touch("project", project.id)
+            }
+            filesCache.delete(repoId)
+            iconCheckedAt.delete(repoId)
             for (const row of linked) tx.touch("issue", row.issue_id as string)
           })).pipe(Effect.asVoid, Effect.catchTag("SqlError", Effect.die))
 
@@ -723,6 +874,7 @@ export class GithubSync extends Context.Service<GithubSync, {
           const repo = yield* db.getRepo(repoId).pipe(Effect.orDie)
           if (!repo) return yield* new GithubError({ message: "Repository is not linked." })
           yield* pollRepo(repo, { full: false })
+          yield* refreshIcon(repo).pipe(Effect.ignore)
           yield* flushOutbox
         })
 
@@ -749,7 +901,11 @@ export class GithubSync extends Context.Service<GithubSync, {
         ingest,
         pullDependencies,
         flushOutbox,
-        availableRepos: Effect.suspend(() => gh.availableRepos)
+        availableRepos: Effect.suspend(() => gh.availableRepos),
+        projectIcons,
+        setProjectIcon,
+        refreshIcon,
+        fileBytes
       })
     })
   )

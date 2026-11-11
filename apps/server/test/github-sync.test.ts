@@ -600,3 +600,112 @@ describe("relations and pull requests", () => {
     expect(await pullRequests()).toEqual([])
   })
 })
+
+describe("project icons", () => {
+  const project = async () => {
+    const repos = await ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.githubRepos))
+    return (await ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.getProject(repos[0]!.projectId))))!
+  }
+  const setIcon = async (choice: Parameters<GithubSync["Service"]["setProjectIcon"]>[1]) =>
+    ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) =>
+      s.setProjectIcon((repoProjectId ?? ""), choice, { origin: "client", actorId: null })))
+  let repoProjectId: string | undefined
+
+  test("linking picks the repository's favicon", async () => {
+    ctx.fake.putFile("README.md", "# widgets")
+    ctx.fake.putFile("docs/logo.png", "png")
+    const sha = ctx.fake.putFile("web/public/favicon.svg", "<svg/>")
+    await link()
+    expect(await project()).toMatchObject({ iconMode: "auto", icon: { path: "web/public/favicon.svg", sha } })
+  })
+
+  test("a repository without images keeps the cube, and linking still works", async () => {
+    ctx.fake.seed({ title: "Bug" })
+    expect(await link()).toMatchObject({ imported: 1 })
+    expect(await project()).toMatchObject({ iconMode: "auto", icon: null })
+  })
+
+  test("auto follows the favicon when it changes; a picked file sticks", async () => {
+    ctx.fake.putFile("favicon.ico", "v1")
+    await link()
+    repoProjectId = (await project()).id
+
+    const v2 = ctx.fake.putFile("favicon.ico", "v2")
+    await syncNow()
+    expect((await project()).icon).toEqual({ path: "favicon.ico", sha: v2 })
+
+    const logo = ctx.fake.putFile("assets/logo.svg", "<svg/>")
+    await setIcon({ mode: "repo", path: "assets/logo.svg" })
+    expect(await project()).toMatchObject({ iconMode: "repo", icon: { path: "assets/logo.svg", sha: logo } })
+
+    // A new favicon does not replace the picked logo; a new version of the logo does.
+    ctx.fake.putFile("public/favicon.svg", "<svg/>")
+    const logo2 = ctx.fake.putFile("assets/logo.svg", "<svg>2</svg>")
+    await syncNow()
+    expect((await project()).icon).toEqual({ path: "assets/logo.svg", sha: logo2 })
+
+    // Deleted on GitHub: the last version stays.
+    ctx.fake.deleteFile("assets/logo.svg")
+    await syncNow()
+    expect((await project()).icon).toEqual({ path: "assets/logo.svg", sha: logo2 })
+
+    await setIcon({ mode: "none" })
+    expect(await project()).toMatchObject({ iconMode: "none", icon: null })
+    await syncNow()
+    expect((await project()).icon).toBe(null)
+
+    await setIcon({ mode: "auto" })
+    expect((await project()).icon?.path).toBe("public/favicon.svg")
+  })
+
+  test("picking a path that is not an image lists the images", async () => {
+    ctx.fake.putFile("public/favicon.svg", "<svg/>")
+    ctx.fake.putFile("src/index.ts", "")
+    await link()
+    repoProjectId = (await project()).id
+    const error = await setIcon({ mode: "repo", path: "src/index.ts" }).catch((e) => e)
+    expect(error.message).toContain(`No image "src/index.ts"`)
+    expect(error.message).toContain(`"public/favicon.svg"`)
+  })
+
+  test("serves the icon through the server, cached by sha, with a sandbox for SVGs", async () => {
+    const sha = ctx.fake.putFile("favicon.svg", `<svg xmlns="http://www.w3.org/2000/svg"/>`)
+    await link()
+    const id = await repoId()
+    const url = `http://127.0.0.1:${ctx.port}/repo-files/${id}/${sha}/favicon.svg`
+    const res = await fetch(url)
+    expect(res.status).toBe(200)
+    expect(res.headers.get("content-type")).toBe("image/svg+xml")
+    expect(res.headers.get("content-security-policy")).toContain("sandbox")
+    expect(await res.text()).toBe(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
+
+    const blobReads = () => ctx.fake.requests.filter((r) => r.path.includes("/git/blobs/")).length
+    const before = blobReads()
+    expect((await fetch(url)).status).toBe(200)
+    expect(blobReads()).toBe(before)
+
+    expect((await fetch(`http://127.0.0.1:${ctx.port}/repo-files/${id}/${sha}/notes.html`)).status).toBe(404)
+    // Other files of the repository are not served, whatever name the URL gives them.
+    const secret = ctx.fake.putFile(".env", "TOKEN=x")
+    expect((await fetch(`http://127.0.0.1:${ctx.port}/repo-files/${id}/${secret}/env.png`)).status).toBe(404)
+  })
+
+  test("unlinking goes back to the cube, and a picked file back to auto", async () => {
+    ctx.fake.putFile("logo.png", "png")
+    await link()
+    repoProjectId = (await project()).id
+    await setIcon({ mode: "repo", path: "logo.png" })
+    const id = await repoId()
+    await ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.unlinkRepo(id)))
+    const after = await ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.getProject(repoProjectId!)))
+    expect(after).toMatchObject({ iconMode: "auto", icon: null })
+  })
+
+  test("an icon cannot be set on a project without a repository", async () => {
+    const t = await team()
+    const error = await mutate([{ _tag: "ProjectCreate", id: "p-local", teamId: t.id, key: "LOC", name: "Local", color: "#0090ff" }])
+      .then(() => mutate([{ _tag: "ProjectUpdate", id: "p-local", patch: { iconMode: "repo", icon: { path: "a.png", sha: "a".repeat(40) } } }]))
+      .catch((e) => e)
+    expect(error.message).toContain("Link a GitHub repository first")
+  })
+})

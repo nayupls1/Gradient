@@ -63,7 +63,8 @@ apps/server/src
   sync/Mutations.ts    the single write path: validate, write, log, broadcast, queue outbox
   sync/Hub.ts          PubSub fan-out of committed deltas
   sync/Rpc.ts          RPC handlers; Subscribe = catch-up from log, then live
-  github/              auth (device-flow sign-in), client, field mapping, GithubSync (import/poll/push), webhook route
+  github/              auth (device-flow sign-in), client, field mapping, GithubSync (import/poll/push), webhook route,
+                       project icons (icons.ts picks a favicon; files.ts serves repo images)
   mcp/                 MCP tools (names in, names out), instructions, the gradient skill
   http/guard.ts        local-only guard: refuses foreign browser origins and rebound hosts
   seed.ts, app.ts, main.ts
@@ -83,7 +84,8 @@ apps/web/src
 `team`, `user`, `workflow_state`, `label`, `project`, `issue` (label ids stored
 as JSON, optional `project_id`), `issue_relation`, `pull_request`,
 `sync_log`, plus `github_repo`, `github_issue_link` (with the shadows and the
-issue's GitHub id), `github_outbox` and `github_delivery`. Timestamps are
+issue's GitHub id), `github_outbox`, `github_delivery` and `github_blob`
+(cached repository images, such as project icons). Timestamps are
 epoch milliseconds.
 
 **Relations** link two issues of a team: `blocks` (directed: the second is
@@ -136,6 +138,20 @@ project stay local. Linking without a project creates one named after the repo
 unlinked before it is deleted; deleting a project leaves its issues without one.
 The repo picker lists `/user/repos` for a token, or the app's installations for
 an app sign-in.
+
+**Project icons come from the repository.** `iconMode` is `auto` (the
+default), `repo` (a file the user picked) or `none` (the cube in the project's
+color, also what a project without a repo shows). `icon` is the file shown, as
+path and blob sha. `auto` takes the best match in the repo's tree
+(`git/trees/HEAD?recursive=1`, one request): a favicon where web projects keep
+one (`public/`, `app/`, a monorepo's `apps/web/public/`), else an app icon,
+else a logo, never from `node_modules`, fixtures or examples
+(`github/icons.ts`). Icons are looked up on link, on "Sync now" and hourly
+while polling; `auto` follows the favicon, a picked file follows its path
+(when it is deleted, the last version stays). Unlinking goes back to the cube.
+The server serves the bytes at `/repo-files/<repo>/<sha>/<name>` with its own
+token, so private repos work; it caches them in `github_blob` by sha, so the
+URL is immutable. SVGs are drawn with `<img>` and served with a CSP sandbox.
 
 **Auth** (`github/GithubAuth.ts`): "Sign in with GitHub" runs the device flow
 of the Gradient GitHub App, which needs only its public client id. The server
@@ -222,6 +238,7 @@ ending a selection) or `d` turns it into the textarea, and blur saves.
 `POST /mcp` speaks MCP over Streamable HTTP (protocol revisions 2025-03-26
 through 2026-07-28). Tools: `describe_workspace`, `list_issues`, `get_issue`,
 `create_issue`, `update_issue`, `link_issues`, `unlink_issues`, `create_project`,
+`update_project` (name, key, color, icon: "auto", "none" or a repo path),
 `github_status`, `github_sign_in`. Issues report `blocked`, and `get_issue`
 lists blockers, blocked issues, related issues and pull requests. They take
 and return names (states, labels, people, GRD-12), never ids, and a bad name
