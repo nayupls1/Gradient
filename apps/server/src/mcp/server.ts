@@ -1,4 +1,5 @@
 import {
+  CurrentViewer,
   identifier,
   isOpenBlocker,
   type Issue,
@@ -15,7 +16,7 @@ import {
   textReferences,
   uuidv7
 } from "@gradient/domain"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { McpProtocol, McpServer } from "effect/ai"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
@@ -74,7 +75,10 @@ const ToolHandlers = GradientToolkit.toLayer(
     const workspace = Effect.gen(function*() {
       const team = (yield* db.teams)[0]
       if (!team) return yield* fail("No team exists yet.")
-      const viewerId = (yield* db.getMeta("viewer_id"))!
+      // The owner of the agent key, resolved by RequireApiKey for this request.
+      const viewer = yield* Effect.serviceOption(CurrentViewer)
+      if (Option.isNone(viewer)) return yield* fail("Not signed in: send an agent key from your Gradient profile.")
+      const viewerId = viewer.value.userId
       const states = yield* db.statesForTeam(team.id)
       const labels = yield* db.labelsForTeam(team.id)
       const users = yield* db.users

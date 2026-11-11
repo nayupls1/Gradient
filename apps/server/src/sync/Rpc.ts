@@ -1,4 +1,4 @@
-import { type Delta, GithubError, GradientRpcs, MutationRejected, type SyncEvent } from "@gradient/domain"
+import { CurrentViewer, type Delta, GithubError, GradientRpcs, MutationRejected, type SyncEvent } from "@gradient/domain"
 import { Effect, Layer, Option, PubSub, Stream } from "effect"
 import { Db, type LogRow } from "../db/Db.ts"
 import { ServerConfig } from "../config.ts"
@@ -24,7 +24,8 @@ export const RpcHandlers = GradientRpcs.toLayer(
     const auth = yield* GithubAuth
     const config = yield* ServerConfig
 
-    const viewerId = () => db.getMeta("viewer_id").pipe(Effect.map((id) => id!), Effect.orDie)
+    /** The Gradient user of the calling session (see AuthMiddleware). */
+    const viewerId = () => Effect.map(Effect.service(CurrentViewer), (v) => v.userId)
 
     return GradientRpcs.of({
       Bootstrap: () =>

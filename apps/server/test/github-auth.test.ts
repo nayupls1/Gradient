@@ -28,6 +28,7 @@ const start = (options: {
     dbPath: options.dbPath ?? ":memory:",
     webDist: "/nonexistent",
     seedSampleData: false,
+    auth: { secret: Option.some("test-secret-0123456789abcdef0123456789"), url: Option.none(), allowSignUp: false },
     github: {
       enabled: true,
       token: options.envToken ? Option.some(options.envToken) : Option.none(),
