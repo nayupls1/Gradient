@@ -31,7 +31,7 @@ CI runs these on every pull request. Run them before you push:
 ```bash
 bun run typecheck    # tsc in every package
 bun test             # domain, server (real servers on random ports), client replica, keymap
-bun run --filter '@gradient/web' build
+bun run build        # web app and server bundle
 ```
 
 Server tests never touch GitHub: they use `apps/server/test/fake-github.ts`.
