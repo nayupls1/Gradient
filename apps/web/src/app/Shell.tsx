@@ -36,12 +36,7 @@ import { github } from "./github.ts"
 
 const s = stylex.create({
   workspace: { display: "flex", alignItems: "center", gap: 8, paddingInline: 6, height: 32, fontWeight: 600 },
-  logo: {
-    width: 20,
-    height: 20,
-    borderRadius: 6,
-    backgroundImage: `linear-gradient(135deg, ${color.fgSubtle}, ${color.fg})`
-  },
+  logo: { flexShrink: 0, color: color.fg },
   newIssue: { width: "100%", justifyContent: "flex-start" },
   grow: { flexGrow: 1, textAlign: "left" },
   teamBadge: {
@@ -71,6 +66,21 @@ const s = stylex.create({
   main: { minWidth: 0, minHeight: 0, height: "100svh", overflow: "hidden", backgroundColor: color.bg, color: color.fg },
   loading: { display: "grid", placeItems: "center", height: "100%", color: colors.mutedForeground }
 })
+
+/**
+ * The app mark from `public/favicon.svg`: a 3×3 grid of dots fading toward the
+ * corner. Drawn inline in `currentColor` so it follows the app's theme rather
+ * than the OS scheme the favicon uses.
+ */
+const logoDots = [0, 1, 2].flatMap((row) =>
+  [0, 1, 2].map((col) => ({ cx: 7 + col * 9, cy: 7 + row * 9, r: 4.2 - (row + col) * 0.55, opacity: 1 - (row + col) * 0.2 }))
+)
+
+const Logo = () => (
+  <svg {...stylex.attrs(s.logo)} width={20} height={20} viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+    <For each={logoDots}>{(d) => <circle cx={d.cx} cy={d.cy} r={d.r} opacity={d.opacity} />}</For>
+  </svg>
+)
 
 /** A sidebar link, marked active for the current route. */
 const NavLink = (props: { href: string; children: JSX.Element; sub?: boolean; match?: (path: string) => boolean }) => {
@@ -169,7 +179,7 @@ export const Shell = (props: { children: JSX.Element }) => {
         <Sidebar>
           <SidebarHeader>
             <div {...stylex.attrs(s.workspace)}>
-              <span {...stylex.attrs(s.logo)} />
+              <Logo />
               Gradient
             </div>
             <Button variant="outline" size="sm" xstyle={s.newIssue} onClick={() => openComposer()}>

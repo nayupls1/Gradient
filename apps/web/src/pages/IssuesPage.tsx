@@ -1,4 +1,4 @@
-import type { Issue, WorkflowState } from "@gradient/domain"
+import type { Issue, StateType, WorkflowState } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { useNavigate, useParams } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, Show, untrack, useContext } from "solid-js"
@@ -143,6 +143,37 @@ const s = stylex.create({
   menu: { minWidth: 220 },
   headerCount: { color: colors.mutedForeground, fontWeight: 400 }
 })
+
+/**
+ * Which status groups are collapsed, remembered per state across reloads. Only
+ * explicit choices are stored; a state without one falls back to its type, so
+ * Backlog and Done start collapsed.
+ */
+const COLLAPSED_KEY = "gradient.collapsedGroups"
+const collapsedByDefault: ReadonlySet<StateType> = new Set(["backlog", "completed"])
+
+const loadCollapsed = (): Readonly<Record<string, boolean>> => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "{}")
+    return raw !== null && typeof raw === "object" ? raw : {}
+  } catch {
+    return {}
+  }
+}
+
+const [collapsedGroups, setCollapsedGroups] = createSignal(loadCollapsed())
+
+const isCollapsed = (state: WorkflowState) => collapsedGroups()[state.id] ?? collapsedByDefault.has(state.type)
+
+const toggleCollapsed = (state: WorkflowState) => {
+  const next = { ...collapsedGroups(), [state.id]: !isCollapsed(state) }
+  setCollapsedGroups(next)
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next))
+  } catch {
+    // Storage can be unavailable (private mode); the choice then lasts for the session.
+  }
+}
 
 /** Clicks on a row's own controls (pickers, links) should not open the issue. */
 const fromControl = (e: MouseEvent) =>
@@ -433,7 +464,6 @@ export const IssuesPage = () => {
   /** The project this page shows, or undefined for all issues. */
   const projectId = () => params.id
   const project = () => (projectId() ? sync.state.projects[projectId()!] : undefined)
-  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set())
   const [focusTarget, setFocusedId] = createSignal<string | null>(null)
   const apis = new Map<string, PickerApis>()
 
@@ -450,7 +480,7 @@ export const IssuesPage = () => {
   })
   const total = () => groups().reduce((n, g) => n + g.issues.length, 0)
   /** Rows the keyboard can reach, top to bottom. */
-  const order = createMemo(() => groups().flatMap((g) => (collapsed().has(g.state.id) ? [] : g.issues.map((i) => i.id))))
+  const order = createMemo(() => groups().flatMap((g) => (isCollapsed(g.state) ? [] : g.issues.map((i) => i.id))))
   /** The focused row, dropped automatically when that issue leaves the list. */
   const focusedId = createMemo(() => {
     const id = focusTarget()
@@ -494,13 +524,8 @@ export const IssuesPage = () => {
       scope,
       when: () => focused() !== undefined,
       run: () => {
-        const stateId = focused()!.stateId
-        setCollapsed((c) => {
-          const next = new Set(c)
-          if (next.has(stateId)) next.delete(stateId)
-          else next.add(stateId)
-          return next
-        })
+        const state = sync.state.workflowStates[focused()!.stateId]
+        if (state) toggleCollapsed(state)
       }
     },
     { id: "list.clearFocus", title: "Clear focus", group, keys: ["escape"], scope, hidden: true, when: () => focusedId() !== null, run: () => setFocusedId(null) }
@@ -559,15 +584,8 @@ export const IssuesPage = () => {
                 state={g().state}
                 issues={g().issues}
                 showProject={!projectId()}
-                collapsed={collapsed().has(g().state.id)}
-                onToggle={() =>
-                  setCollapsed((c) => {
-                    const next = new Set(c)
-                    const id = g().state.id
-                    if (next.has(id)) next.delete(id)
-                    else next.add(id)
-                    return next
-                  })}
+                collapsed={isCollapsed(g().state)}
+                onToggle={() => toggleCollapsed(g().state)}
                 focusedId={focusedId()}
                 onFocus={setFocusedId}
                 registerApis={(id, a) => apis.set(id, a)}
