@@ -6,6 +6,7 @@ import { ComposerContext, ProjectDialogsContext, Sync } from "../app/context.ts"
 import { github } from "../app/github.ts"
 import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
+import { ProjectGlyph } from "../app/ProjectGlyph.tsx"
 import { AssigneePicker, PriorityPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
 import { Shortcut, useCommands, useScope } from "../keys/solid.tsx"
 import {
@@ -44,7 +45,6 @@ import {
   MoreIcon,
   PencilIcon,
   PlusIcon,
-  ProjectIcon,
   PullRequestIcon,
   pullRequestLabel,
   RefreshIcon,
@@ -159,10 +159,10 @@ const s = stylex.create({
 /**
  * Which status groups are collapsed, remembered per state across reloads. Only
  * explicit choices are stored; a state without one falls back to its type, so
- * Backlog and Done start collapsed.
+ * Backlog, Done and Canceled start collapsed.
  */
 const COLLAPSED_KEY = "gradient.collapsedGroups"
-const collapsedByDefault: ReadonlySet<StateType> = new Set(["backlog", "completed"])
+const collapsedByDefault: ReadonlySet<StateType> = new Set(["backlog", "completed", "canceled"])
 
 const loadCollapsed = (): Readonly<Record<string, boolean>> => {
   try {
@@ -255,7 +255,7 @@ const IssueRow = (props: {
       <Show when={props.showProject && props.issue.projectId ? sync.state.projects[props.issue.projectId] : undefined}>
         {(p) => (
           <span {...stylex.attrs(s.projectChip)} title={`Project: ${p().name}`}>
-            <ProjectIcon size={12} color={p().color} />
+            <ProjectGlyph project={p()} size={12} />
             {p().name}
           </span>
         )}
@@ -426,7 +426,7 @@ const ProjectMenu = (props: { projectId: string }) => {
       <DropdownMenuContent align="end" xstyle={s.menu}>
         <KeyScope name="menu" blocking>
           <DropdownMenuItem onClick={() => dialogs.edit(props.projectId)}>
-            <PencilIcon size={14} /> Rename or recolor…
+            <PencilIcon size={14} /> Edit project…
           </DropdownMenuItem>
           <Show when={repo()}>
             {(r) => (
@@ -477,6 +477,7 @@ const ProjectMenu = (props: { projectId: string }) => {
 export const IssuesPage = () => {
   const sync = useContext(Sync)
   const composer = useContext(ComposerContext)
+  const projectDialogs = useContext(ProjectDialogsContext)
   const navigate = useNavigate()
   const params = useParams()
   /** The project this page shows, or undefined for all issues. */
@@ -606,7 +607,16 @@ export const IssuesPage = () => {
         if (state) toggleCollapsed(state)
       }
     },
-    { id: "list.clearFocus", title: "Clear focus", group, keys: ["escape"], scope, hidden: true, when: () => focusedId() !== null, run: () => setFocusedId(null) }
+    { id: "list.clearFocus", title: "Clear focus", group, keys: ["escape"], scope, hidden: true, when: () => focusedId() !== null, run: () => setFocusedId(null) },
+    { id: "project.edit", title: "Edit project…", group: "Project", scope, when: () => project() !== undefined, run: () => projectDialogs.edit(project()!.id) },
+    {
+      id: "project.icon",
+      title: "Change project icon…",
+      group: "Project",
+      scope,
+      when: () => project() !== undefined && projectRepo(sync.state, project()!.id) !== undefined,
+      run: () => projectDialogs.edit(project()!.id, "icon")
+    }
   ])
   useIssueCommands({
     scope,
@@ -631,7 +641,7 @@ export const IssuesPage = () => {
           <Show when={project()} fallback={<>All issues<Badge variant="secondary" xstyle={s.headerCount}>{total()}</Badge></>}>
             {(p) => (
               <>
-                <ProjectIcon size={15} color={p().color} />
+                <ProjectGlyph project={p()} size={15} />
                 {p().name}
                 <Badge variant="secondary" xstyle={s.headerCount}>{total()}</Badge>
               </>

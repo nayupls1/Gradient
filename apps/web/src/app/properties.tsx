@@ -9,6 +9,7 @@ import { colors } from "../lib/tokens.stylex.ts"
 import { PriorityIcon, priorityLabel, ProjectIcon, StateIcon, TagIcon, UserIcon } from "../ui/icons.tsx"
 import { Button, type ButtonProps } from "../ui/button.tsx"
 import { Picker, type PickerApi } from "./Picker.tsx"
+import { ProjectGlyph } from "./ProjectGlyph.tsx"
 import { UserAvatar } from "./UserAvatar.tsx"
 import { Sync } from "./context.ts"
 
@@ -187,7 +188,7 @@ export const ProjectPicker = (props: {
           return {
             value: p.id,
             label: p.name,
-            icon: () => <ProjectIcon size={14} color={p.color} />,
+            icon: () => <ProjectGlyph project={p} size={14} />,
             keywords: p.key,
             hint: repo ? `${p.key} · ${repo.owner}/${repo.name}` : p.key
           }
@@ -203,7 +204,7 @@ export const ProjectPicker = (props: {
       }}
       trigger={(p) => (
         <Trigger {...p} variant={props.variant} title={`Project: ${current()?.name ?? "none"}`}>
-          <ProjectIcon size={14} color={current()?.color ?? "currentColor"} />
+          <ProjectGlyph project={current()} size={14} />
           <Show when={props.variant !== "icon"}>
             <span {...stylex.attrs(s.text, props.value === null && s.muted)}>
               {current()?.name ?? (props.variant === "chip" ? "Project" : "No project")}

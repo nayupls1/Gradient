@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Issue, IssueRelation, Label, Priority, Project, RelationType } from "./models.ts"
+import { Issue, IssueRelation, Label, Priority, Project, ProjectIconFile, ProjectIconMode, RelationType } from "./models.ts"
 
 export const IssuePatch = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
@@ -41,7 +41,10 @@ export const Mutation = Schema.TaggedUnion({
     patch: Schema.Struct({
       name: Schema.optionalKey(Schema.String),
       key: Schema.optionalKey(Schema.String),
-      color: Schema.optionalKey(Schema.String)
+      color: Schema.optionalKey(Schema.String),
+      /** Sent together by the server once it has looked the file up in the repository. */
+      iconMode: Schema.optionalKey(ProjectIconMode),
+      icon: Schema.optionalKey(Schema.NullOr(ProjectIconFile))
     })
   },
   /** Its issues stay, without a project. A project with a linked repository must be unlinked first. */
@@ -137,14 +140,29 @@ export const applyProjectMutation = (
 ): Project | null | undefined => {
   switch (m._tag) {
     case "ProjectCreate":
-      return { id: m.id, teamId: m.teamId, key: m.key, name: m.name, color: m.color, createdAt: ctx.now }
-    case "ProjectUpdate":
-      return current && {
+      return {
+        id: m.id,
+        teamId: m.teamId,
+        key: m.key,
+        name: m.name,
+        color: m.color,
+        iconMode: "auto",
+        icon: null,
+        createdAt: ctx.now
+      }
+    case "ProjectUpdate": {
+      if (!current) return current
+      const next: Project = {
         ...current,
         ...(m.patch.name !== undefined ? { name: m.patch.name } : {}),
         ...(m.patch.key !== undefined ? { key: m.patch.key } : {}),
-        ...(m.patch.color !== undefined ? { color: m.patch.color } : {})
+        ...(m.patch.color !== undefined ? { color: m.patch.color } : {}),
+        ...(m.patch.iconMode !== undefined ? { iconMode: m.patch.iconMode } : {}),
+        ...(m.patch.icon !== undefined ? { icon: m.patch.icon } : {})
       }
+      // The cube shows no file, whatever the patch said.
+      return next.iconMode === "none" ? { ...next, icon: null } : next
+    }
     case "ProjectDelete":
       return null
     default:

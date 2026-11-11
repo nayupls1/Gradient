@@ -3,6 +3,7 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ServerConfig } from "../config.ts"
 import { GithubAuth } from "./GithubAuth.ts"
+import type { RepoFile } from "./icons.ts"
 
 const GhLabel = Schema.Union([
   Schema.String,
@@ -19,6 +20,16 @@ const GhRepo = Schema.Struct({
   owner: Schema.Struct({ login: Schema.String })
 })
 const GhInstallationRepos = Schema.Struct({ repositories: Schema.Array(GhRepo) })
+const GhTree = Schema.Struct({
+  tree: Schema.Array(Schema.Struct({
+    path: Schema.String,
+    type: Schema.String,
+    sha: Schema.String,
+    size: Schema.optionalKey(Schema.Int)
+  })),
+  truncated: Schema.optionalKey(Schema.Boolean)
+})
+const GhBlob = Schema.Struct({ content: Schema.String, encoding: Schema.String, size: Schema.Int })
 
 export interface AvailableRepo {
   readonly owner: string
@@ -86,6 +97,10 @@ export class GithubClient extends Context.Service<GithubClient, {
    */
   readonly availableRepos: Effect.Effect<ReadonlyArray<AvailableRepo>, GithubError>
   getRepo(owner: string, repo: string): Effect.Effect<void, GithubError>
+  /** Every file on the default branch (GitHub stops at about 100,000 entries). */
+  listFiles(owner: string, repo: string): Effect.Effect<ReadonlyArray<RepoFile>, GithubError>
+  /** The bytes of one file, by blob sha. */
+  getBlob(owner: string, repo: string, sha: string): Effect.Effect<Uint8Array, GithubError>
   listIssues(owner: string, repo: string, options: {
     readonly since: string | null
     readonly etag: string | null
@@ -192,6 +207,32 @@ export class GithubClient extends Context.Service<GithubClient, {
                   }))
               ),
               Effect.catchTag("HttpClientError", (e) => Effect.fail(toError("Reaching GitHub failed")(e)))
+            )
+          ),
+        listFiles: (owner, repo) =>
+          guard(
+            HttpClientRequest.get(`/repos/${owner}/${repo}/git/trees/HEAD`).pipe(
+              HttpClientRequest.setUrlParams({ recursive: "1" }),
+              ok.execute,
+              Effect.flatMap(HttpClientResponse.schemaBodyJson(GhTree)),
+              Effect.map((tree) =>
+                tree.tree
+                  .filter((e) => e.type === "blob")
+                  .map((e): RepoFile => ({ path: e.path, sha: e.sha, size: e.size ?? 0 }))
+              ),
+              Effect.mapError(toError(`Listing the files of ${owner}/${repo} failed`))
+            )
+          ),
+        getBlob: (owner, repo, sha) =>
+          guard(
+            ok.get(`/repos/${owner}/${repo}/git/blobs/${encodeURIComponent(sha)}`).pipe(
+              Effect.flatMap(HttpClientResponse.schemaBodyJson(GhBlob)),
+              Effect.flatMap((blob) =>
+                blob.encoding === "base64"
+                  ? Effect.succeed(Uint8Array.from(Buffer.from(blob.content, "base64")))
+                  : Effect.fail(new Error(`unexpected encoding ${blob.encoding}`))
+              ),
+              Effect.mapError(toError(`Reading a file of ${owner}/${repo} failed`))
             )
           ),
         listIssues: (owner, repo, { since, etag, page }) =>

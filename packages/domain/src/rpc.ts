@@ -1,5 +1,6 @@
 import { Schema } from "effect"
 import { Rpc, RpcGroup } from "effect/rpc"
+import { ProjectIconFile } from "./models.ts"
 import { Mutation } from "./mutations.ts"
 import { Snapshot, SyncEvent } from "./sync.ts"
 
@@ -58,6 +59,18 @@ export const GithubAvailableRepo = Schema.Struct({
 })
 export type GithubAvailableRepo = typeof GithubAvailableRepo.Type
 
+/** An image in a project's repository that can be its icon. */
+export const GithubRepoImage = Schema.Struct({ path: Schema.String, sha: Schema.String, size: Schema.Int })
+export type GithubRepoImage = typeof GithubRepoImage.Type
+
+export const ProjectIconChoices = Schema.Struct({
+  /** The file "auto" picks (a favicon, else a logo), or null when there is none. */
+  auto: Schema.NullOr(ProjectIconFile),
+  /** Every image that can be picked, best guesses first. */
+  images: Schema.Array(GithubRepoImage)
+})
+export type ProjectIconChoices = typeof ProjectIconChoices.Type
+
 export const ServerInfo = Schema.Struct({
   version: Schema.String,
   /** Where agents connect over MCP (Streamable HTTP). */
@@ -109,5 +122,23 @@ export class GradientRpcs extends RpcGroup.make(
   Rpc.make("GithubSignInCancel", {}),
   /** Forget the app sign-in. GITHUB_TOKEN or the gh CLI take over when present. */
   Rpc.make("GithubSignOut", { success: GithubStatus }),
-  Rpc.make("GithubRepos", { success: Schema.Array(GithubAvailableRepo), error: GithubError })
+  Rpc.make("GithubRepos", { success: Schema.Array(GithubAvailableRepo), error: GithubError }),
+  /** The images in a project's repository, for the icon picker. */
+  Rpc.make("GithubProjectIcons", {
+    payload: { projectId: Schema.String },
+    success: ProjectIconChoices,
+    error: GithubError
+  }),
+  /**
+   * Choose a project's icon: "auto" (favicon or logo, kept up to date), a file
+   * of its repository ("repo" with `path`), or the cube ("none").
+   */
+  Rpc.make("GithubSetProjectIcon", {
+    payload: {
+      projectId: Schema.String,
+      mode: Schema.Literals(["auto", "repo", "none"]),
+      path: Schema.optionalKey(Schema.String)
+    },
+    error: GithubError
+  })
 ) {}

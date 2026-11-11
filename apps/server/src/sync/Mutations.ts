@@ -5,6 +5,7 @@ import {
   applyRelationMutation,
   identifier,
   type Issue,
+  isProjectIconPath,
   isValidProjectKey,
   type Delta,
   type ModelName,
@@ -204,6 +205,14 @@ export class Mutations extends Context.Service<Mutations, {
               if (m.patch.name !== undefined) yield* checkProjectName(current.teamId, m.patch.name, current.id)
               if (m.patch.key !== undefined) yield* checkProjectKey(current.teamId, m.patch.key, current.id)
               const next = applyProjectMutation(current, m, { now: tx.now })!
+              if (m.patch.icon) {
+                if (!isProjectIconPath(m.patch.icon.path)) return yield* reject(`${m.patch.icon.path} is not an image`)
+                if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(m.patch.icon.sha)) return yield* reject("Invalid file sha")
+                if (!(yield* db.repoForProject(m.id))) {
+                  return yield* reject("Link a GitHub repository first: project icons come from its files")
+                }
+              }
+              if (next.iconMode === "repo" && !next.icon) return yield* reject("Pick a file for the project icon")
               yield* db.putProject({ ...next, name: next.name.trim() })
               tx.touch("project", m.id)
               // Identifiers of its issues change with the key; clients derive them, so no issue rows change.

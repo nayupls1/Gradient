@@ -17,7 +17,8 @@ export const ComposerContext = createContext<Composer>()
 export interface ProjectDialogs {
   /** Open "New project", optionally with a GitHub repository already picked. */
   create(): void
-  edit(projectId: string): void
+  /** Open "Edit project"; `focus: "icon"` opens its icon picker right away. */
+  edit(projectId: string, focus?: "icon"): void
 }
 
 export const ProjectDialogsContext = createContext<ProjectDialogs>()

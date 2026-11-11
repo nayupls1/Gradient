@@ -191,5 +191,24 @@ export const migrations = {
     )`
     yield* sql`ALTER TABLE github_issue_link ADD COLUMN gh_id INTEGER`
     yield* sql`ALTER TABLE github_issue_link ADD COLUMN blocked_by_shadow TEXT`
+  }),
+  /**
+   * Project icons: how the icon is chosen ("auto" finds a favicon or logo in the
+   * linked repository) and the repository file shown, as path and blob sha.
+   * `github_blob` caches the bytes of those files, so private repositories
+   * work and GitHub is asked once per version.
+   */
+  "0006_project_icons": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE project ADD COLUMN icon_mode TEXT NOT NULL DEFAULT 'auto'`
+    yield* sql`ALTER TABLE project ADD COLUMN icon_path TEXT`
+    yield* sql`ALTER TABLE project ADD COLUMN icon_sha TEXT`
+    yield* sql`CREATE TABLE github_blob (
+      repo_id TEXT NOT NULL REFERENCES github_repo(id) ON DELETE CASCADE,
+      sha TEXT NOT NULL,
+      content BLOB NOT NULL,
+      fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (repo_id, sha)
+    )`
   })
 }

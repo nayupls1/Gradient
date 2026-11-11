@@ -77,6 +77,8 @@ export const DescribeWorkspace = Tool.make("describe_workspace", {
       name: Schema.String,
       key: Schema.String,
       githubRepo: Schema.NullOr(Schema.String),
+      /** "auto", "none" (the cube), or the repository file shown. */
+      icon: Schema.String,
       openIssues: Schema.Int
     })),
     openIssues: Schema.Int
@@ -248,6 +250,37 @@ export const CreateProject = Tool.make("create_project", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.OpenWorld, true)
 
+const ProjectIconChoice = Schema.String.annotate({
+  description:
+    "\"auto\": the repository's favicon (else its logo), kept up to date. \"none\": the plain cube. " +
+    "Or a path of an image in the linked repository, e.g. \"public/logo.svg\"; an unknown path lists the images."
+})
+
+export const UpdateProject = Tool.make("update_project", {
+  description:
+    "Change a project: rename it, change its identifier key or color, or set its icon from its GitHub repository. Only the fields you pass change.",
+  parameters: Schema.Struct({
+    project: Schema.String.annotate({ description: "Project name from describe_workspace." }),
+    name: Schema.optionalKey(Schema.String),
+    key: Schema.optionalKey(Schema.String.annotate({ description: "2–5 capitals. Renames every issue identifier of the project." })),
+    color: Schema.optionalKey(Schema.String.annotate({ description: "Hex color, e.g. \"#0090ff\"." })),
+    icon: Schema.optionalKey(ProjectIconChoice)
+  }),
+  success: Schema.Struct({
+    name: Schema.String,
+    key: Schema.String,
+    color: Schema.String,
+    github_repo: Schema.NullOr(Schema.String),
+    icon: Schema.String,
+    icon_file: Schema.NullOr(Schema.String)
+  }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true)
+
 export const GradientToolkit = Toolkit.make(
   DescribeWorkspace,
   ListIssues,
@@ -257,6 +290,7 @@ export const GradientToolkit = Toolkit.make(
   LinkIssues,
   UnlinkIssues,
   CreateProject,
+  UpdateProject,
   GithubConnection,
   GithubSignIn
 )

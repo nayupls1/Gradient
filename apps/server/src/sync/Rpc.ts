@@ -1,4 +1,4 @@
-import { type Delta, GradientRpcs, MutationRejected, type SyncEvent } from "@gradient/domain"
+import { type Delta, GithubError, GradientRpcs, MutationRejected, type SyncEvent } from "@gradient/domain"
 import { Effect, Layer, Option, PubSub, Stream } from "effect"
 import { Db, type LogRow } from "../db/Db.ts"
 import { ServerConfig } from "../config.ts"
@@ -103,7 +103,13 @@ export const RpcHandlers = GradientRpcs.toLayer(
       GithubSignInWait: () => auth.awaitSignIn.pipe(Effect.andThen(github.status)),
       GithubSignInCancel: () => auth.cancelSignIn,
       GithubSignOut: () => auth.signOut.pipe(Effect.andThen(github.status)),
-      GithubRepos: () => github.availableRepos
+      GithubRepos: () => github.availableRepos,
+      GithubProjectIcons: ({ projectId }) => github.projectIcons(projectId),
+      GithubSetProjectIcon: ({ projectId, mode, path }) =>
+        Effect.gen(function*() {
+          if (mode === "repo" && !path) return yield* new GithubError({ message: "Pick a file for the project icon." })
+          yield* github.setProjectIcon(projectId, mode === "repo" ? { mode, path: path! } : { mode }, { origin: "client", actorId: yield* viewerId() })
+        })
     })
   })
 )

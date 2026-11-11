@@ -5,6 +5,7 @@ import { createMemo, createSignal, For, onSettled, Show, useContext } from "soli
 import { Sync } from "../app/context.ts"
 import { github } from "../app/github.ts"
 import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
+import { ProjectGlyph } from "../app/ProjectGlyph.tsx"
 import { firstTeam, formatRelative, projectHref } from "../lib/select.ts"
 import type { JSX } from "@solidjs/web"
 import { type ColorTokens, paletteById, palettes } from "../theme/presets.ts"
@@ -14,7 +15,7 @@ import { UserAvatar } from "../app/UserAvatar.tsx"
 import { Button, type ButtonProps } from "../ui/button.tsx"
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card.tsx"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible.tsx"
-import { BotIcon, CheckIcon, CopyIcon, ExternalIcon, GithubIcon, ProjectIcon, MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "../ui/icons.tsx"
+import { BotIcon, CheckIcon, CopyIcon, ExternalIcon, GithubIcon, MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "../ui/icons.tsx"
 import { Input } from "../ui/input.tsx"
 import { Label } from "../ui/label.tsx"
 import { Separator } from "../ui/separator.tsx"
@@ -512,7 +513,7 @@ const GithubSettings = () => {
                       <Show when={project()}>
                         {(p) => (
                           <a href={projectHref(p().id)} {...stylex.attrs(s.projectLink)}>
-                            <ProjectIcon size={13} color={p().color} />
+                            <ProjectGlyph project={p()} size={13} />
                             {p().name}
                           </a>
                         )}

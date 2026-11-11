@@ -45,6 +45,8 @@ const toProject = (r: Row): Project => ({
   key: str(r.key),
   name: str(r.name),
   color: str(r.color),
+  iconMode: (r.icon_mode ?? "auto") as Project["iconMode"],
+  icon: r.icon_path && r.icon_sha ? { path: str(r.icon_path), sha: str(r.icon_sha) } : null,
   createdAt: num(r.created_at)
 })
 const toRepo = (r: Row): GithubRepo => ({
@@ -180,9 +182,11 @@ const makeDb = Effect.gen(function*() {
     projectsForTeam: (teamId: string) =>
       all(sql`SELECT * FROM project WHERE team_id = ${teamId} ORDER BY name COLLATE NOCASE`, toProject),
     putProject: (p: Project) =>
-      sql`INSERT INTO project (id, team_id, key, name, color, created_at)
-          VALUES (${p.id}, ${p.teamId}, ${p.key}, ${p.name}, ${p.color}, ${p.createdAt})
-          ON CONFLICT (id) DO UPDATE SET key = excluded.key, name = excluded.name, color = excluded.color`,
+      sql`INSERT INTO project (id, team_id, key, name, color, icon_mode, icon_path, icon_sha, created_at)
+          VALUES (${p.id}, ${p.teamId}, ${p.key}, ${p.name}, ${p.color}, ${p.iconMode}, ${p.icon?.path ?? null},
+                  ${p.icon?.sha ?? null}, ${p.createdAt})
+          ON CONFLICT (id) DO UPDATE SET key = excluded.key, name = excluded.name, color = excluded.color,
+            icon_mode = excluded.icon_mode, icon_path = excluded.icon_path, icon_sha = excluded.icon_sha`,
     deleteProject: (id: string) => sql`DELETE FROM project WHERE id = ${id}`,
 
     issues: all(sql.unsafe(`${ISSUE_SELECT} ORDER BY i.sort_order DESC`), toIssue),
@@ -241,6 +245,16 @@ const makeDb = Effect.gen(function*() {
       sql`INSERT INTO issue_relation (id, team_id, type, issue_id, related_issue_id, created_at)
           VALUES (${r.id}, ${r.teamId}, ${r.type}, ${r.issueId}, ${r.relatedIssueId}, ${r.createdAt})`,
     deleteRelation: (id: string) => sql`DELETE FROM issue_relation WHERE id = ${id}`,
+
+    /** Cached bytes of a repository file, by blob sha. */
+    getBlob: (repoId: string, sha: string) =>
+      one(sql`SELECT content FROM github_blob WHERE repo_id = ${repoId} AND sha = ${sha}`, (r) => r.content as Uint8Array),
+    putBlob: (repoId: string, sha: string, content: Uint8Array, now: number) =>
+      sql`INSERT INTO github_blob (repo_id, sha, content, fetched_at) VALUES (${repoId}, ${sha}, ${content}, ${now})
+          ON CONFLICT (repo_id, sha) DO NOTHING`,
+    /** Drop cached files of a repository other than `keep` that are older than `before`. */
+    pruneBlobs: (repoId: string, keep: string | null, before: number) =>
+      sql`DELETE FROM github_blob WHERE repo_id = ${repoId} AND sha IS NOT ${keep} AND fetched_at < ${before}`,
 
     pullRequests: all(sql`SELECT * FROM pull_request ORDER BY updated_at DESC`, toPullRequest),
     pullRequestsForTeam: (teamId: string) =>
