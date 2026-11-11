@@ -20,7 +20,15 @@ import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
 import { Mutations, type Origin, type TxContext } from "../sync/Mutations.ts"
 import { GithubAuth, type Viewer } from "./GithubAuth.ts"
-import { type GhComment, type GhIssue, GithubClient, type IssueWrite, labelColor, labelName } from "./GithubClient.ts"
+import {
+  type GhComment,
+  type GhIssue,
+  type GhLinkedPullRequest,
+  GithubClient,
+  type IssueWrite,
+  labelColor,
+  labelName
+} from "./GithubClient.ts"
 import { autoIcon, iconCandidates, MAX_ICON_BYTES, type RepoFile } from "./icons.ts"
 import { diff, fromGithub, fromIssue, resolveState, type Shadow } from "./mapping.ts"
 
@@ -92,6 +100,11 @@ export class GithubSync extends Context.Service<GithubSync, {
   ingestComment(repo: GithubRepo, gh: GhComment): Effect.Effect<"comment" | "unchanged" | "skipped">
   /** A comment was deleted on GitHub. */
   removeComment(repo: GithubRepo, ghId: number): Effect.Effect<void>
+  /**
+   * Read GitHub's "Development" list (linked pull requests, in any repository)
+   * of these linked issues and store the difference.
+   */
+  pullLinkedPullRequests(repo: GithubRepo, ghNumbers: ReadonlyArray<number>): Effect.Effect<void, GithubError>
   /** Read what blocks one linked issue on GitHub and apply the difference. */
   pullDependencies(repo: GithubRepo, ghNumber: number): Effect.Effect<void, GithubError>
   /** Push every due outbox entry to GitHub. */
@@ -430,6 +443,83 @@ export class GithubSync extends Context.Service<GithubSync, {
           return outcome.value
         }).pipe(Effect.orDie)
 
+      /**
+       * Make the stored "Development" list of each issue match GitHub's: new
+       * pull requests are added, changed ones updated, unlinked ones removed.
+       * Issues missing from the answer are left as they are.
+       */
+      const applyLinkedPullRequests = (repo: GithubRepo, found: ReadonlyMap<number, ReadonlyArray<GhLinkedPullRequest>>) =>
+        mutations.transact({ origin: "github", actorId: null }, (tx) =>
+          Effect.gen(function*() {
+            for (const [ghNumber, prs] of found) {
+              const link = yield* getLinkByNumber(repo.id, ghNumber)
+              if (!link) continue
+              const issue = yield* db.getIssue(link.issueId)
+              if (!issue) continue
+              const rows = yield* sql`SELECT * FROM linked_pull_request WHERE issue_id = ${issue.id}`
+              const byUrl = new Map(rows.map((r) => [(r.url as string).toLowerCase(), r]))
+              const keep = new Set<string>()
+              for (const pr of prs) {
+                const key = pr.url.toLowerCase()
+                if (keep.has(key)) continue
+                keep.add(key)
+                const existing = byUrl.get(key)
+                const next = {
+                  owner: pr.owner,
+                  repo: pr.repo,
+                  number: pr.number,
+                  title: pr.title,
+                  url: pr.url,
+                  state: pr.state,
+                  author: pr.author
+                }
+                if (existing && (Object.keys(next) as Array<keyof typeof next>).every((k) => existing[k] === next[k])) continue
+                const id = (existing?.id as string | undefined) ?? Bun.randomUUIDv7()
+                yield* sql`INSERT INTO linked_pull_request (id, team_id, issue_id, repo_id, owner, repo, number, title, url,
+                                                           state, author, updated_at)
+                           VALUES (${id}, ${issue.teamId}, ${issue.id}, ${repo.id}, ${next.owner}, ${next.repo},
+                                   ${next.number}, ${next.title}, ${next.url}, ${next.state}, ${next.author},
+                                   ${Date.parse(pr.updatedAt) || tx.now})
+                           ON CONFLICT (id) DO UPDATE SET owner = excluded.owner, repo = excluded.repo,
+                             number = excluded.number, title = excluded.title, url = excluded.url, state = excluded.state,
+                             author = excluded.author, updated_at = excluded.updated_at`
+                tx.touch("linkedPullRequest", id)
+              }
+              for (const [key, row] of byUrl) {
+                if (keep.has(key)) continue
+                yield* sql`DELETE FROM linked_pull_request WHERE id = ${row.id as string}`
+                tx.touch("linkedPullRequest", row.id as string, "delete")
+              }
+            }
+          })).pipe(Effect.asVoid, Effect.orDie)
+
+      const pullLinkedPullRequests = (repo: GithubRepo, ghNumbers: ReadonlyArray<number>) =>
+        Effect.gen(function*() {
+          const numbers = [...new Set(ghNumbers)]
+          if (numbers.length === 0) return
+          const found = yield* gh.linkedPullRequests(repo.owner, repo.name, numbers)
+          yield* applyLinkedPullRequests(repo, found)
+        })
+
+      /**
+       * After a poll: the "Development" lists of the issues that changed (linking a
+       * pull request touches the issue), or of every linked issue the first time.
+       * A failure (GraphQL refused, an old Enterprise Server) never fails the poll.
+       */
+      const syncLinkedPullRequests = (repo: GithubRepo, changed: ReadonlyArray<number>, options: { full: boolean }) =>
+        Effect.gen(function*() {
+          const rows = yield* sql`SELECT development_synced_at FROM github_repo WHERE id = ${repo.id}`
+          const all = options.full || rows[0]?.development_synced_at == null
+          const numbers = all
+            ? (yield* sql`SELECT gh_number FROM github_issue_link WHERE repo_id = ${repo.id}`).map((r) => Number(r.gh_number))
+            : changed
+          yield* pullLinkedPullRequests(repo, numbers)
+          if (all) yield* sql`UPDATE github_repo SET development_synced_at = ${Date.now()} WHERE id = ${repo.id}`
+        }).pipe(
+          Effect.catchTag("SqlError", Effect.die),
+          Effect.catchTag("GithubError", (e) => Effect.logWarning(`Reading linked pull requests of ${repo.owner}/${repo.name} failed`, e.message))
+        )
+
       /** Compare an issue with its shadow and push only what differs. */
       const pushIssue = (issueId: string) =>
         Effect.gen(function*() {
@@ -655,6 +745,7 @@ export class GithubSync extends Context.Service<GithubSync, {
           }
           // Dependencies once every issue of this poll exists, so blockers resolve in any order.
           for (const issue of seen) yield* syncDependenciesOf(repo, issue)
+          yield* syncLinkedPullRequests(repo, seen.map((i) => i.number), options)
           // Comments last, so the issues they are on exist.
           yield* pollComments(repo, options)
           // The ETag only applies to the exact URL, so drop it when `since` moves.
@@ -941,6 +1032,8 @@ export class GithubSync extends Context.Service<GithubSync, {
             for (const row of prs) tx.touch("pullRequest", row.id as string, "delete")
             const comments = yield* sql`DELETE FROM issue_comment WHERE repo_id = ${repoId} RETURNING id`
             for (const row of comments) tx.touch("issueComment", row.id as string, "delete")
+            const linkedPrs = yield* sql`DELETE FROM linked_pull_request WHERE repo_id = ${repoId} RETURNING id`
+            for (const row of linkedPrs) tx.touch("linkedPullRequest", row.id as string, "delete")
             yield* sql`DELETE FROM github_repo WHERE id = ${repoId}`
             tx.touch("githubRepo", repoId, "delete")
             // Its files are out of reach now: back to the cube, and to "auto" for the next repo.
@@ -986,6 +1079,7 @@ export class GithubSync extends Context.Service<GithubSync, {
         ingest,
         ingestComment,
         removeComment,
+        pullLinkedPullRequests,
         pullDependencies,
         flushOutbox,
         availableRepos: Effect.suspend(() => gh.availableRepos),

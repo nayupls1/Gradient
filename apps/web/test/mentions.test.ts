@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import type { GithubRepo, Issue, IssueComment, PullRequest, WorkflowState } from "@gradient/domain"
+import type { GithubRepo, Issue, IssueComment, LinkedPullRequest, PullRequest, WorkflowState } from "@gradient/domain"
 import { collectReferences, parseMarkdown } from "../src/lib/markdown.ts"
-import { commentsFor, issueReferences, resolveMentions } from "../src/lib/select.ts"
+import { commentsFor, issueReferences, pullRequestLabelFor, pullRequestsFor, resolveMentions } from "../src/lib/select.ts"
 import type { SyncState } from "../src/sync/engine.ts"
 
 const issue = (number: number, github: number | null, title = `Issue ${number}`): Issue => ({
@@ -63,10 +63,38 @@ const store = {
     c2: comment("c2", "i1", "Later: WEB-2 again, and #9", 20),
     c1: comment("c1", "i1", "Earlier: see acme/other#4", 10),
     c3: comment("c3", "i2", "Not this issue: #44", 5)
-  }
+  },
+  linkedPullRequests: {}
 } as unknown as SyncState
 
+const linked = (id: string, issueId: string, owner: string, repo: string, number: number, state: LinkedPullRequest["state"] = "open"): LinkedPullRequest => ({
+  id,
+  teamId: "t1",
+  issueId,
+  owner,
+  repo,
+  number,
+  title: `PR ${owner}/${repo}#${number}`,
+  url: `https://github.com/${owner}/${repo}/pull/${number}`,
+  state,
+  author: "dev",
+  updatedAt: number
+})
+
 describe("collectReferences", () => {
+  test("links to a GitHub issue or pull request count, whatever their text", () => {
+    const tree = parseMarkdown(
+      "[acme/api#7](https://github.com/acme/api/pull/7), [the fix](https://github.com/acme/api/pull/8#issuecomment-1), " +
+        "[files](https://github.com/acme/api/pull/7/files), [#9](https://example.com/9)",
+      { owner: "acme", repo: "web" }
+    )
+    expect(collectReferences(tree).map((r) => r.ref.kind === "github" && `${r.ref.repo}#${r.ref.number}`)).toEqual(["api#7", "api#8"])
+    // Written as its own reference, it shows as one (with its written text); other text stays a link.
+    const paragraph = tree[0] as { children: Array<unknown> }
+    expect(paragraph.children[0]).toEqual({ ref: { kind: "github", owner: "acme", repo: "api", number: 7 }, text: "acme/api#7" })
+    expect(paragraph.children[2]).toMatchObject({ tag: "a", attrs: { href: "https://github.com/acme/api/pull/8#issuecomment-1" } })
+  })
+
   test("finds references anywhere in the tree, each once, not in code or link text", () => {
     const tree = parseMarkdown("- #1 and **TES-2**\n\n> #1 again, `#3`, [#4](https://example.com)\n\nhttps://github.com/acme/web/issues/1", {
       owner: "acme",
@@ -91,5 +119,40 @@ describe("mentions", () => {
     ])
     const github = mentions.find((m) => m.kind === "github")
     expect(github?.kind === "github" && github.url).toBe("https://github.com/acme/other/issues/4")
+  })
+
+  test("references into repositories Gradient does not link are listed, and a known pull request shows as one", () => {
+    const withLinked = { ...store, linkedPullRequests: { l1: linked("l1", "i2", "acme", "api", 7, "merged") } } as unknown as SyncState
+    const refs = issueReferences("Needs acme/api#7, acme/api#8 and acme/api#7 again", [], { owner: "acme", repo: "web" })
+    expect(resolveMentions(withLinked, self, refs).map((m) => (m.kind === "pullRequest" ? `pr ${m.label} ${m.pullRequest.state}` : `${m.kind} ${m.kind === "github" ? m.label : ""}`))).toEqual([
+      "pr acme/api#7 merged", // known from another issue's Development list
+      "github acme/api#8"
+    ])
+  })
+
+  test("leaves out what the sidebar already lists above: relations and pull requests", () => {
+    const refs = issueReferences("See #9, WEB-2 and acme/api#3", [], { owner: "acme", repo: "web" })
+    const mentions = resolveMentions(store, self, refs, {
+      issueIds: ["i2"],
+      pullRequests: [{ ...pr, owner: "acme", repo: "web" }]
+    })
+    expect(mentions.map((m) => m.kind === "github" && m.label)).toEqual(["acme/api#3"])
+  })
+})
+
+describe("pull requests of an issue", () => {
+  test("its Development list joins the ones that refer to it, each once, from any repository", () => {
+    const closing = { ...pr, closes: [{ owner: "acme", repo: "web", number: 1 }] }
+    const state = {
+      ...store,
+      pullRequests: { pr9: closing },
+      linkedPullRequests: {
+        l1: linked("l1", "i1", "acme", "web", 9, "closed"), // the same pull request as pr9: the repository's copy wins
+        l2: linked("l2", "i1", "acme", "api", 738),
+        l3: linked("l3", "i2", "acme", "api", 5) // another issue's
+      }
+    } as unknown as SyncState
+    const prs = pullRequestsFor(state, self)
+    expect(prs.map((p) => `${pullRequestLabelFor(state, self, p)} ${p.state}`)).toEqual(["acme/api#738 open", "#9 open"])
   })
 })

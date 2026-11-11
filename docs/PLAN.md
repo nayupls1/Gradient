@@ -123,14 +123,25 @@ mention its identifier (TES-12, any key of the team). Refs are stored raw and
 resolved when read, so an issue imported later, or a renamed project key,
 still links.
 
+**Linked pull requests** are GitHub's "Development" list of an issue's GitHub
+copy: pull requests that close it or were linked by hand, in any repository
+the token can see, linked to Gradient or not (`linked_pull_request`, one row
+per issue and pull request: repo, number, title, state, author). The issue
+shows them with the pull requests above, each once (a linked repository's copy
+wins, being fresher). Only GraphQL has this list
+(`closedByPullRequestsReferences`), read 50 issues per request.
+
 **Comments** are read-only copies of the comments on an issue's GitHub copy
 (author login and avatar, markdown body, link). The issue page shows them under
 the description, with a "Comment on GitHub" link (`o` opens the issue there).
 
 **Mentions** are the other way round: the issues and pull requests an issue's
 description and comments refer to (see Markdown below), in reading order, each
-target once and never the issue itself. The sidebar lists them under the pull
-requests that refer to the issue; `get_issue` returns them too.
+target once and never the issue itself. References into any repository count,
+and so does a link to a GitHub issue or pull request whatever its text. The
+sidebar lists them under the pull requests that refer to the issue, leaving out
+what it already shows above (relations, pull requests); `get_issue` returns
+them all.
 
 ## Sync engine
 
@@ -208,6 +219,7 @@ public URL, so a local install keeps polling.
 | `related` relations | Gradient only |
 | pull requests | read from GitHub (the issues endpoint lists them), never written |
 | comments | read from GitHub, never written |
+| linked pull requests ("Development") | read from GitHub (GraphQL), never written |
 
 **Shadows stop echo loops.** Each linked issue stores the last version of its
 mapped fields that GitHub is known to have.
@@ -236,6 +248,13 @@ mapped fields that GitHub is known to have.
   (`/issues/comments`), after the issues, so the issues they are on exist.
   Comments on pull requests are skipped. Polling cannot see deleted comments;
   the webhook removes them.
+- **Linked pull requests**: after each poll, the Development lists of the
+  issues it saw (linking a pull request touches the issue), and of every
+  linked issue on import or the first poll after an upgrade
+  (`development_synced_at`); an `issues` webhook re-reads its issue's. The
+  stored list is replaced by GitHub's. A failure (no GraphQL) is logged and
+  never fails the poll. A pull request in another repository that changes
+  without touching the issue shows its new state with the issue's next update.
 - **Webhooks**: `POST /webhooks/github`, HMAC-SHA256 verified, deduped by
   delivery id; handles `issues`, `issue_comment`, `pull_request` and
   `issue_dependencies`.
@@ -261,10 +280,13 @@ markdown up to its `</details>`.
 Text outside links and code is scanned for references, resolved live against
 the store when rendered:
 
-- `#12` (in the issue's repo, else its project's), `owner/repo#12`, and a bare
-  GitHub issue or pull request URL: the Gradient issue synced with it (in-app
-  link, state icon), else a synced pull request (GitHub link, state icon), else
-  a plain GitHub link.
+- `#12` (in the issue's repo, else its project's), `owner/repo#12`, a bare
+  GitHub issue or pull request URL, and a link to one whose text is its
+  reference (`[acme/api#7](…/acme/api/pull/7)`): the Gradient issue synced with
+  it (in-app link, state icon), else a pull request Gradient knows (from a
+  linked repository or a Development list; GitHub link, state icon), else a
+  plain GitHub link. Other links to an issue or pull request stay links but
+  count as mentions.
 - `TES-12`, any key of a team: the Gradient issue, or plain text if none.
 
 The issue page shows the rendered description; a click (not on a link, and not

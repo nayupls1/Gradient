@@ -191,14 +191,60 @@ export const openBlockers = (state: SyncState, issueId: string): Array<Issue> =>
 
 const pullRequestRank: Record<PullRequest["state"], number> = { open: 0, draft: 1, merged: 2, closed: 3 }
 
-/** Pull requests that close the issue on GitHub or mention its identifier: live ones first, then newest. */
-export const pullRequestsFor = (state: SyncState, issue: Issue): Array<PullRequest> => {
+/** A pull request shown on an issue: from a linked repository, or from GitHub's "Development" list (any repository). */
+export interface IssuePullRequest {
+  readonly owner: string
+  readonly repo: string
+  readonly number: number
+  readonly title: string
+  readonly url: string
+  readonly state: PullRequest["state"]
+  readonly author: string | null
+  readonly updatedAt: number
+}
+
+/** "acme/web#12", lower case: one pull request however it was found. */
+const pullRequestKey = (pr: { owner: string; repo: string; number: number }) => `${pr.owner}/${pr.repo}#${pr.number}`.toLowerCase()
+
+/**
+ * Pull requests of the issue, each once: the ones that close its GitHub copy or
+ * mention its identifier, and the ones GitHub links to it (its "Development"
+ * list, in any repository). Live ones first, then newest.
+ */
+export const pullRequestsFor = (state: SyncState, issue: Issue): Array<IssuePullRequest> => {
   const team = state.teams[issue.teamId]
   if (!team) return []
   const keys = teamKeys(team, Object.values(state.projects).filter((p) => p.teamId === team.id))
-  return Object.values(state.pullRequests)
-    .filter((pr) => pullRequestRefersTo(pr, issue, keys))
-    .sort((a, b) => pullRequestRank[a.state] - pullRequestRank[b.state] || b.updatedAt - a.updatedAt || b.number - a.number)
+  const byKey = new Map<string, IssuePullRequest>()
+  for (const pr of Object.values(state.pullRequests)) {
+    const repo = state.githubRepos[pr.repoId]
+    if (!repo || !pullRequestRefersTo(pr, issue, keys)) continue
+    const entry = { ...pr, owner: repo.owner, repo: repo.name }
+    byKey.set(pullRequestKey(entry), entry)
+  }
+  for (const linked of Object.values(state.linkedPullRequests)) {
+    if (linked.issueId !== issue.id) continue
+    const key = pullRequestKey(linked)
+    // A linked repository's copy is kept current by its own sync: prefer it.
+    if (byKey.has(key)) continue
+    const known = knownPullRequest(state, linked)
+    byKey.set(key, known ? { ...known, owner: linked.owner, repo: linked.repo } : linked)
+  }
+  return [...byKey.values()].sort((a, b) =>
+    pullRequestRank[a.state] - pullRequestRank[b.state] || b.updatedAt - a.updatedAt || b.number - a.number
+  )
+}
+
+/** The copy of a pull request in a linked repository, if Gradient has one. */
+const knownPullRequest = (state: SyncState, ref: { owner: string; repo: string; number: number }) => {
+  const repo = Object.values(state.githubRepos).find((r) => sameRepo(ref, r.owner, r.name))
+  return repo && Object.values(state.pullRequests).find((pr) => pr.repoId === repo.id && pr.number === ref.number)
+}
+
+/** How a pull request is labelled on an issue: `#12` in the issue's own repository, else `acme/api#12`. */
+export const pullRequestLabelFor = (state: SyncState, issue: Issue, pr: { owner: string; repo: string; number: number }) => {
+  const context = issueRepo(state, issue)
+  return context && sameRepo(context, pr.owner, pr.repo) ? `#${pr.number}` : `${pr.owner}/${pr.repo}#${pr.number}`
 }
 
 const sameRepo = (a: { owner: string; repo: string }, owner: string, name: string) =>
@@ -213,19 +259,22 @@ export const issueRepo = (state: SyncState, issue: Issue): { owner: string; repo
 
 /**
  * What a GitHub reference (owner/repo#12) points at: the Gradient issue synced
- * with it, else a pull request of a linked repository, else nothing known.
+ * with it, else a pull request Gradient knows (from a linked repository, or
+ * from an issue's "Development" list in any repository), else nothing known.
  */
 export const resolveGithubRef = (
   state: SyncState,
   ref: { owner: string; repo: string; number: number }
-): { issue: Issue } | { pullRequest: PullRequest } | null => {
+): { issue: Issue } | { pullRequest: IssuePullRequest } | null => {
   const issue = Object.values(state.issues).find((i) =>
     i.github !== null && i.github.number === ref.number && sameRepo(i.github, ref.owner, ref.repo)
   )
   if (issue) return { issue }
-  const repo = Object.values(state.githubRepos).find((r) => sameRepo(ref, r.owner, r.name))
-  const pullRequest = repo && Object.values(state.pullRequests).find((pr) => pr.repoId === repo.id && pr.number === ref.number)
-  return pullRequest ? { pullRequest } : null
+  const known = knownPullRequest(state, ref)
+  if (known) return { pullRequest: { ...known, owner: ref.owner, repo: ref.repo } }
+  const key = pullRequestKey(ref)
+  const linked = Object.values(state.linkedPullRequests).find((l) => pullRequestKey(l) === key)
+  return linked ? { pullRequest: linked } : null
 }
 
 /** An issue's comments, oldest first. */
@@ -251,20 +300,26 @@ export const issueReferences = (
 /** Something an issue mentions: a Gradient issue, a pull request, or anything else on GitHub. */
 export type Mention =
   | { readonly kind: "issue"; readonly issue: Issue }
-  | { readonly kind: "pullRequest"; readonly pullRequest: PullRequest; readonly label: string }
+  | { readonly kind: "pullRequest"; readonly pullRequest: IssuePullRequest; readonly label: string }
   | { readonly kind: "github"; readonly label: string; readonly url: string }
 
 /**
  * What the references of an issue point at, each target once (`TES-3` and the
- * `#3` it syncs with are one), never the issue itself. Identifiers that match
- * no issue are left out.
+ * `#3` it syncs with are one; a pull request and its URL are one), never the
+ * issue itself. References into any repository count, linked to Gradient or
+ * not. Identifiers that match no issue are left out. Pass `exclude` to leave
+ * out what the sidebar already shows above (relations, pull requests).
  */
-export const resolveMentions = (state: SyncState, issue: Issue, refs: ReadonlyArray<MdRef>): Array<Mention> => {
-  const context = issueRepo(state, issue)
-  const label = (ref: { owner: string; repo: string; number: number }) =>
-    context && sameRepo(context, ref.owner, ref.repo) ? `#${ref.number}` : `${ref.owner}/${ref.repo}#${ref.number}`
+export const resolveMentions = (
+  state: SyncState,
+  issue: Issue,
+  refs: ReadonlyArray<MdRef>,
+  exclude: { readonly issueIds?: Iterable<string>; readonly pullRequests?: Iterable<IssuePullRequest> } = {}
+): Array<Mention> => {
   const out: Array<Mention> = []
   const seen = new Set<string>([`issue:${issue.id}`])
+  for (const id of exclude.issueIds ?? []) seen.add(`issue:${id}`)
+  for (const pr of exclude.pullRequests ?? []) seen.add(`gh:${pullRequestKey(pr)}`)
   const add = (key: string, mention: Mention) => {
     if (seen.has(key)) return
     seen.add(key)
@@ -277,12 +332,11 @@ export const resolveMentions = (state: SyncState, issue: Issue, refs: ReadonlyAr
       continue
     }
     const target = resolveGithubRef(state, ref)
+    const key = `gh:${pullRequestKey(ref)}`
+    const label = pullRequestLabelFor(state, issue, ref)
     if (target && "issue" in target) add(`issue:${target.issue.id}`, { kind: "issue", issue: target.issue })
-    else if (target) add(`pr:${target.pullRequest.id}`, { kind: "pullRequest", pullRequest: target.pullRequest, label: label(ref) })
-    else {
-      const url = `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.number}`
-      add(url.toLowerCase(), { kind: "github", label: label(ref), url })
-    }
+    else if (target) add(key, { kind: "pullRequest", pullRequest: target.pullRequest, label })
+    else add(key, { kind: "github", label, url: `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.number}` })
   }
   return out
 }

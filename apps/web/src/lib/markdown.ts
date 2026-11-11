@@ -12,7 +12,11 @@ import { Lexer, type Token, type Tokens } from "marked"
  *
  * Text outside links and code is scanned for references (`#12`,
  * `acme/web#12`, `TES-12`), and a GitHub issue or pull request URL written on
- * its own becomes one too. They are resolved against the store when rendered.
+ * its own, or as a link whose text is its reference
+ * (`[acme/web#12](https://github.com/acme/web/pull/12)`), becomes one too.
+ * They are resolved against the store when rendered. Other links to an issue
+ * or pull request stay links, but still count as references
+ * (`collectReferences`).
  */
 
 export type { Reference, RefContext } from "@gradient/domain"
@@ -314,9 +318,11 @@ class Builder {
       case "link": {
         const t = token as Tokens.Link
         const href = safeUrl(t.href)
-        if (href && this.isBare(t)) {
-          const ref = githubUrlReference(href, this.context)
-          if (ref && !this.literal()) return this.node(ref)
+        const ref = href ? githubUrlReference(href, this.context) : null
+        if (ref && !this.literal()) {
+          if (this.isBare(t)) return this.node(ref)
+          // Written as its reference ("acme/web#12" or "#12"): keep the text, show it like one.
+          if (namesReference(t.text, ref)) return this.node({ ref: ref.ref, text: t.text.trim() })
         }
         if (!href || this.dropping) return this.inline(t.tokens)
         return this.within("a", t.title ? { href, title: t.title } : { href }, () => this.inline(t.tokens))
@@ -341,6 +347,14 @@ class Builder {
   }
 }
 
+/** Does link text name the issue its URL points at ("acme/web#12", "#12", any case)? */
+const namesReference = (text: string, ref: TextRef) => {
+  if (ref.ref.kind !== "github") return false
+  const t = text.trim().toLowerCase()
+  const { owner, repo, number } = ref.ref
+  return t === `#${number}` || t === `${owner}/${repo}#${number}`.toLowerCase()
+}
+
 /** Parse a description into a render tree. Pure; cheap enough to rerun on every edit. */
 export const parseMarkdown = (source: string, context: RefContext | null = null): Array<MdNode> => {
   const builder = new Builder(context)
@@ -348,16 +362,26 @@ export const parseMarkdown = (source: string, context: RefContext | null = null)
   return builder.root.children
 }
 
-/** The references in a render tree, in order, each once (`#12` and its URL count as one). */
+/**
+ * The references in a render tree, in order, each once (`#12` and its URL count
+ * as one). A link to a GitHub issue or pull request counts, whatever its text;
+ * references inside link text do not.
+ */
 export const collectReferences = (nodes: ReadonlyArray<MdNode>, into: Array<MdRef> = [], seen = new Set<string>()) => {
+  const add = (node: MdRef) => {
+    const key = referenceKey(node.ref)
+    if (seen.has(key)) return
+    seen.add(key)
+    into.push(node)
+  }
   for (const node of nodes) {
     if (typeof node === "string") continue
-    if (isRef(node)) {
-      const key = referenceKey(node.ref)
-      if (!seen.has(key)) {
-        seen.add(key)
-        into.push(node)
-      }
+    if (isRef(node)) add(node)
+    else if (node.tag === "a" && typeof node.attrs.href === "string") {
+      // A comment or the files tab still points at the issue or pull request.
+      const url = node.attrs.href.replace(/[?#].*$/, "").replace(/\/(?:files|commits|checks)\/?$/, "")
+      const ref = githubUrlReference(url, null)
+      if (ref) add(ref)
     } else collectReferences(node.children, into, seen)
   }
   return into

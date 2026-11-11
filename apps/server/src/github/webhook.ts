@@ -92,6 +92,10 @@ export const WebhookRoute = HttpRouter.add(
       const repo = yield* db.repoByName(payload.repository.owner.login, payload.repository.name)
       if (!repo) return notLinked
       const outcome = yield* sync.ingest(repo, payload.issue)
+      // Its "Development" list may have changed too; that list has no webhook of its own.
+      yield* sync.pullLinkedPullRequests(repo, [payload.issue.number]).pipe(
+        Effect.catchTag("GithubError", (e) => Effect.logWarning("Reading linked pull requests failed", e.message))
+      )
       return HttpServerResponse.text(outcome, { status: 202 })
     }
     if (event === "pull_request") {

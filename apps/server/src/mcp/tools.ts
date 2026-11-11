@@ -48,6 +48,7 @@ export const IssueDetail = Schema.Struct({
   blocked_by: Schema.Array(RelatedIssue),
   blocks: Schema.Array(RelatedIssue),
   related: Schema.Array(RelatedIssue),
+  /** Pull requests that close or mention the issue, and its GitHub "Development" list (any repository). */
   pull_requests: Schema.Array(Schema.Struct({
     repo: Schema.String,
     number: Schema.Int,

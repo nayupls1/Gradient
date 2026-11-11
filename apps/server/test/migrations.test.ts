@@ -191,3 +191,25 @@ test("0009 makes the original user the admin and puts everyone who had access in
   ])
   expect(after.invites).toEqual([])
 })
+
+test("0010 adds Development lists; repositories linked before read theirs on the next poll", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gradient-migrate-"))
+  dirs.push(dir)
+  const file = join(dir, "development.db")
+  const before = Object.keys(migrations).filter((k) => k < "0010") as Array<keyof typeof migrations>
+  await withDb(file, before, Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`INSERT INTO team (id, key, name, issue_counter) VALUES ('t1', 'GRD', 'Gradient', 0)`
+    yield* sql`INSERT INTO project (id, team_id, key, name, color, created_at) VALUES ('p1', 't1', 'WEB', 'Web', '#0090ff', 1)`
+    yield* sql`INSERT INTO github_repo (id, team_id, project_id, owner, name, created_at) VALUES ('r1', 't1', 'p1', 'acme', 'widgets', 1)`
+  }))
+  const after = await withDb(file, Object.keys(migrations) as Array<keyof typeof migrations>, Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    return {
+      repo: (yield* sql`SELECT development_synced_at FROM github_repo`)[0],
+      linked: yield* sql`SELECT * FROM linked_pull_request`
+    }
+  }))
+  expect(after.repo).toEqual({ development_synced_at: null })
+  expect(after.linked).toEqual([])
+})

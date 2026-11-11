@@ -6,6 +6,7 @@ import type {
   IssueComment,
   IssueRelation,
   Label,
+  LinkedPullRequest,
   ModelName,
   Project,
   PullRequest,
@@ -150,6 +151,20 @@ const toComment = (r: Row): IssueComment => ({
   body: str(r.body),
   url: str(r.url),
   createdAt: num(r.created_at),
+  updatedAt: num(r.updated_at)
+})
+
+const toLinkedPullRequest = (r: Row): LinkedPullRequest => ({
+  id: str(r.id),
+  teamId: str(r.team_id),
+  issueId: str(r.issue_id),
+  owner: str(r.owner),
+  repo: str(r.repo),
+  number: num(r.number),
+  title: str(r.title),
+  url: str(r.url),
+  state: r.state as LinkedPullRequest["state"],
+  author: strOrNull(r.author),
   updatedAt: num(r.updated_at)
 })
 
@@ -363,6 +378,9 @@ const makeDb = Effect.gen(function*() {
     comments: all(sql`SELECT * FROM issue_comment ORDER BY created_at`, toComment),
     commentsForTeam: (teamId: string) =>
       all(sql`SELECT * FROM issue_comment WHERE team_id = ${teamId} ORDER BY created_at`, toComment),
+    linkedPullRequests: all(sql`SELECT * FROM linked_pull_request ORDER BY updated_at DESC`, toLinkedPullRequest),
+    linkedPullRequestsForTeam: (teamId: string) =>
+      all(sql`SELECT * FROM linked_pull_request WHERE team_id = ${teamId} ORDER BY updated_at DESC`, toLinkedPullRequest),
 
     /** Read an entity back from its table, in the shape clients receive. */
     loadEntity: (model: ModelName, id: string): Effect.Effect<Entity | undefined, SqlError.SqlError> => {
@@ -389,6 +407,8 @@ const makeDb = Effect.gen(function*() {
           return one(sql`SELECT * FROM pull_request WHERE id = ${id}`, (r) => ({ model, value: toPullRequest(r) }))
         case "issueComment":
           return one(sql`SELECT * FROM issue_comment WHERE id = ${id}`, (r) => ({ model, value: toComment(r) }))
+        case "linkedPullRequest":
+          return one(sql`SELECT * FROM linked_pull_request WHERE id = ${id}`, (r) => ({ model, value: toLinkedPullRequest(r) }))
       }
     },
 

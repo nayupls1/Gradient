@@ -219,6 +219,27 @@ export const IssueComment = Schema.Struct({
 })
 export type IssueComment = typeof IssueComment.Type
 
+/**
+ * A pull request GitHub links to an issue's GitHub copy: the issue's
+ * "Development" list (closing keywords, or linked by hand), in any
+ * repository, linked to Gradient or not. Read from GitHub, one row per issue
+ * and pull request.
+ */
+export const LinkedPullRequest = Schema.Struct({
+  id: Schema.String,
+  teamId: Schema.String,
+  issueId: Schema.String,
+  owner: Schema.String,
+  repo: Schema.String,
+  number: Schema.Int,
+  title: Schema.String,
+  url: Schema.String,
+  state: PullRequestState,
+  author: Schema.NullOr(Schema.String),
+  updatedAt: Millis
+})
+export type LinkedPullRequest = typeof LinkedPullRequest.Type
+
 export const ModelName = Schema.Literals([
   "team",
   "teamMember",
@@ -230,7 +251,8 @@ export const ModelName = Schema.Literals([
   "githubRepo",
   "issueRelation",
   "pullRequest",
-  "issueComment"
+  "issueComment",
+  "linkedPullRequest"
 ])
 export type ModelName = typeof ModelName.Type
 
@@ -246,7 +268,8 @@ export const Entity = Schema.Union([
   Schema.Struct({ model: Schema.Literal("githubRepo"), value: GithubRepo }),
   Schema.Struct({ model: Schema.Literal("issueRelation"), value: IssueRelation }),
   Schema.Struct({ model: Schema.Literal("pullRequest"), value: PullRequest }),
-  Schema.Struct({ model: Schema.Literal("issueComment"), value: IssueComment })
+  Schema.Struct({ model: Schema.Literal("issueComment"), value: IssueComment }),
+  Schema.Struct({ model: Schema.Literal("linkedPullRequest"), value: LinkedPullRequest })
 ])
 export type Entity = typeof Entity.Type
 
