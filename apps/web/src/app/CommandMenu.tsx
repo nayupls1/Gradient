@@ -1,20 +1,26 @@
 import * as stylex from "@stylexjs/stylex"
-import { createSignal, For } from "solid-js"
+import { createSignal, For, Show } from "solid-js"
 import type { CommandInfo } from "../keys/core.ts"
-import { Shortcut, useCommands, useKeymap } from "../keys/solid.tsx"
-import { color, font } from "../theme/tokens.stylex.ts"
+import { KeyScope, Shortcut, useCommands, useKeymap } from "../keys/solid.tsx"
+import { colors } from "../lib/tokens.stylex.ts"
+import {
+  Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandShortcut
+} from "../ui/command.tsx"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog.tsx"
 import { KeyboardIcon } from "../ui/icons.tsx"
-import { Dialog, PickerList } from "../ui/kit.tsx"
 
 const s = stylex.create({
-  menu: { width: "min(560px, calc(100vw - 32px))" },
-  list: { padding: 6, maxHeight: "60vh", overflowY: "auto" },
-  help: { width: "min(620px, calc(100vw - 32px))", overflow: "hidden" },
-  helpFrame: { display: "flex", flexDirection: "column", maxHeight: "76vh" },
-  helpBody: { paddingInline: 20, paddingBottom: 20, overflowY: "auto", minHeight: 0, outline: "none" },
-  helpTitle: { display: "flex", alignItems: "center", gap: 8, margin: 0, padding: 20, paddingBottom: 8, fontSize: font.lg, fontWeight: 600 },
-  helpNote: { margin: 0, paddingInline: 20, paddingBottom: 12, color: color.fgMuted, fontSize: font.sm },
-  group: { marginTop: 14, marginBottom: 4, color: color.fgSubtle, fontSize: font.xs, fontWeight: 500 },
+  help: { maxWidth: "min(620px, calc(100vw - 32px))", maxHeight: "76vh", gridTemplateRows: "auto minmax(0, 1fr)" },
+  title: { display: "flex", alignItems: "center", gap: 8 },
+  body: { overflowY: "auto", minHeight: 0, marginInline: "-1.5rem", paddingInline: "1.5rem", outline: "none" },
+  group: { marginTop: 14, marginBottom: 4, color: colors.mutedForeground, fontSize: "0.75rem", fontWeight: 500 },
   row: {
     display: "flex",
     alignItems: "center",
@@ -23,10 +29,9 @@ const s = stylex.create({
     minHeight: 32,
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
-    borderBottomColor: color.border,
-    fontSize: font.md
+    borderBottomColor: colors.border
   },
-  keys: { display: "flex", gap: 8 },
+  keys: { display: "flex", gap: 8 }
 })
 
 const groupBy = (commands: ReadonlyArray<CommandInfo>) => {
@@ -71,52 +76,74 @@ export const CommandSurfaces = () => {
 
   return (
     <>
-      <Dialog open={menu() !== null} onClose={() => setMenu(null)} label="Command menu" scope="commandMenu" sx={s.menu}>
-        <div {...stylex.attrs(s.list)}>
-          <PickerList
-            placeholder="Type a command…"
-            selected={[]}
-            close={() => setMenu(null)}
-            items={(menu() ?? []).map((c) => ({
-              value: c.id,
-              label: c.title,
-              keywords: `${c.group} ${c.id}`,
-              hint: c.group,
-              ...(c.keys[0] ? { trailing: () => <Shortcut binding={c.keys[0]!} /> } : {})
-            }))}
-            onPick={run}
-          />
-        </div>
-      </Dialog>
-      <Dialog open={help() !== null} onClose={() => setHelp(null)} label="Keyboard shortcuts" scope="shortcutHelp" sx={s.help}>
-        <div {...stylex.attrs(s.helpFrame)}>
-        <h2 {...stylex.attrs(s.helpTitle)}>
-          <KeyboardIcon size={16} /> Keyboard shortcuts
-        </h2>
-        <p {...stylex.attrs(s.helpNote)}>
-          Remap any command by id in localStorage under <code>gradient.keymap</code>, for example{" "}
-          <code>{`{"issue.status": ["shift+s"]}`}</code>.
-        </p>
-        <div {...stylex.attrs(s.helpBody)} tabindex="-1">
-          <For each={groupBy(help() ?? [])} keyed={([group]) => group}>
-            {(entry) => (
-              <>
-                <div {...stylex.attrs(s.group)}>{entry()[0]}</div>
-                <For each={entry()[1]} keyed={(c) => c.id}>
-                  {(c) => (
-                    <div {...stylex.attrs(s.row)} title={c().id}>
-                      <span>{c().title}</span>
-                      <span {...stylex.attrs(s.keys)}>
-                        <For each={c().keys}>{(k) => <Shortcut binding={k} />}</For>
-                      </span>
-                    </div>
-                  )}
-                </For>
-              </>
-            )}
-          </For>
-        </div>
-        </div>
+      <CommandDialog
+        open={menu() !== null}
+        onOpenChange={(open) => !open && setMenu(null)}
+        title="Command menu"
+        description="Run any command available here"
+      >
+        <KeyScope name="commandMenu" blocking>
+          <Command>
+            <CommandInput placeholder="Type a command…" />
+            <CommandList>
+              <CommandEmpty>No results</CommandEmpty>
+              <For each={groupBy(menu() ?? [])} keyed={([group]) => group}>
+                {(entry) => (
+                  <CommandGroup heading={entry()[0]}>
+                    <For each={entry()[1]} keyed={(c) => c.id}>
+                      {(c) => (
+                        <CommandItem value={c().id} keywords={[c().title, c().group]} onSelect={() => run(c().id)}>
+                          {c().title}
+                          <Show when={c().keys[0]}>
+                            {(binding) => (
+                              <CommandShortcut>
+                                <Shortcut binding={binding()} />
+                              </CommandShortcut>
+                            )}
+                          </Show>
+                        </CommandItem>
+                      )}
+                    </For>
+                  </CommandGroup>
+                )}
+              </For>
+            </CommandList>
+          </Command>
+        </KeyScope>
+      </CommandDialog>
+      <Dialog open={help() !== null} onOpenChange={(open) => !open && setHelp(null)}>
+        <DialogContent xstyle={s.help}>
+          <KeyScope name="shortcutHelp" blocking>
+            <DialogHeader>
+              <DialogTitle xstyle={s.title}>
+                <KeyboardIcon size={16} /> Keyboard shortcuts
+              </DialogTitle>
+              <DialogDescription>
+                Remap any command by id in localStorage under <code>gradient.keymap</code>, for example{" "}
+                <code>{`{"issue.status": ["shift+s"]}`}</code>.
+              </DialogDescription>
+            </DialogHeader>
+            <div {...stylex.attrs(s.body)} tabindex="-1">
+              <For each={groupBy(help() ?? [])} keyed={([group]) => group}>
+                {(entry) => (
+                  <>
+                    <div {...stylex.attrs(s.group)}>{entry()[0]}</div>
+                    <For each={entry()[1]} keyed={(c) => c.id}>
+                      {(c) => (
+                        <div {...stylex.attrs(s.row)} title={c().id}>
+                          <span>{c().title}</span>
+                          <span {...stylex.attrs(s.keys)}>
+                            <For each={c().keys}>{(k) => <Shortcut binding={k} />}</For>
+                          </span>
+                        </div>
+                      )}
+                    </For>
+                  </>
+                )}
+              </For>
+            </div>
+          </KeyScope>
+        </DialogContent>
       </Dialog>
     </>
   )

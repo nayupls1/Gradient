@@ -35,10 +35,17 @@ Run both checks before you push.
 - **Keyboard first.** New actions are commands registered with `useCommands`
   (stable id, title, group, scope, optional default keys), never ad-hoc
   `keydown` listeners. The command then shows up in ⌘K, in `?`, and can be
-  remapped. Pick the narrowest scope; modals get a blocking scope from `Dialog`.
-- **Icons** come from `@lucide/solid`, imported per icon
-  (`@lucide/solid/icons/<name>`), through `ui/icons.tsx`. Use canonical names:
-  aliases have no type definitions.
+  remapped. Pick the narrowest scope. Anything that floats above the page
+  (dialog, popover, menu) wraps its content in `<KeyScope name=… blocking>`,
+  so Escape and shortcuts behind it stay quiet.
+- **Components** are shadcn-solid's StyleX components, copied into `ui/` by
+  its CLI (`components.json`; `shadcn-solid add <name>`), on base-ui-solidjs.
+  Compose them in `app/` (`Picker` is Popover + Command, `UserAvatar` is
+  Avatar) instead of writing new primitives. The copies are ours to edit, but
+  keep edits small and marked, so a fresh copy stays easy to diff. If a part is
+  missing, use base-ui-solidjs (`base-ui-solidjs/<part>`) directly.
+- **Icons** are `lucide` icon data drawn by `ui/icon.tsx` (the same `Icon` the
+  components use), exported through `ui/icons.tsx`.
 - **Themes**: mode (system/light/dark) and palette are separate. Every palette
   defines both a light and a dark set; never add a palette that only works in
   one mode.
@@ -94,4 +101,13 @@ chords and commands with `allowInInput`.
   kebab-cases the generated variable and the color never applies. Use an
   inline `style` for runtime values.
 - Colors live in `theme/tokens.stylex.ts`. Themes write those CSS variables at
-  runtime (`theme/theme.ts`), so never hardcode a surface or text color.
+  runtime (`theme/theme.ts`), so never hardcode a surface or text color. The
+  shadcn components read shadcn's tokens (`lib/tokens.stylex.ts`), which
+  `theme.ts` derives from ours (`uiTokensFrom` in `theme/presets.ts`); use
+  either set, never literals. `theme.ts` also puts `lightMode`/`darkMode` on
+  `<html>`, which the components' `light-dark()` colors need.
+- StyleX emits layered CSS, and unlayered CSS beats every layer. `global.css`
+  is therefore all inside `@layer reset` (declared first in `index.html`):
+  keep new global rules in it.
+- Override a component's spacing with longhands (`paddingInline`, not
+  `padding`): StyleX lets longhands win over shorthands whatever the order.

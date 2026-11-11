@@ -11,7 +11,7 @@ coding agents over MCP. It runs locally, for one user, for now.
 
 - **Few dependencies.** Use Bun's built-ins and Effect's single package first.
   Write small utilities ourselves (fractional indexing, UUIDv7, hotkeys, the
-  GitHub client, webhook signature checks, the component kit). Add a package
+  GitHub client, webhook signature checks). Add a package
   when it carries real weight.
 - **One sync engine for everything.** The browser and GitHub are both clients
   of the same mutation pipeline. No special-case write paths.
@@ -29,19 +29,21 @@ coding agents over MCP. It runs locally, for one user, for now.
 | Validation | Effect Schema (shared by client and server; no Zod, Valibot or TypeBox needed) |
 | UI | Solid 2 (RC) with `@solidjs/router` 2 |
 | Styles | StyleX, compiled by `@stylexjs/unplugin` |
-| Components | Hand-written kit with shadcn's API shape, on native `<dialog>` and the Popover API |
-| Icons | `@lucide/solid` (per-icon imports) |
+| Components | shadcn-solid's StyleX components (copied into `ui/`), on `base-ui-solidjs` |
+| Icons | `lucide` icon data, drawn by shadcn-solid's `Icon` |
 | Agents | MCP over Streamable HTTP with `effect/ai`'s `McpServer` (no extra package) |
 | Font | Inter, bundled (`@fontsource-variable/inter`) |
 | Build | Vite 8 with `vite-plugin-solid` |
 | Tests | `bun test`, with a fake GitHub server |
 
 Runtime dependencies: server 3 (`effect`, `@effect/platform-bun`,
-`@effect/sql-sqlite-bun`); web 7 (`effect`, `solid-js`, `@solidjs/web`,
-`@solidjs/router`, `@stylexjs/stylex`, `@lucide/solid`, the font).
+`@effect/sql-sqlite-bun`); web 8 (`effect`, `solid-js`, `@solidjs/web`,
+`@solidjs/router`, `@stylexjs/stylex`, `base-ui-solidjs`, `lucide`, the font).
 
-Kobalte, which shadcn-solid builds on, only has an alpha for Solid 2 pinned to
-an older RC. The kit is ours instead: `apps/web/src/ui/kit.tsx`.
+The components come from shadcn-solid (a Solid 2 port of shadcn/ui) and run on
+base-ui-solidjs (a Solid 2 port of Base UI). Like shadcn/ui, they are copied
+into the app by the shadcn-solid CLI (`apps/web/components.json`) rather than
+installed, so `ui/` and its helpers in `lib/` are app code.
 
 ## Layout
 
@@ -66,9 +68,10 @@ apps/web/src
   sync/replica.ts      pure client copy: base + pending transactions, confirm/rollback (unit tested)
   sync/engine.ts       network loop around the replica, mirrored into a Solid store
   keys/                command registry: chords, sequences, scopes, remaps (core.ts), Solid hooks
-  theme/               tokens (StyleX vars), palettes, mode + palette switching
-  ui/                  kit (Button, Input, Dialog, Popover, Picker, Avatar, Toaster), icons
-  app/                 Shell, Composer, CommandMenu (⌘K and ?), issue commands, pickers, router
+  theme/               tokens (StyleX vars), palettes (also feed shadcn's tokens), mode + palette switching
+  ui/                  shadcn-solid components (Button, Dialog, Popover, Command, Sidebar…), icons
+  lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts)
+  app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, router
   pages/               IssuesPage (keyboard-driven list), IssuePage, SettingsPage
 ```
 

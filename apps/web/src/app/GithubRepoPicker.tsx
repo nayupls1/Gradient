@@ -1,9 +1,8 @@
 import type { GithubAvailableRepo } from "@gradient/domain"
 import { onSettled, useContext } from "solid-js"
 import { GithubIcon } from "../ui/icons.tsx"
-import { Picker, type PopoverApi, type TriggerAttrs } from "../ui/kit.tsx"
-import type { JSX } from "@solidjs/web"
 import { Sync } from "./context.ts"
+import { Picker, type PickerApi, type PickerTrigger } from "./Picker.tsx"
 import { github } from "./github.ts"
 
 const key = (r: { owner: string; name: string }) => `${r.owner}/${r.name}`.toLowerCase()
@@ -13,10 +12,10 @@ const key = (r: { owner: string; name: string }) => `${r.owner}/${r.name}`.toLow
  * Repositories already linked to a project are left out.
  */
 export const GithubRepoPicker = (props: {
-  trigger: (attrs: TriggerAttrs) => JSX.Element
+  trigger: PickerTrigger
   onPick: (repo: GithubAvailableRepo) => void
   align?: "start" | "end"
-  apiRef?: (api: PopoverApi) => void
+  apiRef?: (api: PickerApi) => void
 }) => {
   const sync = useContext(Sync)
   onSettled(() => void github.ensureRepos(sync))

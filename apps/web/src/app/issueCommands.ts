@@ -2,15 +2,15 @@ import type { Issue } from "@gradient/domain"
 import { useContext } from "solid-js"
 import { useCommands } from "../keys/solid.tsx"
 import { issueKey } from "../lib/select.ts"
-import type { PopoverApi } from "../ui/kit.tsx"
 import { Sync } from "./context.ts"
+import type { PickerApi } from "./Picker.tsx"
 
 export interface PickerApis {
-  status?: PopoverApi
-  priority?: PopoverApi
-  assignee?: PopoverApi
-  labels?: PopoverApi
-  project?: PopoverApi
+  status?: PickerApi
+  priority?: PickerApi
+  assignee?: PickerApi
+  labels?: PickerApi
+  project?: PickerApi
 }
 
 /**

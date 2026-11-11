@@ -1,60 +1,43 @@
 import { type GithubAvailableRepo, isValidProjectKey, PROJECT_COLORS, uuidv7 } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { useNavigate } from "@solidjs/router"
-import { createEffect, createSignal, For, Show, useContext } from "solid-js"
-import { useCommands } from "../keys/solid.tsx"
+import { createEffect, createSignal, createUniqueId, For, Show, useContext } from "solid-js"
+import { KeyScope, useCommands } from "../keys/solid.tsx"
 import { firstTeam, projectHref, suggestProjectKey, teamProjects } from "../lib/select.ts"
-import { color, font, radius } from "../theme/tokens.stylex.ts"
+import { colors } from "../lib/tokens.stylex.ts"
+import { font } from "../theme/tokens.stylex.ts"
+import { Button, type ButtonProps } from "../ui/button.tsx"
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog.tsx"
 import { CheckIcon, ChevronDownIcon, GithubIcon, ProjectIcon, XIcon } from "../ui/icons.tsx"
-import { Button, Dialog, Input } from "../ui/kit.tsx"
+import { Input } from "../ui/input.tsx"
+import { Label } from "../ui/label.tsx"
 import { Sync } from "./context.ts"
 import { github } from "./github.ts"
 import { GithubRepoPicker } from "./GithubRepoPicker.tsx"
 
 const s = stylex.create({
-  dialog: { width: "min(480px, calc(100vw - 32px))" },
-  form: { display: "flex", flexDirection: "column", gap: 14, padding: 20 },
-  title: { display: "flex", alignItems: "center", gap: 8, margin: 0, fontSize: font.lg, fontWeight: 600 },
-  field: { display: "flex", flexDirection: "column", gap: 6 },
-  label: { color: color.fgMuted, fontSize: font.sm, fontWeight: 500 },
-  hint: { color: color.fgSubtle, fontSize: font.sm },
+  dialog: { gap: 16 },
+  form: { display: "flex", flexDirection: "column", gap: 16 },
+  title: { display: "flex", alignItems: "center", gap: 8 },
+  field: { display: "flex", flexDirection: "column", gap: 8 },
+  hint: { color: colors.mutedForeground, fontSize: "0.75rem" },
   swatches: { display: "flex", gap: 6, flexWrap: "wrap" },
   swatch: {
     width: 22,
     height: 22,
     borderRadius: "50%",
-    borderWidth: 0,
-    padding: 0,
     display: "grid",
     placeItems: "center",
     color: "#fff",
     cursor: "pointer",
     outline: "none",
-    boxShadow: { default: "none", ":focus-visible": `0 0 0 2px ${color.ring}` }
+    boxShadow: { default: "none", ":focus-visible": `0 0 0 3px color-mix(in oklch, ${colors.ring} 50%, transparent)` }
   },
-  swatchOn: { boxShadow: `0 0 0 2px ${color.panel}, 0 0 0 4px ${color.fgMuted}` },
-  repoButton: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    width: "100%",
-    height: 32,
-    paddingInline: 10,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: color.border,
-    backgroundColor: { default: color.panel, ":hover": color.hover },
-    color: color.fg,
-    fontFamily: "inherit",
-    fontSize: font.md,
-    textAlign: "left",
-    cursor: "pointer"
-  },
-  grow: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  muted: { color: color.fgMuted },
-  error: { color: color.danger, fontSize: font.sm },
-  footer: { display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 },
+  swatchOn: { boxShadow: `0 0 0 2px ${colors.popover}, 0 0 0 4px ${colors.mutedForeground}` },
+  repoButton: { width: "100%", justifyContent: "flex-start", fontWeight: 400 },
+  grow: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" },
+  muted: { color: colors.mutedForeground },
+  error: { color: colors.destructive, fontSize: "0.75rem" },
   keyRow: { display: "flex", alignItems: "center", gap: 10 },
   keyInput: { width: 90, flexShrink: 0, fontFamily: font.mono, letterSpacing: "0.06em", textTransform: "uppercase" }
 })
@@ -163,8 +146,18 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
     { id: "project.dialog.submit", title: "Save project", group: "Project", keys: ["mod+enter"], scope: "project-dialog", run: () => void submit() }
   ])
 
+  const ids = { name: createUniqueId(), key: createUniqueId() }
+
   return (
-    <Dialog open={props.mode !== null} onClose={props.onClose} label="Project" scope="project-dialog" sx={s.dialog}>
+    <Dialog open={props.mode !== null} onOpenChange={(open) => !open && props.onClose()}>
+      <DialogContent xstyle={s.dialog}>
+      <KeyScope name="project-dialog" blocking>
+      <DialogHeader>
+        <DialogTitle xstyle={s.title}>
+          <ProjectIcon size={16} color={colorValue()} />
+          {editing() ? "Edit project" : "New project"}
+        </DialogTitle>
+      </DialogHeader>
       <form
         {...stylex.attrs(s.form)}
         onSubmit={(e) => {
@@ -172,23 +165,21 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
           void submit()
         }}
       >
-        <h2 {...stylex.attrs(s.title)}>
-          <ProjectIcon size={16} color={colorValue()} />
-          {editing() ? "Edit project" : "New project"}
-        </h2>
-        <label {...stylex.attrs(s.field)}>
-          <span {...stylex.attrs(s.label)}>Name</span>
+        <div {...stylex.attrs(s.field)}>
+          <Label for={ids.name}>Name</Label>
           <Input
-            ref={(el: HTMLInputElement) => requestAnimationFrame(() => el.focus())}
+            id={ids.name}
+            ref={(el: HTMLInputElement | null) => el && requestAnimationFrame(() => el.focus())}
             placeholder={repo() ? repo()!.name : "e.g. Website"}
             value={name()}
             onInput={(e) => setName(e.currentTarget.value)}
           />
-        </label>
-        <label {...stylex.attrs(s.field)}>
-          <span {...stylex.attrs(s.label)}>Key</span>
+        </div>
+        <div {...stylex.attrs(s.field)}>
+          <Label for={ids.key}>Key</Label>
           <div {...stylex.attrs(s.keyRow)}>
             <Input
+              id={ids.key}
               placeholder="TES"
               maxlength={5}
               value={effectiveKey()}
@@ -196,15 +187,15 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
                 setKeyEdited(true)
                 setKey(e.currentTarget.value.toUpperCase())
               }}
-              sx={s.keyInput}
+              xstyle={s.keyInput}
             />
             <span {...stylex.attrs(s.hint)}>
               {keyProblem() ?? `Issues read ${effectiveKey() || "KEY"}-12.`}
             </span>
           </div>
-        </label>
+        </div>
         <div {...stylex.attrs(s.field)}>
-          <span {...stylex.attrs(s.label)}>Color</span>
+          <Label>Color</Label>
           <div {...stylex.attrs(s.swatches)} role="radiogroup" aria-label="Color">
             <For each={PROJECT_COLORS}>
               {(c) => (
@@ -215,7 +206,7 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
                   title={c}
                   onClick={() => setColor(c)}
                   style={{ "background-color": c }}
-                  {...(colorValue() === c ? stylex.attrs(s.swatch, s.swatchOn) : stylex.attrs(s.swatch))}
+                  {...stylex.attrs(s.swatch, colorValue() === c && s.swatchOn)}
                 >
                   <Show when={colorValue() === c}><CheckIcon size={12} /></Show>
                 </button>
@@ -225,17 +216,17 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
         </div>
         <Show when={!editing()}>
           <div {...stylex.attrs(s.field)}>
-            <span {...stylex.attrs(s.label)}>GitHub repository (optional)</span>
+            <Label>GitHub repository (optional)</Label>
             <GithubRepoPicker
               onPick={setRepo}
-              trigger={(attrs) => (
-                <button type="button" {...attrs} {...stylex.attrs(s.repoButton)}>
+              trigger={(p) => (
+                <Button {...(p as ButtonProps)} variant="outline" xstyle={s.repoButton}>
                   <GithubIcon size={14} />
-                  <span {...(repo() ? stylex.attrs(s.grow) : stylex.attrs(s.grow, s.muted))}>
+                  <span {...stylex.attrs(s.grow, !repo() && s.muted)}>
                     {repo() ? `${repo()!.owner}/${repo()!.name}` : "Pick a repository to sync with"}
                   </span>
                   <ChevronDownIcon size={14} />
-                </button>
+                </Button>
               )}
             />
             <Show
@@ -244,19 +235,21 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
             >
               <span {...stylex.attrs(s.hint)}>
                 Issues from {repo()!.owner}/{repo()!.name} are imported now.{" "}
-                <Button size="sm" variant="ghost" onClick={() => setRepo(null)}><XIcon size={12} /> Remove</Button>
+                <Button size="xs" variant="ghost" onClick={() => setRepo(null)}><XIcon size={12} /> Remove</Button>
               </span>
             </Show>
           </div>
         </Show>
         <Show when={error()}>{(e) => <div {...stylex.attrs(s.error)}>{e()}</div>}</Show>
-        <div {...stylex.attrs(s.footer)}>
+        <DialogFooter>
           <Button variant="ghost" onClick={props.onClose}>Cancel</Button>
-          <Button variant="primary" type="submit" disabled={busy() || (!name().trim() && !repo())}>
+          <Button type="submit" disabled={busy() || (!name().trim() && !repo())}>
             {busy() ? "Importing…" : editing() ? "Save" : "Create project"}
           </Button>
-        </div>
+        </DialogFooter>
       </form>
+      </KeyScope>
+      </DialogContent>
     </Dialog>
   )
 }
