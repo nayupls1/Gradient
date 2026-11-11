@@ -1,5 +1,17 @@
 import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-bun"
-import type { Entity, GithubRepo, Issue, Label, ModelName, Project, Team, User, WorkflowState } from "@gradient/domain"
+import type {
+  Entity,
+  GithubRepo,
+  Issue,
+  IssueRelation,
+  Label,
+  ModelName,
+  Project,
+  PullRequest,
+  Team,
+  User,
+  WorkflowState
+} from "@gradient/domain"
 import { Context, Effect, Layer } from "effect"
 import { SqlClient, type SqlError } from "effect/sql"
 import { ServerConfig } from "../config.ts"
@@ -69,6 +81,28 @@ const toIssue = (r: Row): Issue => ({
   createdAt: num(r.created_at),
   updatedAt: num(r.updated_at),
   archivedAt: numOrNull(r.archived_at)
+})
+
+const toRelation = (r: Row): IssueRelation => ({
+  id: str(r.id),
+  teamId: str(r.team_id),
+  type: r.type as IssueRelation["type"],
+  issueId: str(r.issue_id),
+  relatedIssueId: str(r.related_issue_id),
+  createdAt: num(r.created_at)
+})
+const toPullRequest = (r: Row): PullRequest => ({
+  id: str(r.id),
+  teamId: str(r.team_id),
+  repoId: str(r.repo_id),
+  number: num(r.number),
+  title: str(r.title),
+  url: str(r.url),
+  state: r.state as PullRequest["state"],
+  author: strOrNull(r.author),
+  closes: JSON.parse(str(r.closes)) as PullRequest["closes"],
+  mentions: JSON.parse(str(r.mentions)) as Array<string>,
+  updatedAt: num(r.updated_at)
 })
 
 export interface LogRow {
@@ -186,6 +220,32 @@ const makeDb = Effect.gen(function*() {
     repoByName: (owner: string, name: string) =>
       one(sql`SELECT * FROM github_repo WHERE owner = ${owner} COLLATE NOCASE AND name = ${name} COLLATE NOCASE`, toRepo),
 
+    relations: all(sql`SELECT * FROM issue_relation ORDER BY created_at`, toRelation),
+    getRelation: (id: string) => one(sql`SELECT * FROM issue_relation WHERE id = ${id}`, toRelation),
+    relationsForTeam: (teamId: string) =>
+      all(sql`SELECT * FROM issue_relation WHERE team_id = ${teamId} ORDER BY created_at`, toRelation),
+    /** Relations on either side of an issue. */
+    relationsOf: (issueId: string) =>
+      all(
+        sql`SELECT * FROM issue_relation WHERE issue_id = ${issueId} OR related_issue_id = ${issueId} ORDER BY created_at`,
+        toRelation
+      ),
+    /** The relation between two issues, in either direction. There is at most one. */
+    relationBetween: (a: string, b: string) =>
+      one(
+        sql`SELECT * FROM issue_relation
+            WHERE (issue_id = ${a} AND related_issue_id = ${b}) OR (issue_id = ${b} AND related_issue_id = ${a})`,
+        toRelation
+      ),
+    putRelation: (r: IssueRelation) =>
+      sql`INSERT INTO issue_relation (id, team_id, type, issue_id, related_issue_id, created_at)
+          VALUES (${r.id}, ${r.teamId}, ${r.type}, ${r.issueId}, ${r.relatedIssueId}, ${r.createdAt})`,
+    deleteRelation: (id: string) => sql`DELETE FROM issue_relation WHERE id = ${id}`,
+
+    pullRequests: all(sql`SELECT * FROM pull_request ORDER BY updated_at DESC`, toPullRequest),
+    pullRequestsForTeam: (teamId: string) =>
+      all(sql`SELECT * FROM pull_request WHERE team_id = ${teamId} ORDER BY updated_at DESC`, toPullRequest),
+
     /** Read an entity back from its table, in the shape clients receive. */
     loadEntity: (model: ModelName, id: string): Effect.Effect<Entity | undefined, SqlError.SqlError> => {
       switch (model) {
@@ -203,6 +263,10 @@ const makeDb = Effect.gen(function*() {
           return one(sql.unsafe(`${ISSUE_SELECT} WHERE i.id = ?`, [id]), (r) => ({ model, value: toIssue(r) }))
         case "githubRepo":
           return one(sql`SELECT * FROM github_repo WHERE id = ${id}`, (r) => ({ model, value: toRepo(r) }))
+        case "issueRelation":
+          return one(sql`SELECT * FROM issue_relation WHERE id = ${id}`, (r) => ({ model, value: toRelation(r) }))
+        case "pullRequest":
+          return one(sql`SELECT * FROM pull_request WHERE id = ${id}`, (r) => ({ model, value: toPullRequest(r) }))
       }
     },
 

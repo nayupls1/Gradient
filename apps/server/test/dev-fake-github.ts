@@ -23,4 +23,6 @@ fake.seed({ title: "Battery widget for the gadget", labels: [{ name: "enhancemen
 fake.seed({ title: "Crash when saving a draft offline", labels: [{ name: "bug", color: "d73a4a" }] })
 fake.seed({ title: "Support SSO for enterprise workspaces", labels: [{ name: "enhancement", color: "a2eeef" }] })
 fake.seed({ title: "Docs: explain webhook forwarding", state: "closed", state_reason: "completed", labels: [{ name: "documentation", color: "0075ca" }] })
-console.log(`Fake GitHub on ${fake.url} with ${fake.issues.length} issues in acme/widgets`)
+fake.block(2, 1) // SSO waits on the crash fix
+fake.seed({ title: "Keep drafts when offline", body: "Fixes #1", draft: false, pull_request: { url: "x", merged_at: null } })
+console.log(`Fake GitHub on ${fake.url} with ${fake.issues.length} issues and pull requests in acme/widgets`)

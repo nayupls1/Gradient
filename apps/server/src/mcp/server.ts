@@ -1,5 +1,6 @@
 import {
   identifier,
+  isOpenBlocker,
   type Issue,
   keyBetween,
   type Mutation,
@@ -7,6 +8,8 @@ import {
   type Priority,
   PROJECT_COLORS,
   projectKeyFor,
+  pullRequestRefersTo,
+  teamKeys,
   uuidv7
 } from "@gradient/domain"
 import { Effect, Layer } from "effect"
@@ -29,6 +32,7 @@ export const mcpUrl = (config: { host: string; port: number }) =>
 const INSTRUCTIONS = `Gradient is the user's issue tracker. Issues have identifiers like TES-12: the key of their project (or of the team, GRD, when they have none) and a number.
 Call describe_workspace once to learn workflow states, labels, people and projects, then use those names.
 Put issues in the project they belong to; a project with a linked repo syncs its issues to GitHub.
+Record dependencies with link_issues ("blocked_by"); get_issue shows blockers and the pull requests that refer to an issue.
 Writes show up live in the user's app and sync to GitHub when a repo is linked, so keep titles short and specific, and put detail in the description (markdown).`
 
 const SKILL = `---
@@ -46,9 +50,13 @@ description: Track work in Gradient, the user's issue tracker. Use when planning
 4. When you start on an issue, move it to the first "started" state and assign
    it to "me". When the work is in review, use the review state if the team has
    one. Move it to a "completed" state only when the change has landed.
-5. Mention the identifier (GRD-12) in branch names, commit messages and pull
-   request titles, so the work links back.
-6. Never mass-edit or archive issues you did not create unless the user asks.
+5. Mention the identifier (GRD-12) in commit messages and pull request titles
+   or bodies, so the pull request shows on the issue. "Fixes #12" in a pull
+   request body links it to the GitHub issue too.
+6. When one issue cannot finish before another, \`link_issues\` with
+   "blocked_by". Prefer issues with \`blocked: false\` when picking what to do
+   next (\`list_issues\` with \`blocked: false\`).
+7. Never mass-edit or archive issues you did not create unless the user asks.
 `
 
 const ToolHandlers = GradientToolkit.toLayer(
@@ -69,7 +77,11 @@ const ToolHandlers = GradientToolkit.toLayer(
       const users = yield* db.users
       const projects = yield* db.projectsForTeam(team.id)
       const repos = (yield* db.githubRepos).filter((r) => r.teamId === team.id)
-      return { team, viewerId, states, labels, users, projects, repos }
+      const relations = yield* db.relationsForTeam(team.id)
+      const pullRequests = yield* db.pullRequestsForTeam(team.id)
+      const issues = yield* db.issuesForTeam(team.id)
+      const keys = teamKeys(team, projects)
+      return { team, viewerId, states, labels, users, projects, repos, relations, pullRequests, issues, keys }
     }).pipe(Effect.catchTag("SqlError", Effect.die))
     type Workspace = Effect.Success<typeof workspace>
 
@@ -109,13 +121,24 @@ const ToolHandlers = GradientToolkit.toLayer(
       Effect.gen(function*() {
         const parsed = parseIdentifier(ref)
         const keys = new Set([ws.team.key.toUpperCase(), ...ws.projects.map((p) => p.key)])
-        const issues = yield* db.issuesForTeam(ws.team.id).pipe(Effect.orDie)
+        const issues = ws.issues
         const issue = parsed && keys.has(parsed.key)
           ? issues.find((i) => i.number === parsed.number)
           : issues.find((i) => i.id === ref)
         const example = ws.projects[0] ? `${ws.projects[0].key}-12 or ${ws.team.key}-12` : `${ws.team.key}-12`
         return issue ?? (yield* fail(`No issue "${ref}". Identifiers look like ${example}.`))
       })
+
+    const stateType = (ws: Workspace, issue: Issue) => ws.states.find((s) => s.id === issue.stateId)?.type
+    const byId = (ws: Workspace, id: string) => ws.issues.find((i) => i.id === id)
+    const blockersOf = (ws: Workspace, issue: Issue) =>
+      ws.relations.flatMap((r) => (r.type === "blocks" && r.relatedIssueId === issue.id ? byId(ws, r.issueId) ?? [] : []))
+    const isBlocked = (ws: Workspace, issue: Issue) =>
+      blockersOf(ws, issue).some((b) => isOpenBlocker(b, stateType(ws, b)))
+    const keyOf = (ws: Workspace, issue: Issue) =>
+      identifier(ws.team, issue, ws.projects.find((p) => p.id === issue.projectId))
+    const related = (ws: Workspace, list: ReadonlyArray<Issue>) =>
+      list.map((i) => ({ id: keyOf(ws, i), title: i.title, state: ws.states.find((s) => s.id === i.stateId)?.name ?? "?" }))
 
     const summary = (ws: Workspace, issue: Issue): IssueSummary => ({
       id: identifier(ws.team, issue, ws.projects.find((p) => p.id === issue.projectId)),
@@ -126,10 +149,38 @@ const ToolHandlers = GradientToolkit.toLayer(
       labels: issue.labelIds.flatMap((id) => ws.labels.find((l) => l.id === id)?.name ?? []),
       project: ws.projects.find((p) => p.id === issue.projectId)?.name ?? null,
       github: issue.github?.url ?? null,
+      blocked: isBlocked(ws, issue),
       updated: iso(issue.updatedAt)
     })
     const detail = (ws: Workspace, issue: Issue): IssueDetail => ({
       ...summary(ws, issue),
+      blocked_by: related(ws, blockersOf(ws, issue)),
+      blocks: related(
+        ws,
+        ws.relations.flatMap((r) => (r.type === "blocks" && r.issueId === issue.id ? byId(ws, r.relatedIssueId) ?? [] : []))
+      ),
+      related: related(
+        ws,
+        ws.relations.flatMap((r) =>
+          r.type !== "related"
+            ? []
+            : r.issueId === issue.id
+            ? byId(ws, r.relatedIssueId) ?? []
+            : r.relatedIssueId === issue.id
+            ? byId(ws, r.issueId) ?? []
+            : []
+        )
+      ),
+      pull_requests: ws.pullRequests.filter((pr) => pullRequestRefersTo(pr, issue, ws.keys)).map((pr) => {
+        const repo = ws.repos.find((r) => r.id === pr.repoId)
+        return {
+          repo: repo ? `${repo.owner}/${repo.name}` : "?",
+          number: pr.number,
+          title: pr.title,
+          state: pr.state,
+          url: pr.url
+        }
+      }),
       description: issue.description,
       creator: ws.users.find((u) => u.id === issue.creatorId)?.name ?? "unknown",
       created: iso(issue.createdAt),
@@ -141,11 +192,13 @@ const ToolHandlers = GradientToolkit.toLayer(
       mutations.apply({ origin: "mcp", actorId: ws.viewerId, clientTxId: null }, list).pipe(
         Effect.mapError((e) => new ToolError({ message: e.message }))
       )
-    const reload = (ws: Workspace, id: string) =>
-      db.getIssue(id).pipe(
-        Effect.orDie,
-        Effect.flatMap((issue) => (issue ? Effect.succeed(detail(ws, issue)) : fail("The issue disappeared.")))
-      )
+    /** The issue as it is now, read with a fresh workspace so new relations show. */
+    const reload = (id: string) =>
+      Effect.gen(function*() {
+        const ws = yield* workspace
+        const issue = ws.issues.find((i) => i.id === id)
+        return issue ? detail(ws, issue) : yield* fail("The issue disappeared.")
+      })
 
     const isOpen = (ws: Workspace, issue: Issue) => {
       const type = ws.states.find((s) => s.id === issue.stateId)?.type
@@ -157,7 +210,7 @@ const ToolHandlers = GradientToolkit.toLayer(
     return GradientToolkit.of({
       describe_workspace: Effect.fn("mcp.describe_workspace")(function*() {
         const ws = yield* workspace
-        const issues = yield* db.issuesForTeam(ws.team.id).pipe(Effect.orDie)
+        const issues = ws.issues
         return {
           team: { key: ws.team.key, name: ws.team.name },
           you: ws.users.find((u) => u.id === ws.viewerId)?.name ?? "me",
@@ -176,7 +229,7 @@ const ToolHandlers = GradientToolkit.toLayer(
 
       list_issues: Effect.fn("mcp.list_issues")(function*(input) {
         const ws = yield* workspace
-        let issues = yield* db.issuesForTeam(ws.team.id).pipe(Effect.orDie)
+        let issues = [...ws.issues]
         if (!input.include_archived) issues = issues.filter((i) => i.archivedAt === null)
         const state = (input.state ?? "open").trim().toLowerCase()
         if (state === "open") issues = issues.filter((i) => isOpen(ws, i))
@@ -198,6 +251,7 @@ const ToolHandlers = GradientToolkit.toLayer(
           const projectId = yield* resolveProject(ws, input.project)
           issues = issues.filter((i) => i.projectId === projectId)
         }
+        if (input.blocked !== undefined) issues = issues.filter((i) => isBlocked(ws, i) === input.blocked)
         if (input.query) {
           const q = input.query.toLowerCase()
           issues = issues.filter((i) => i.title.toLowerCase().includes(q) || i.description.toLowerCase().includes(q))
@@ -237,7 +291,7 @@ const ToolHandlers = GradientToolkit.toLayer(
           labelIds: input.labels ? yield* resolveLabels(ws, input.labels) : [],
           sortOrder: keyBetween(top ?? null, null)
         }])
-        return yield* reload(ws, id)
+        return yield* reload(id)
       }),
 
       update_issue: Effect.fn("mcp.update_issue")(function*(input) {
@@ -262,7 +316,39 @@ const ToolHandlers = GradientToolkit.toLayer(
         if (input.archived === true && issue.archivedAt === null) list.push({ _tag: "IssueArchive", id: issue.id })
         if (input.archived === false && issue.archivedAt !== null) list.push({ _tag: "IssueUnarchive", id: issue.id })
         if (list.length > 0) yield* apply(ws, list)
-        return yield* reload(ws, issue.id)
+        return yield* reload(issue.id)
+      }),
+
+      link_issues: Effect.fn("mcp.link_issues")(function*(input) {
+        const ws = yield* workspace
+        const issue = yield* findIssue(ws, input.id)
+        const other = yield* findIssue(ws, input.other)
+        if (issue.id === other.id) return yield* fail("An issue cannot relate to itself.")
+        const [from, to] = input.relation === "blocked_by" ? [other, issue] : [issue, other]
+        const type = input.relation === "related" ? "related" as const : "blocks" as const
+        const existing = ws.relations.find((r) =>
+          (r.issueId === issue.id && r.relatedIssueId === other.id) || (r.issueId === other.id && r.relatedIssueId === issue.id)
+        )
+        const same = existing && existing.type === type && (type === "related" || existing.issueId === from.id)
+        if (!same) {
+          yield* apply(ws, [
+            ...(existing ? [{ _tag: "RelationDelete" as const, id: existing.id }] : []),
+            { _tag: "RelationCreate", id: uuidv7(), teamId: ws.team.id, type, issueId: from.id, relatedIssueId: to.id }
+          ])
+        }
+        return yield* reload(issue.id)
+      }),
+
+      unlink_issues: Effect.fn("mcp.unlink_issues")(function*(input) {
+        const ws = yield* workspace
+        const issue = yield* findIssue(ws, input.id)
+        const other = yield* findIssue(ws, input.other)
+        const existing = ws.relations.find((r) =>
+          (r.issueId === issue.id && r.relatedIssueId === other.id) || (r.issueId === other.id && r.relatedIssueId === issue.id)
+        )
+        if (!existing) return yield* fail(`${keyOf(ws, issue)} and ${keyOf(ws, other)} are not related.`)
+        yield* apply(ws, [{ _tag: "RelationDelete", id: existing.id }])
+        return yield* reload(issue.id)
       }),
 
       github_status: Effect.fn("mcp.github_status")(function*() {

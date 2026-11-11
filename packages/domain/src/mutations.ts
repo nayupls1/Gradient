@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Issue, Label, Priority, Project } from "./models.ts"
+import { Issue, IssueRelation, Label, Priority, Project, RelationType } from "./models.ts"
 
 export const IssuePatch = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
@@ -45,7 +45,16 @@ export const Mutation = Schema.TaggedUnion({
     })
   },
   /** Its issues stay, without a project. A project with a linked repository must be unlinked first. */
-  ProjectDelete: { id: Schema.String }
+  ProjectDelete: { id: Schema.String },
+  /** Relate two issues of one team. For `blocks`, `issueId` blocks `relatedIssueId`. */
+  RelationCreate: {
+    id: Schema.String,
+    teamId: Schema.String,
+    type: RelationType,
+    issueId: Schema.String,
+    relatedIssueId: Schema.String
+  },
+  RelationDelete: { id: Schema.String }
 })
 export type Mutation = typeof Mutation.Type
 
@@ -56,6 +65,10 @@ export const touchedIssueId = (m: Mutation): string | undefined =>
 /** Id of the project a mutation creates, changes or deletes. */
 export const touchedProjectId = (m: Mutation): string | undefined =>
   m._tag === "ProjectCreate" || m._tag === "ProjectUpdate" || m._tag === "ProjectDelete" ? m.id : undefined
+
+/** Id of the relation a mutation creates or deletes. */
+export const touchedRelationId = (m: Mutation): string | undefined =>
+  m._tag === "RelationCreate" || m._tag === "RelationDelete" ? m.id : undefined
 
 const pickPatch = (patch: IssuePatch): Partial<Issue> => {
   const out: { -readonly [K in keyof Issue]?: Issue[K] } = {}
@@ -133,6 +146,29 @@ export const applyProjectMutation = (
         ...(m.patch.color !== undefined ? { color: m.patch.color } : {})
       }
     case "ProjectDelete":
+      return null
+    default:
+      return current
+  }
+}
+
+/** Applies a relation mutation, like applyIssueMutation. `null` means deleted. */
+export const applyRelationMutation = (
+  current: IssueRelation | undefined,
+  m: Mutation,
+  ctx: { readonly now: number }
+): IssueRelation | null | undefined => {
+  switch (m._tag) {
+    case "RelationCreate":
+      return {
+        id: m.id,
+        teamId: m.teamId,
+        type: m.type,
+        issueId: m.issueId,
+        relatedIssueId: m.relatedIssueId,
+        createdAt: ctx.now
+      }
+    case "RelationDelete":
       return null
     default:
       return current

@@ -1,5 +1,7 @@
 /** An in-memory stand-in for the slice of the GitHub REST API that Gradient uses. */
 export interface FakeIssue {
+  /** Global id, unique across repositories, like GitHub's. */
+  id: number
   number: number
   title: string
   body: string | null
@@ -9,7 +11,10 @@ export interface FakeIssue {
   assignees: Array<{ login: string; avatar_url: string }>
   user: { login: string; avatar_url: string }
   updated_at: string
-  pull_request?: { url: string }
+  pull_request?: { url?: string; merged_at?: string | null }
+  draft?: boolean
+  /** Global ids of the issues that block this one. */
+  blocked_by?: Array<number>
 }
 
 export const makeFakeGithub = (
@@ -40,10 +45,28 @@ export const makeFakeGithub = (
     clock += 1000
     return new Date(clock).toISOString().replace(/\.\d{3}Z$/, "Z")
   }
-  const toJson = (r: { owner: string; name: string }, i: FakeIssue) => ({
-    ...i,
-    html_url: `https://github.com/${r.owner}/${r.name}/issues/${i.number}`
-  })
+  let nextId = 9000
+  const byId = (id: number) => {
+    for (const r of repos.values()) {
+      const issue = r.issues.find((i) => i.id === id)
+      if (issue) return { repo: r, issue }
+    }
+    return undefined
+  }
+  const toJson = (r: { owner: string; name: string }, i: FakeIssue) => {
+    const { blocked_by, ...rest } = i
+    const open = (blocked_by ?? []).filter((id) => byId(id)?.issue.state === "open").length
+    return {
+      ...rest,
+      html_url: `https://github.com/${r.owner}/${r.name}/${i.pull_request ? "pull" : "issues"}/${i.number}`,
+      issue_dependencies_summary: {
+        blocked_by: open,
+        total_blocked_by: blocked_by?.length ?? 0,
+        blocking: 0,
+        total_blocking: 0
+      }
+    }
+  }
 
   const apply = (issue: FakeIssue, body: any) => {
     if (body.title !== undefined) issue.title = body.title
@@ -65,11 +88,8 @@ export const makeFakeGithub = (
     async fetch(req): Promise<Response> {
       const url = new URL(req.url)
       const isForm = req.headers.get("content-type")?.includes("application/x-www-form-urlencoded")
-      const body: any = req.method === "GET"
-        ? undefined
-        : isForm
-        ? Object.fromEntries(new URLSearchParams(await req.text()))
-        : await req.json()
+      const text = req.method === "GET" ? "" : await req.text()
+      const body: any = text === "" ? undefined : isForm ? Object.fromEntries(new URLSearchParams(text)) : JSON.parse(text)
       requests.push({ method: req.method, path: url.pathname, body })
 
       // github.com side of the device flow (form posts, JSON answers).
@@ -132,6 +152,32 @@ export const makeFakeGithub = (
           owner: { login: r.owner }
         })))
       }
+      const deps = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/dependencies\/blocked_by(?:\/(\d+))?$/)
+      if (deps) {
+        const r = repos.get(`${deps[1]}/${deps[2]}`.toLowerCase())
+        const issue = r?.issues.find((i) => i.number === Number(deps[3]))
+        if (!r || !issue) return new Response("not found", { status: 404 })
+        issue.blocked_by ??= []
+        if (req.method === "GET") {
+          return Response.json(issue.blocked_by.flatMap((id) => {
+            const found = byId(id)
+            return found ? [toJson(found.repo, found.issue)] : []
+          }))
+        }
+        if (req.method === "POST") {
+          const found = byId(body.issue_id)
+          if (!found) return new Response("not found", { status: 404 })
+          if (issue.blocked_by.includes(body.issue_id)) return new Response("already exists", { status: 422 })
+          issue.blocked_by.push(body.issue_id)
+          return Response.json(toJson(found.repo, found.issue), { status: 201 })
+        }
+        if (req.method === "DELETE") {
+          const id = Number(deps[4])
+          if (!issue.blocked_by.includes(id)) return new Response("not found", { status: 404 })
+          issue.blocked_by = issue.blocked_by.filter((x) => x !== id)
+          return Response.json(toJson(byId(id)!.repo, byId(id)!.issue))
+        }
+      }
       const route = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/issues(?:\/(\d+))?)?$/)
       const target = route ? repos.get(`${route[1]}/${route[2]}`.toLowerCase()) : undefined
       if (route && !target) return new Response("not found", { status: 404 })
@@ -149,8 +195,13 @@ export const makeFakeGithub = (
         if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304 })
         return new Response(text, { headers: { "content-type": "application/json", etag } })
       }
+      if (route && target && route[4] && req.method === "GET") {
+        const issue = target.issues.find((i) => i.number === Number(route[4]))
+        return issue ? Response.json(toJson(target, issue)) : new Response("not found", { status: 404 })
+      }
       if (route && target && route[3] && !route[4] && req.method === "POST") {
         const issue: FakeIssue = {
+          id: nextId++,
           number: target.issues.length + 1,
           title: "",
           body: null,
@@ -189,6 +240,7 @@ export const makeFakeGithub = (
     seed(partial: Partial<FakeIssue> & { title: string }, inRepo?: { owner: string; name: string }) {
       const list = issuesOf(inRepo)
       const issue: FakeIssue = {
+        id: nextId++,
         number: list.length + 1,
         body: null,
         state: "open",
@@ -202,8 +254,24 @@ export const makeFakeGithub = (
       list.push(issue)
       return issue
     },
-    edit(number: number, body: any) {
-      apply(issues.find((i) => i.number === number)!, body)
+    edit(number: number, body: any, inRepo?: { owner: string; name: string }) {
+      apply(issuesOf(inRepo).find((i) => i.number === number)!, body)
+    },
+    /** Someone marks `number` as blocked by `blocker` on github.com. Like GitHub, it does not touch updated_at. */
+    block(number: number, blocker: number, inRepo?: { owner: string; name: string }) {
+      const issue = issuesOf(inRepo).find((i) => i.number === number)!
+      const by = issuesOf(inRepo).find((i) => i.number === blocker)!
+      issue.blocked_by = [...(issue.blocked_by ?? []), by.id]
+    },
+    unblock(number: number, blocker: number, inRepo?: { owner: string; name: string }) {
+      const issue = issuesOf(inRepo).find((i) => i.number === number)!
+      const by = issuesOf(inRepo).find((i) => i.number === blocker)!
+      issue.blocked_by = (issue.blocked_by ?? []).filter((id) => id !== by.id)
+    },
+    /** Numbers of the issues blocking `number`, in the same repository. */
+    blockersOf(number: number, inRepo?: { owner: string; name: string }) {
+      const list = issuesOf(inRepo)
+      return (list.find((i) => i.number === number)!.blocked_by ?? []).map((id) => list.find((i) => i.id === id)?.number)
     },
     writes: () => requests.filter((r) => r.method !== "GET"),
     /** The user approves the pending device-flow code on github.com. */

@@ -5,8 +5,11 @@ import {
   type GithubStatus,
   type Issue,
   keyBetween,
+  parsePullRequestRefs,
   PROJECT_COLORS,
-  projectKeyFor
+  projectKeyFor,
+  type PullRequest,
+  wouldCycle
 } from "@gradient/domain"
 import { Context, Effect, Layer, Option, Queue, Schedule, Semaphore, Stream } from "effect"
 import type { SqlError } from "effect/sql"
@@ -21,9 +24,27 @@ interface LinkRow {
   readonly issueId: string
   readonly repoId: string
   readonly ghNumber: number
+  readonly ghId: number | null
   readonly ghUpdatedAt: string
   readonly shadow: Shadow
+  /** The GitHub blockers of this issue that map to Gradient issues, as of the last sync. NULL: never read. */
+  readonly blockedBy: ReadonlyArray<BlockerShadow> | null
 }
+
+/** One GitHub blocker that Gradient knows as an issue. */
+interface BlockerShadow {
+  readonly ghId: number
+  readonly issueId: string
+}
+
+/** "https://github.com/acme/web/issues/12" → acme, web, 12. */
+const coordsFromUrl = (url: string) => {
+  const m = url.match(/\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)\/?$/)
+  return m ? { owner: m[1]!, repo: m[2]!, number: Number(m[3]) } : null
+}
+
+const pullRequestState = (gh: GhIssue): PullRequest["state"] =>
+  gh.pull_request?.merged_at ? "merged" : gh.state === "closed" ? "closed" : gh.draft ? "draft" : "open"
 
 const fallbackColors = ["#8b8d98", "#e5484d", "#f76b15", "#ffc53d", "#46a758", "#0090ff", "#8e4ec6", "#d6409f"]
 
@@ -42,8 +63,10 @@ export class GithubSync extends Context.Service<GithubSync, {
   unlinkRepo(repoId: string): Effect.Effect<void, GithubError>
   /** Pull changes for one repo now, then push anything queued. */
   syncNow(repoId: string): Effect.Effect<void, GithubError>
-  /** Apply one issue as GitHub sees it (from a webhook, poll or import). */
-  ingest(repo: GithubRepo, gh: GhIssue): Effect.Effect<"created" | "updated" | "unchanged" | "skipped">
+  /** Apply one issue or pull request as GitHub sees it (from a webhook, poll or import). */
+  ingest(repo: GithubRepo, gh: GhIssue): Effect.Effect<"created" | "updated" | "unchanged" | "skipped" | "pull_request">
+  /** Read what blocks one linked issue on GitHub and apply the difference. */
+  pullDependencies(repo: GithubRepo, ghNumber: number): Effect.Effect<void, GithubError>
   /** Push every due outbox entry to GitHub. */
   readonly flushOutbox: Effect.Effect<number>
   /** Repositories the connected account can link, for the repo picker. */
@@ -68,11 +91,16 @@ export class GithubSync extends Context.Service<GithubSync, {
           Effect.map((rows) => rows[0] && toLink(rows[0]))
         )
       const putLink = (issueId: string, repoId: string, issue: GhIssue) =>
-        sql`INSERT INTO github_issue_link (issue_id, repo_id, gh_number, gh_url, gh_updated_at, shadow)
-            VALUES (${issueId}, ${repoId}, ${issue.number}, ${issue.html_url}, ${issue.updated_at},
+        sql`INSERT INTO github_issue_link (issue_id, repo_id, gh_number, gh_id, gh_url, gh_updated_at, shadow)
+            VALUES (${issueId}, ${repoId}, ${issue.number}, ${issue.id ?? null}, ${issue.html_url}, ${issue.updated_at},
                     ${JSON.stringify(fromGithub(issue))})
             ON CONFLICT (issue_id) DO UPDATE SET gh_updated_at = excluded.gh_updated_at, shadow = excluded.shadow,
-                                                gh_url = excluded.gh_url`
+                                                gh_url = excluded.gh_url, gh_id = COALESCE(excluded.gh_id, gh_id)`
+      const putBlockedBy = (issueId: string, blockers: ReadonlyArray<BlockerShadow>) =>
+        sql`UPDATE github_issue_link SET blocked_by_shadow = ${JSON.stringify(blockers)} WHERE issue_id = ${issueId}`
+      const enqueue = (issueId: string) =>
+        sql`INSERT INTO github_outbox (issue_id, enqueued_at, next_attempt_at) VALUES (${issueId}, ${Date.now()}, ${Date.now()})
+            ON CONFLICT (issue_id) DO UPDATE SET next_attempt_at = excluded.next_attempt_at, attempts = 0`
 
       /** Find or create the Gradient user for a GitHub login. */
       const ensureUser = (tx: TxContext, login: string | null, avatarUrl: string | null) =>
@@ -113,9 +141,134 @@ export class GithubSync extends Context.Service<GithubSync, {
           return ids
         })
 
+      /** Store a pull request as GitHub sees it. Issues pick it up through the refs in its title and body. */
+      const ingestPullRequest = (repo: GithubRepo, gh: GhIssue) =>
+        mutations.transact({ origin: "github", actorId: null }, (tx) =>
+          Effect.gen(function*() {
+            const rows = yield* sql`SELECT * FROM pull_request WHERE repo_id = ${repo.id} AND number = ${gh.number}`
+            const existing = rows[0]
+            if (existing && gh.updated_at < (existing.gh_updated_at as string)) return
+            const refs = parsePullRequestRefs(repo, gh.title, gh.body)
+            const next = {
+              title: gh.title,
+              url: gh.html_url,
+              state: pullRequestState(gh),
+              author: gh.user?.login ?? null,
+              closes: JSON.stringify(refs.closes),
+              mentions: JSON.stringify(refs.mentions)
+            }
+            const same = existing && (Object.keys(next) as Array<keyof typeof next>).every((k) => existing[k] === next[k])
+            if (existing && same) {
+              yield* sql`UPDATE pull_request SET gh_updated_at = ${gh.updated_at} WHERE id = ${existing.id as string}`
+              return
+            }
+            const id = (existing?.id as string | undefined) ?? Bun.randomUUIDv7()
+            yield* sql`INSERT INTO pull_request (id, team_id, repo_id, number, title, url, state, author, closes, mentions,
+                                                gh_updated_at, updated_at)
+                       VALUES (${id}, ${repo.teamId}, ${repo.id}, ${gh.number}, ${next.title}, ${next.url}, ${next.state},
+                               ${next.author}, ${next.closes}, ${next.mentions}, ${gh.updated_at}, ${tx.now})
+                       ON CONFLICT (id) DO UPDATE SET title = excluded.title, url = excluded.url, state = excluded.state,
+                         author = excluded.author, closes = excluded.closes, mentions = excluded.mentions,
+                         gh_updated_at = excluded.gh_updated_at, updated_at = excluded.updated_at`
+            tx.touch("pullRequest", id)
+          })).pipe(Effect.as("pull_request" as const))
+
+      /** The Gradient issue a GitHub issue (from a dependency list) is linked to, if any. */
+      const linkedIssueFor = (gh: GhIssue) =>
+        Effect.gen(function*() {
+          const coords = coordsFromUrl(gh.html_url)
+          if (!coords) return undefined
+          const repo = yield* db.repoByName(coords.owner, coords.repo)
+          if (!repo) return undefined
+          const link = yield* getLinkByNumber(repo.id, coords.number)
+          if (link && link.ghId === null && gh.id !== undefined) {
+            yield* sql`UPDATE github_issue_link SET gh_id = ${gh.id} WHERE issue_id = ${link.issueId}`
+          }
+          return link
+        })
+
+      /**
+       * Apply GitHub's "blocked by" list of one linked issue: blockers that are
+       * new since the shadow become relations, blockers that left the shadow
+       * lose theirs. Blockers Gradient does not know stay out of the shadow, so
+       * they are picked up once their issue arrives and never removed by a push.
+       */
+      const applyBlockedBy = (link: LinkRow, blockers: ReadonlyArray<GhIssue>) =>
+        mutations.transact({ origin: "github", actorId: null }, (tx) =>
+          Effect.gen(function*() {
+            const current = (yield* getLink(link.issueId)) ?? link
+            const shadow = current.blockedBy ?? []
+            const blocked = yield* db.getIssue(link.issueId)
+            if (!blocked) return
+            const known: Array<BlockerShadow> = []
+            for (const gh of blockers) {
+              const blockerLink = yield* linkedIssueFor(gh)
+              if (!blockerLink || gh.id === undefined) continue
+              known.push({ ghId: gh.id, issueId: blockerLink.issueId })
+            }
+            for (const b of known) {
+              if (shadow.some((s) => s.ghId === b.ghId)) continue
+              const blocker = yield* db.getIssue(b.issueId)
+              if (!blocker || blocker.teamId !== blocked.teamId) continue
+              const existing = yield* db.relationBetween(blocker.id, blocked.id)
+              if (existing?.type === "blocks" && existing.issueId === blocker.id) continue
+              if (existing) {
+                if (existing.type === "blocks") continue // the other way round: keep Gradient's
+                yield* db.deleteRelation(existing.id)
+                tx.touch("issueRelation", existing.id, "delete")
+              }
+              if (wouldCycle(yield* db.relationsForTeam(blocked.teamId), blocker.id, blocked.id)) continue
+              const id = Bun.randomUUIDv7()
+              yield* db.putRelation({
+                id,
+                teamId: blocked.teamId,
+                type: "blocks",
+                issueId: blocker.id,
+                relatedIssueId: blocked.id,
+                createdAt: tx.now
+              })
+              tx.touch("issueRelation", id)
+            }
+            for (const gone of shadow) {
+              if (known.some((b) => b.ghId === gone.ghId)) continue
+              const existing = yield* db.relationBetween(gone.issueId, blocked.id)
+              if (existing?.type === "blocks" && existing.issueId === gone.issueId) {
+                yield* db.deleteRelation(existing.id)
+                tx.touch("issueRelation", existing.id, "delete")
+              }
+            }
+            yield* putBlockedBy(blocked.id, known)
+          }))
+
+      const pullDependencies = (repo: GithubRepo, ghNumber: number) =>
+        Effect.gen(function*() {
+          const link = yield* getLinkByNumber(repo.id, ghNumber).pipe(Effect.orDie)
+          if (!link) return
+          const blockers = yield* gh.listBlockedBy(repo.owner, repo.name, ghNumber)
+          yield* applyBlockedBy(link, blockers).pipe(Effect.orDie)
+        })
+
+      /**
+       * After an issue came in: read its blockers when GitHub reports some, or
+       * when we knew of some (they may be gone). An issue that has none and
+       * never had any costs no request.
+       */
+      const syncDependenciesOf = (repo: GithubRepo, issue: GhIssue) =>
+        Effect.gen(function*() {
+          const link = yield* getLinkByNumber(repo.id, issue.number).pipe(Effect.orDie)
+          if (!link) return
+          const summary = issue.issue_dependencies_summary
+          const total = summary?.total_blocked_by ?? summary?.blocked_by
+          const knew = (link.blockedBy?.length ?? 0) > 0
+          if ((total ?? 0) > 0 || knew) return yield* pullDependencies(repo, issue.number)
+          if (total === 0 && link.blockedBy === null) yield* putBlockedBy(link.issueId, []).pipe(Effect.orDie)
+        }).pipe(
+          Effect.catchTag("GithubError", (e) => Effect.logWarning(`Reading dependencies of #${issue.number} failed`, e.message))
+        )
+
       const ingest = (repo: GithubRepo, issue: GhIssue) =>
         Effect.gen(function*() {
-          if (issue.pull_request !== undefined) return "skipped" as const
+          if (issue.pull_request !== undefined) return yield* ingestPullRequest(repo, issue)
           const incoming = fromGithub(issue)
           const outcome = yield* mutations.transact({ origin: "github", actorId: null }, (tx) =>
             Effect.gen(function*() {
@@ -225,13 +378,22 @@ export class GithubSync extends Context.Service<GithubSync, {
             yield* mutations.transact({ origin: "github", actorId: null }, (tx) =>
               Effect.gen(function*() {
                 yield* putLink(issue.id, repo.id, final)
+                yield* putBlockedBy(issue.id, [])
                 tx.touch("issue", issue.id)
+                // Issues it blocks can now point at it on GitHub.
+                const blocks = yield* sql`SELECT related_issue_id FROM issue_relation
+                                          WHERE type = 'blocks' AND issue_id = ${issue.id}`
+                for (const row of blocks) {
+                  const target = yield* db.getIssue(row.related_issue_id as string)
+                  if (target && (yield* db.repoForIssue(target))) yield* enqueue(target.id)
+                }
               }))
+            yield* pushBlockedBy(issue.id)
             return
           }
 
           const changed = diff(link.shadow, desired)
-          if (changed.length === 0) return
+          if (changed.length === 0) return yield* pushBlockedBy(issue.id)
           const body: { -readonly [K in keyof IssueWrite]: IssueWrite[K] } = {}
           for (const field of changed) {
             if (field === "title") body.title = desired.title
@@ -245,9 +407,73 @@ export class GithubSync extends Context.Service<GithubSync, {
           }
           const updated = yield* gh.updateIssue(repo.owner, repo.name, link.ghNumber, body)
           yield* mutations.transact({ origin: "github", actorId: null }, () => putLink(issue.id, repo.id, updated))
+          yield* pushBlockedBy(issue.id)
         })
 
-      const flushOutbox = Effect.gen(function*() {
+      /** The GitHub id of a linked issue, read from GitHub once when an older link lacks it. */
+      const ghIdOf = (link: LinkRow) =>
+        Effect.gen(function*() {
+          if (link.ghId !== null) return link.ghId
+          const repo = yield* db.getRepo(link.repoId)
+          if (!repo) return null
+          const fresh = yield* gh.getIssue(repo.owner, repo.name, link.ghNumber)
+          if (fresh.id === undefined) return null
+          yield* sql`UPDATE github_issue_link SET gh_id = ${fresh.id} WHERE issue_id = ${link.issueId}`
+          return fresh.id
+        })
+
+      /**
+       * Make GitHub's "blocked by" list of an issue match its Gradient blockers,
+       * diffing against the shadow. Blockers that are not on GitHub yet are
+       * skipped; creating them queues this issue again.
+       */
+      const pushBlockedBy = (issueId: string) =>
+        Effect.gen(function*() {
+          let link = yield* getLink(issueId)
+          if (!link) return
+          const repo = yield* db.getRepo(link.repoId)
+          if (!repo) return
+          const gradientBlockers = Effect.gen(function*() {
+            const out: Array<BlockerShadow> = []
+            const rows = yield* sql`SELECT issue_id FROM issue_relation WHERE type = 'blocks' AND related_issue_id = ${issueId}`
+            for (const row of rows) {
+              const blockerLink = yield* getLink(row.issue_id as string)
+              if (!blockerLink) continue
+              const ghId = yield* ghIdOf(blockerLink)
+              if (ghId !== null) out.push({ ghId, issueId: blockerLink.issueId })
+            }
+            return out
+          })
+          let desired = yield* gradientBlockers
+          // Nothing to say and nothing known: no request (servers without dependencies keep working).
+          if (desired.length === 0 && (link.blockedBy?.length ?? 0) === 0) return
+          if (link.blockedBy === null) {
+            // Learn what GitHub has first, so its own blockers are adopted (as relations) rather than removed.
+            yield* pullDependencies(repo, link.ghNumber)
+            link = (yield* getLink(issueId))!
+            desired = yield* gradientBlockers
+          }
+          const ghNumber = link.ghNumber
+          // Write the shadow after every call, so a failure part-way leaves it true.
+          let shadow = [...(link.blockedBy ?? [])]
+          for (const b of desired) {
+            if (shadow.some((s) => s.ghId === b.ghId)) continue
+            yield* gh.addBlockedBy(repo.owner, repo.name, ghNumber, b.ghId).pipe(
+              // GitHub may already have it (added there since our last read): re-read, so the retry knows.
+              Effect.tapError(() => pullDependencies(repo, ghNumber).pipe(Effect.ignore))
+            )
+            shadow = [...shadow, b]
+            yield* putBlockedBy(issueId, shadow)
+          }
+          for (const s of [...shadow]) {
+            if (desired.some((b) => b.ghId === s.ghId)) continue
+            yield* gh.removeBlockedBy(repo.owner, repo.name, ghNumber, s.ghId)
+            shadow = shadow.filter((x) => x.ghId !== s.ghId)
+            yield* putBlockedBy(issueId, shadow)
+          }
+        })
+
+      const flushRound = Effect.gen(function*() {
         const now = Date.now()
         const due = yield* sql`SELECT * FROM github_outbox WHERE next_attempt_at <= ${now}
                                ORDER BY enqueued_at LIMIT 50`
@@ -271,6 +497,17 @@ export class GithubSync extends Context.Service<GithubSync, {
           }
         }
         return pushed
+      })
+
+      // A push can queue more (an issue created on GitHub frees what it blocks), so go a few rounds.
+      const flushOutbox = Effect.gen(function*() {
+        let pushed = 0
+        for (let round = 0; round < 3; round++) {
+          const n = yield* flushRound
+          pushed += n
+          if (n === 0) break
+        }
+        return pushed
       }).pipe(flushLock.withPermits(1), Effect.orDie)
 
       const setRepoStatus = (repo: GithubRepo, error: string | null, announce: boolean) =>
@@ -292,6 +529,7 @@ export class GithubSync extends Context.Service<GithubSync, {
           let firstEtag: string | null = etag
           let created = 0
           let changed = 0
+          const seen: Array<GhIssue> = []
           while (true) {
             const result = yield* gh.listIssues(repo.owner, repo.name, { since, etag: page === 1 ? etag : null, page })
             if (result._tag === "NotModified") break
@@ -300,11 +538,14 @@ export class GithubSync extends Context.Service<GithubSync, {
               const outcome = yield* ingest(repo, issue)
               if (outcome === "created") created++
               if (outcome === "updated") changed++
+              if (outcome !== "pull_request") seen.push(issue)
               if (!newest || issue.updated_at > newest) newest = issue.updated_at
             }
             if (!result.hasNext) break
             page++
           }
+          // Dependencies once every issue of this poll exists, so blockers resolve in any order.
+          for (const issue of seen) yield* syncDependenciesOf(repo, issue)
           // The ETag only applies to the exact URL, so drop it when `since` moves.
           const keepEtag = newest === since ? firstEtag : null
           yield* sql`UPDATE github_repo SET poll_since = ${newest}, poll_etag = ${keepEtag} WHERE id = ${repo.id}`
@@ -470,6 +711,8 @@ export class GithubSync extends Context.Service<GithubSync, {
                          SELECT issue_id FROM github_issue_link WHERE repo_id = ${repoId}
                          UNION SELECT id FROM issue WHERE project_id = ${repo.projectId})`
             yield* sql`DELETE FROM github_issue_link WHERE repo_id = ${repoId}`
+            const prs = yield* sql`DELETE FROM pull_request WHERE repo_id = ${repoId} RETURNING id`
+            for (const row of prs) tx.touch("pullRequest", row.id as string, "delete")
             yield* sql`DELETE FROM github_repo WHERE id = ${repoId}`
             tx.touch("githubRepo", repoId, "delete")
             for (const row of linked) tx.touch("issue", row.issue_id as string)
@@ -504,6 +747,7 @@ export class GithubSync extends Context.Service<GithubSync, {
         unlinkRepo,
         syncNow,
         ingest,
+        pullDependencies,
         flushOutbox,
         availableRepos: Effect.suspend(() => gh.availableRepos)
       })
@@ -515,8 +759,10 @@ const toLink = (r: Record<string, unknown>): LinkRow => ({
   issueId: r.issue_id as string,
   repoId: r.repo_id as string,
   ghNumber: Number(r.gh_number),
+  ghId: r.gh_id === null || r.gh_id === undefined ? null : Number(r.gh_id),
   ghUpdatedAt: r.gh_updated_at as string,
-  shadow: JSON.parse(r.shadow as string) as Shadow
+  shadow: JSON.parse(r.shadow as string) as Shadow,
+  blockedBy: typeof r.blocked_by_shadow === "string" ? (JSON.parse(r.blocked_by_shadow) as Array<BlockerShadow>) : null
 })
 
 export type { SqlError }

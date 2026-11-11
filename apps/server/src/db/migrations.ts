@@ -155,5 +155,41 @@ export const migrations = {
       }
     }
     yield* sql`CREATE UNIQUE INDEX project_key ON project (team_id, key)`
+  }),
+  /**
+   * Relations between issues ("blocks", "related"), pull requests read from
+   * linked repositories, and what Gradient knows of each linked issue's
+   * dependencies on GitHub: its global id (dependencies are written by id) and
+   * the shadow of its "blocked by" list (NULL until first read).
+   */
+  "0005_relations": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE issue_relation (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL REFERENCES team(id),
+      type TEXT NOT NULL,
+      issue_id TEXT NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
+      related_issue_id TEXT NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL,
+      UNIQUE (issue_id, related_issue_id)
+    )`
+    yield* sql`CREATE INDEX issue_relation_related ON issue_relation (related_issue_id)`
+    yield* sql`CREATE TABLE pull_request (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL REFERENCES team(id),
+      repo_id TEXT NOT NULL REFERENCES github_repo(id) ON DELETE CASCADE,
+      number INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      state TEXT NOT NULL,
+      author TEXT,
+      closes TEXT NOT NULL,
+      mentions TEXT NOT NULL,
+      gh_updated_at TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE (repo_id, number)
+    )`
+    yield* sql`ALTER TABLE github_issue_link ADD COLUMN gh_id INTEGER`
+    yield* sql`ALTER TABLE github_issue_link ADD COLUMN blocked_by_shadow TEXT`
   })
 }

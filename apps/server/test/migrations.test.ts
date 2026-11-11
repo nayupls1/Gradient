@@ -79,3 +79,33 @@ test("0004 gives existing projects unique keys from their names, never the team 
   }))
   expect(keys).toEqual([["Issue project", "ISS"], ["issues", "IS2"], ["Grand plan", "GR2"], ["x", "PRJ"]])
 })
+
+test("0005 adds relations and pull requests; existing links have no GitHub id or blocker shadow yet", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gradient-migrate-"))
+  dirs.push(dir)
+  const file = join(dir, "links.db")
+  const before = ["0001_init", "0002_github_auth", "0003_projects", "0004_project_keys"] as const
+  await withDb(file, [...before], Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`INSERT INTO team (id, key, name, issue_counter) VALUES ('t1', 'GRD', 'Gradient', 1)`
+    yield* sql`INSERT INTO user (id, name) VALUES ('u1', 'Me')`
+    yield* sql`INSERT INTO workflow_state (id, team_id, name, type, position, color) VALUES ('s1', 't1', 'Todo', 'unstarted', 0, '#fff')`
+    yield* sql`INSERT INTO issue (id, team_id, number, title, description, state_id, priority, creator_id, label_ids,
+                                 sort_order, created_at, updated_at)
+               VALUES ('i1', 't1', 1, 'Synced', '', 's1', 0, 'u1', '[]', 'a0', 1, 1)`
+    yield* sql`INSERT INTO github_repo (id, team_id, owner, name, created_at) VALUES ('r1', 't1', 'acme', 'widgets', 1)`
+    yield* sql`INSERT INTO github_issue_link (issue_id, repo_id, gh_number, gh_url, gh_updated_at, shadow)
+               VALUES ('i1', 'r1', 1, 'https://github.com/acme/widgets/issues/1', '2026-01-01T00:00:00Z', '{}')`
+  }))
+  const after = await withDb(file, Object.keys(migrations) as Array<keyof typeof migrations>, Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    return {
+      link: (yield* sql`SELECT gh_id, blocked_by_shadow FROM github_issue_link`)[0],
+      relations: yield* sql`SELECT * FROM issue_relation`,
+      pullRequests: yield* sql`SELECT * FROM pull_request`
+    }
+  }))
+  expect(after.link).toEqual({ gh_id: null, blocked_by_shadow: null })
+  expect(after.relations).toEqual([])
+  expect(after.pullRequests).toEqual([])
+})

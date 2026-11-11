@@ -34,6 +34,8 @@ const toAvailable = (r: typeof GhRepo.Type): AvailableRepo => ({
 })
 
 export const GhIssue = Schema.Struct({
+  /** Global id. Dependencies are written with it, not with the number. */
+  id: Schema.optionalKey(Schema.Int),
   number: Schema.Int,
   html_url: Schema.String,
   title: Schema.String,
@@ -44,7 +46,13 @@ export const GhIssue = Schema.Struct({
   assignees: Schema.optionalKey(Schema.NullOr(Schema.Array(GhUser))),
   user: Schema.NullOr(GhUser),
   updated_at: Schema.String,
-  pull_request: Schema.optionalKey(Schema.Unknown)
+  /** Present on pull requests, which the issues endpoint lists too. */
+  pull_request: Schema.optionalKey(Schema.Struct({ merged_at: Schema.optionalKey(Schema.NullOr(Schema.String)) })),
+  draft: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  issue_dependencies_summary: Schema.optionalKey(Schema.Struct({
+    blocked_by: Schema.optionalKey(Schema.Int),
+    total_blocked_by: Schema.optionalKey(Schema.Int)
+  }))
 })
 export type GhIssue = typeof GhIssue.Type
 
@@ -85,6 +93,12 @@ export class GithubClient extends Context.Service<GithubClient, {
   }): Effect.Effect<ListResult, GithubError>
   createIssue(owner: string, repo: string, body: IssueWrite): Effect.Effect<GhIssue, GithubError>
   updateIssue(owner: string, repo: string, number: number, body: IssueWrite): Effect.Effect<GhIssue, GithubError>
+  getIssue(owner: string, repo: string, number: number): Effect.Effect<GhIssue, GithubError>
+  /** The issues blocking one issue (GitHub's issue dependencies). */
+  listBlockedBy(owner: string, repo: string, number: number): Effect.Effect<ReadonlyArray<GhIssue>, GithubError>
+  addBlockedBy(owner: string, repo: string, number: number, blockerId: number): Effect.Effect<void, GithubError>
+  /** Succeeds when the dependency is already gone. */
+  removeBlockedBy(owner: string, repo: string, number: number, blockerId: number): Effect.Effect<void, GithubError>
 }>()("gradient/GithubClient") {
   static readonly layer = Layer.effect(
     GithubClient,
@@ -224,6 +238,39 @@ export class GithubClient extends Context.Service<GithubClient, {
               ok.execute,
               Effect.flatMap(decodeIssue),
               Effect.mapError(toError(`Updating ${owner}/${repo}#${number} failed`))
+            )
+          ),
+        getIssue: (owner, repo, number) =>
+          guard(
+            ok.get(`/repos/${owner}/${repo}/issues/${number}`).pipe(
+              Effect.flatMap(decodeIssue),
+              Effect.mapError(toError(`Reading ${owner}/${repo}#${number} failed`))
+            )
+          ),
+        listBlockedBy: (owner, repo, number) =>
+          guard(
+            pages(`/repos/${owner}/${repo}/issues/${number}/dependencies/blocked_by`, HttpClientResponse.schemaBodyJson(Schema.Array(GhIssue))).pipe(
+              Effect.mapError(toError(`Reading what blocks ${owner}/${repo}#${number} failed`))
+            )
+          ),
+        addBlockedBy: (owner, repo, number, blockerId) =>
+          guard(
+            HttpClientRequest.post(`/repos/${owner}/${repo}/issues/${number}/dependencies/blocked_by`).pipe(
+              HttpClientRequest.bodyJsonUnsafe({ issue_id: blockerId }),
+              ok.execute,
+              Effect.asVoid,
+              Effect.mapError(toError(`Marking ${owner}/${repo}#${number} as blocked failed`))
+            )
+          ),
+        removeBlockedBy: (owner, repo, number, blockerId) =>
+          guard(
+            client.del(`/repos/${owner}/${repo}/issues/${number}/dependencies/blocked_by/${blockerId}`).pipe(
+              Effect.flatMap((res) =>
+                res.status < 300 || res.status === 404
+                  ? Effect.void
+                  : Effect.fail(new Error(`GitHub answered ${res.status}`))
+              ),
+              Effect.mapError(toError(`Removing a blocker from ${owner}/${repo}#${number} failed`))
             )
           )
       })

@@ -2,11 +2,15 @@ import {
   applyIssueMutation,
   applyLabelMutation,
   applyProjectMutation,
+  applyRelationMutation,
+  identifier,
+  type Issue,
   isValidProjectKey,
   type Delta,
   type ModelName,
   type Mutation,
-  MutationRejected
+  MutationRejected,
+  wouldCycle
 } from "@gradient/domain"
 import { Context, Effect, Layer, Queue, Semaphore } from "effect"
 import type { SqlError } from "effect/sql"
@@ -27,6 +31,11 @@ export interface TxContext {
   readonly actorId: string | null
   /** Record that a row changed, so it is logged and broadcast after commit. */
   touch(model: ModelName, id: string, op?: "upsert" | "delete"): void
+  /**
+   * Queue an issue for an outbound GitHub sync without changing its row, e.g.
+   * when its "blocked by" list changed. Ignored for `github` writes.
+   */
+  enqueue(issueId: string): void
 }
 
 export interface TxOptions {
@@ -69,11 +78,13 @@ export class Mutations extends Context.Service<Mutations, {
       ) =>
         Effect.gen(function*() {
           const touched = new Map<string, { model: ModelName; id: string; op: "upsert" | "delete" }>()
+          const outbound = new Set<string>()
           const tx: TxContext = {
             now: Date.now(),
             origin: options.origin,
             actorId: options.actorId,
-            touch: (model, id, op = "upsert") => touched.set(`${model}:${id}`, { model, id, op })
+            touch: (model, id, op = "upsert") => touched.set(`${model}:${id}`, { model, id, op }),
+            enqueue: (issueId) => outbound.add(issueId)
           }
           const clientTxId = options.clientTxId ?? null
           const { value, deltas, queuedOutbound } = yield* db.sql.withTransaction(
@@ -96,15 +107,17 @@ export class Mutations extends Context.Service<Mutations, {
                   })
                   deltas.push({ _tag: "Upsert", syncId, clientTxId, entity })
                 }
-                if (model === "issue" && options.origin !== "github" && entity?.model === "issue") {
-                  const repo = yield* db.repoForIssue(entity.value)
-                  if (repo) {
-                    yield* db.sql`INSERT INTO github_outbox (issue_id, enqueued_at, next_attempt_at)
-                                  VALUES (${id}, ${tx.now}, ${tx.now})
-                                  ON CONFLICT (issue_id) DO UPDATE SET next_attempt_at = excluded.next_attempt_at,
-                                                                       attempts = 0`
-                    queuedOutbound = true
-                  }
+                if (model === "issue" && entity?.model === "issue") outbound.add(id)
+              }
+              if (options.origin !== "github") {
+                for (const id of outbound) {
+                  const issue = yield* db.getIssue(id)
+                  if (!issue || !(yield* db.repoForIssue(issue))) continue
+                  yield* db.sql`INSERT INTO github_outbox (issue_id, enqueued_at, next_attempt_at)
+                                VALUES (${id}, ${tx.now}, ${tx.now})
+                                ON CONFLICT (issue_id) DO UPDATE SET next_attempt_at = excluded.next_attempt_at,
+                                                                     attempts = 0`
+                  queuedOutbound = true
                 }
               }
               return { value, deltas, queuedOutbound }
@@ -166,6 +179,14 @@ export class Mutations extends Context.Service<Mutations, {
             if (clash) return yield* reject(`The key "${key}" is taken by the project "${clash.name}"`)
           })
 
+          /** "TES-12", for error messages. */
+          const name = (issue: Issue) =>
+            Effect.gen(function*() {
+              const team = yield* db.getTeam(issue.teamId)
+              const project = issue.projectId ? yield* db.getProject(issue.projectId) : undefined
+              return team ? identifier(team, issue, project) : issue.title
+            })
+
           switch (m._tag) {
             case "ProjectCreate": {
               if (!(yield* db.getTeam(m.teamId))) return yield* reject("Unknown team")
@@ -224,8 +245,45 @@ export class Mutations extends Context.Service<Mutations, {
             }
             case "IssueDelete": {
               if (!(yield* db.getIssue(m.id))) return
+              for (const r of yield* db.relationsOf(m.id)) {
+                yield* db.deleteRelation(r.id)
+                tx.touch("issueRelation", r.id, "delete")
+                // What it blocked is free now, on GitHub too.
+                if (r.type === "blocks" && r.issueId === m.id) tx.enqueue(r.relatedIssueId)
+              }
               yield* db.deleteIssue(m.id)
               tx.touch("issue", m.id, "delete")
+              return
+            }
+            case "RelationCreate": {
+              if (yield* db.getRelation(m.id)) return yield* reject("Relation already exists")
+              const from = yield* db.getIssue(m.issueId)
+              const to = yield* db.getIssue(m.relatedIssueId)
+              if (!from || !to) return yield* reject("Issue not found")
+              if (from.teamId !== m.teamId || to.teamId !== m.teamId) {
+                return yield* reject("Only issues of the same team can be related")
+              }
+              if (from.id === to.id) return yield* reject("An issue cannot relate to itself")
+              const existing = yield* db.relationBetween(from.id, to.id)
+              if (existing) {
+                return yield* reject(`${yield* name(from)} and ${yield* name(to)} are already related`)
+              }
+              if (m.type === "blocks" && wouldCycle(yield* db.relationsForTeam(m.teamId), from.id, to.id)) {
+                return yield* reject(
+                  `${yield* name(to)} already blocks ${yield* name(from)}, directly or through other issues`
+                )
+              }
+              yield* db.putRelation(applyRelationMutation(undefined, m, { now: tx.now })!)
+              tx.touch("issueRelation", m.id)
+              if (m.type === "blocks") tx.enqueue(m.relatedIssueId)
+              return
+            }
+            case "RelationDelete": {
+              const current = yield* db.getRelation(m.id)
+              if (!current) return
+              yield* db.deleteRelation(m.id)
+              tx.touch("issueRelation", m.id, "delete")
+              if (current.type === "blocks") tx.enqueue(current.relatedIssueId)
               return
             }
             case "LabelCreate": {

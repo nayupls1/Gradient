@@ -107,7 +107,62 @@ export const GithubRepo = Schema.Struct({
 })
 export type GithubRepo = typeof GithubRepo.Type
 
-export const ModelName = Schema.Literals(["team", "user", "workflowState", "label", "project", "issue", "githubRepo"])
+/**
+ * How two issues relate. `blocks`: `issueId` blocks `relatedIssueId` (so the
+ * second is "blocked by" the first); it syncs with GitHub's issue dependencies.
+ * `related` has no direction and stays in Gradient.
+ */
+export const RelationType = Schema.Literals(["blocks", "related"])
+export type RelationType = typeof RelationType.Type
+
+export const IssueRelation = Schema.Struct({
+  id: Schema.String,
+  teamId: Schema.String,
+  type: RelationType,
+  issueId: Schema.String,
+  relatedIssueId: Schema.String,
+  createdAt: Millis
+})
+export type IssueRelation = typeof IssueRelation.Type
+
+export const PullRequestState = Schema.Literals(["open", "draft", "merged", "closed"])
+export type PullRequestState = typeof PullRequestState.Type
+
+export const GithubIssueCoords = Schema.Struct({ owner: Schema.String, repo: Schema.String, number: Schema.Int })
+export type GithubIssueCoords = typeof GithubIssueCoords.Type
+
+/**
+ * A pull request in a linked repository, read from GitHub. Gradient does not
+ * edit pull requests; it shows them on the issues they refer to.
+ */
+export const PullRequest = Schema.Struct({
+  id: Schema.String,
+  teamId: Schema.String,
+  repoId: Schema.String,
+  number: Schema.Int,
+  title: Schema.String,
+  url: Schema.String,
+  state: PullRequestState,
+  author: Schema.NullOr(Schema.String),
+  /** GitHub issues it closes when merged ("Fixes #12", "closes acme/web#3", or an issue URL). */
+  closes: Schema.Array(GithubIssueCoords),
+  /** Gradient identifiers in its title or body ("TES-12"), upper case. */
+  mentions: Schema.Array(Schema.String),
+  updatedAt: Millis
+})
+export type PullRequest = typeof PullRequest.Type
+
+export const ModelName = Schema.Literals([
+  "team",
+  "user",
+  "workflowState",
+  "label",
+  "project",
+  "issue",
+  "githubRepo",
+  "issueRelation",
+  "pullRequest"
+])
 export type ModelName = typeof ModelName.Type
 
 /** One synced record, tagged by model, so clients can route it to the right table. */
@@ -118,7 +173,9 @@ export const Entity = Schema.Union([
   Schema.Struct({ model: Schema.Literal("label"), value: Label }),
   Schema.Struct({ model: Schema.Literal("project"), value: Project }),
   Schema.Struct({ model: Schema.Literal("issue"), value: Issue }),
-  Schema.Struct({ model: Schema.Literal("githubRepo"), value: GithubRepo })
+  Schema.Struct({ model: Schema.Literal("githubRepo"), value: GithubRepo }),
+  Schema.Struct({ model: Schema.Literal("issueRelation"), value: IssueRelation }),
+  Schema.Struct({ model: Schema.Literal("pullRequest"), value: PullRequest })
 ])
 export type Entity = typeof Entity.Type
 

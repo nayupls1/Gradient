@@ -8,7 +8,18 @@ import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, PriorityPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
 import { Shortcut, useCommands, useScope } from "../keys/solid.tsx"
-import { compareIssues, firstTeam, formatDate, formatRelative, issueHref, issueKey, projectRepo, teamStates } from "../lib/select.ts"
+import {
+  compareIssues,
+  firstTeam,
+  formatDate,
+  formatRelative,
+  issueHref,
+  issueKey,
+  openBlockers,
+  projectRepo,
+  pullRequestsFor,
+  teamStates
+} from "../lib/select.ts"
 import { KeyScope } from "../keys/solid.tsx"
 import { colors } from "../lib/tokens.stylex.ts"
 import { color } from "../theme/tokens.stylex.ts"
@@ -25,6 +36,7 @@ import {
   DropdownMenuTrigger
 } from "../ui/dropdown-menu.tsx"
 import {
+  BlockedIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   GithubIcon,
@@ -32,6 +44,8 @@ import {
   PencilIcon,
   PlusIcon,
   ProjectIcon,
+  PullRequestIcon,
+  pullRequestLabel,
   RefreshIcon,
   StateIcon,
   TrashIcon,
@@ -101,6 +115,7 @@ const s = stylex.create({
   dot: { width: 7, height: 7, borderRadius: "50%" },
   meta: { color: colors.mutedForeground, fontSize: "0.75rem", width: 48, textAlign: "right", flexShrink: 0 },
   gh: { color: colors.mutedForeground, display: "inline-flex", flexShrink: 0 },
+  blocked: { color: colors.destructive, display: "inline-flex", flexShrink: 0 },
   empty: {
     display: "grid",
     placeItems: "center",
@@ -153,6 +168,9 @@ const IssueRow = (props: {
     }
   )
   const labels = () => props.issue.labelIds.map((id) => sync.state.labels[id]).filter((l) => l !== undefined)
+  const blockers = () => openBlockers(sync.state, props.issue.id)
+  /** The most relevant pull request that refers to the issue: an open one before a merged or closed one. */
+  const pullRequest = () => pullRequestsFor(sync.state, props.issue)[0]
   return (
     <div
       ref={el}
@@ -177,6 +195,15 @@ const IssueRow = (props: {
         onChange={(stateId) => actions.update(props.issue, { stateId })}
         apiRef={(a) => (apis.status = a)}
       />
+      <Show when={blockers().length > 0}>
+        <span
+          {...stylex.attrs(s.blocked)}
+          title={`Blocked by ${blockers().map((b) => issueKey(sync.state, b)).join(", ")}`}
+          aria-label="Blocked"
+        >
+          <BlockedIcon size={13} />
+        </span>
+      </Show>
       <span {...stylex.attrs(s.title)}>{props.issue.title}</span>
       <div {...stylex.attrs(s.labels)}>
         <For each={labels()}>
@@ -193,6 +220,13 @@ const IssueRow = (props: {
           <span {...stylex.attrs(s.projectChip)} title={`Project: ${p().name}`}>
             <ProjectIcon size={12} color={p().color} />
             {p().name}
+          </span>
+        )}
+      </Show>
+      <Show when={pullRequest()}>
+        {(pr) => (
+          <span {...stylex.attrs(s.gh)} title={`${pullRequestLabel[pr().state]} pull request #${pr().number}: ${pr().title}`}>
+            <PullRequestIcon state={pr().state} size={13} />
           </span>
         )}
       </Show>

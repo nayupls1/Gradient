@@ -1,5 +1,6 @@
 export * from "./models.ts"
 export * from "./mutations.ts"
+export * from "./relations.ts"
 export * from "./sync.ts"
 export * from "./rpc.ts"
 export { keyBetween } from "./fractional-index.ts"

@@ -2,9 +2,11 @@ import {
   type GithubRepo,
   GradientRpcs,
   type Issue,
+  type IssueRelation,
   type Label,
   type Mutation,
   type Project,
+  type PullRequest,
   type Snapshot,
   type Team,
   type User,
@@ -30,6 +32,8 @@ export interface SyncState {
   projects: Record<string, Project>
   issues: Record<string, Issue>
   githubRepos: Record<string, GithubRepo>
+  issueRelations: Record<string, IssueRelation>
+  pullRequests: Record<string, PullRequest>
   errors: Array<{ id: string; message: string }>
 }
 
@@ -57,6 +61,8 @@ export const createSyncEngine = () => {
     projects: {},
     issues: {},
     githubRepos: {},
+    issueRelations: {},
+    pullRequests: {},
     errors: []
   })
 

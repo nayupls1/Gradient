@@ -31,7 +31,9 @@ const snapshot = (issues: Array<Issue>, lastSyncId = 10): Snapshot => ({
   labels: [],
   projects: [],
   issues,
-  githubRepos: []
+  githubRepos: [],
+  issueRelations: [],
+  pullRequests: []
 })
 
 const upsert = (syncId: number, value: Issue, clientTxId: string | null = null): Delta => ({
@@ -140,5 +142,25 @@ describe("replica", () => {
     expect(replica.view("projects", "p1")?.name).toBe("Site")
     replica.addPending("tx3", [{ _tag: "ProjectDelete", id: "p1" }])
     expect(replica.view("projects", "p1")).toBeUndefined()
+  })
+
+  test("relations: an optimistic link shows at once, a rejected one rolls back, a delete hides it", () => {
+    const replica = setup()
+    const link = { _tag: "RelationCreate", id: "r1", teamId: "t1", type: "blocks", issueId: "i1", relatedIssueId: "i2" } as const
+    const { tx, changes } = replica.addPending("tx1", [link])
+    expect([...changes.get("issueRelations")!]).toEqual(["r1"])
+    expect(replica.view("issueRelations", "r1")).toMatchObject({ type: "blocks", issueId: "i1", relatedIssueId: "i2", createdAt: 99 })
+    replica.reject(tx)
+    expect(replica.view("issueRelations", "r1")).toBeUndefined()
+
+    replica.applyDeltas([{
+      _tag: "Upsert",
+      syncId: 11,
+      clientTxId: null,
+      entity: { model: "issueRelation", value: { ...link, createdAt: 5 } }
+    }])
+    expect(replica.view("issueRelations", "r1")?.createdAt).toBe(5)
+    replica.addPending("tx2", [{ _tag: "RelationDelete", id: "r1" }])
+    expect(replica.view("issueRelations", "r1")).toBeUndefined()
   })
 })
