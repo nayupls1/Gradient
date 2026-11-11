@@ -68,6 +68,14 @@
     height: auto;
   }
 
+  /*
+   * Icons keep their size in flex rows. Without this, a long title next to an
+   * icon (mentions, relations, picker items) squeezes it to a speck.
+   */
+  svg {
+    flex-shrink: 0;
+  }
+
   button,
   input,
   select,
