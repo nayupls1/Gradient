@@ -1,5 +1,17 @@
 import { Schema } from "effect"
-import { Entity, GithubRepo, Issue, Label, ModelName, Project, Team, User, WorkflowState } from "./models.ts"
+import {
+  Entity,
+  GithubRepo,
+  Issue,
+  IssueRelation,
+  Label,
+  ModelName,
+  Project,
+  PullRequest,
+  Team,
+  User,
+  WorkflowState
+} from "./models.ts"
 
 /** One ordered change. `syncId` is a single counter across the whole database. */
 export const Delta = Schema.TaggedUnion({
@@ -25,6 +37,8 @@ export const Snapshot = Schema.Struct({
   labels: Schema.Array(Label),
   projects: Schema.Array(Project),
   issues: Schema.Array(Issue),
-  githubRepos: Schema.Array(GithubRepo)
+  githubRepos: Schema.Array(GithubRepo),
+  issueRelations: Schema.Array(IssueRelation),
+  pullRequests: Schema.Array(PullRequest)
 })
 export type Snapshot = typeof Snapshot.Type

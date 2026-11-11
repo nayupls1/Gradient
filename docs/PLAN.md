@@ -49,8 +49,9 @@ installed, so `ui/` and its helpers in `lib/` are app code.
 
 ```
 packages/domain/src
-  models.ts            Team, User, WorkflowState, Label, Project, Issue, GithubRepo, Entity
+  models.ts            Team, User, WorkflowState, Label, Project, Issue, IssueRelation, PullRequest, GithubRepo, Entity
   mutations.ts         Mutation union + applyIssueMutation (shared optimistic logic)
+  relations.ts         pull request refs ("Fixes #12", TES-12), blocking loops, blocked state
   sync.ts              Delta, SyncEvent, Snapshot
   rpc.ts               GradientRpcs: Bootstrap, Subscribe, Mutate, Github*
   fractional-index.ts  ordering keys
@@ -71,16 +72,29 @@ apps/web/src
   theme/               tokens (StyleX vars), palettes (also feed shadcn's tokens), mode + palette switching
   ui/                  shadcn-solid components (Button, Dialog, Popover, Command, Sidebar…), icons
   lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts)
-  app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, router
+  app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, router
   pages/               IssuesPage (keyboard-driven list), IssuePage, SettingsPage
 ```
 
 ## Data model
 
 `team`, `user`, `workflow_state`, `label`, `project`, `issue` (label ids stored
-as JSON, optional `project_id`),
-`sync_log`, plus `github_repo`, `github_issue_link` (with the shadow),
-`github_outbox` and `github_delivery`. Timestamps are epoch milliseconds.
+as JSON, optional `project_id`), `issue_relation`, `pull_request`,
+`sync_log`, plus `github_repo`, `github_issue_link` (with the shadows and the
+issue's GitHub id), `github_outbox` and `github_delivery`. Timestamps are
+epoch milliseconds.
+
+**Relations** link two issues of a team: `blocks` (directed: the second is
+"blocked by" the first) or `related`. Two issues have at most one relation, and
+blocking loops are refused. An issue is *blocked* while a blocker is not
+completed, canceled or archived; the list marks it, `list_issues` filters on it.
+
+**Pull requests** are read-only copies of a linked repository's pull requests
+(title, state: open, draft, merged or closed, author). An issue shows the ones
+that close its GitHub copy ("Fixes #12", "closes acme/web#3", an issue URL) or
+mention its identifier (TES-12, any key of the team). Refs are stored raw and
+resolved when read, so an issue imported later, or a renamed project key,
+still links.
 
 ## Sync engine
 
@@ -140,6 +154,9 @@ public URL, so a local install keeps polling.
 | labels | labels, created on demand on both sides |
 | assignee | first assignee, matched by GitHub login; unknown logins become users |
 | priority, sort order | Gradient only |
+| `blocks` relations | issue dependencies ("blocked by"), when both issues are on GitHub |
+| `related` relations | Gradient only |
+| pull requests | read from GitHub (the issues endpoint lists them), never written |
 
 **Shadows stop echo loops.** Each linked issue stores the last version of its
 mapped fields that GitHub is known to have.
@@ -152,22 +169,38 @@ mapped fields that GitHub is known to have.
   PATCH with only the changed fields, or create the issue when it has no link.
   Store GitHub's response as the new shadow. Rapid edits coalesce; failures
   back off up to 5 minutes; one flush runs at a time.
+- **Dependencies** have their own shadow per linked issue: the GitHub
+  blockers that map to Gradient issues. Inbound, blockers new since the shadow
+  become relations and blockers that left it lose theirs; outbound, the issue's
+  Gradient blockers are diffed against it (POST and DELETE by GitHub id).
+  Blockers Gradient does not know stay out of the shadow, so a push never
+  removes them. An issue is read only when GitHub's `issue_dependencies_summary`
+  reports blockers or the shadow had some, and after the whole poll, so
+  blockers resolve in any order. Pushing an issue without blockers makes no
+  dependency call. GitHub does not bump `updated_at` for dependency changes:
+  polling sees them with the issue's next update, the `issue_dependencies`
+  webhook at once. A blocker created on GitHub queues what it blocks again.
 - **Polling**: every 15s per repo, `since` the newest `updated_at` seen, with
   ETags (304s are free).
 - **Webhooks**: `POST /webhooks/github`, HMAC-SHA256 verified, deduped by
-  delivery id. Locally, forward with `gh webhook forward`.
+  delivery id; handles `issues`, `pull_request` and `issue_dependencies`.
+  Locally, forward with `gh webhook forward`.
 
 Tested in `apps/server/test/github-sync.test.ts`: import, one-field PATCH with
 no echo, inbound edits not bounced back, concurrent edits to different fields
-both surviving, creating on GitHub, webhook signatures and dedupe.
+both surviving, creating on GitHub, webhook signatures and dedupe, blockers
+both ways (in any import order, without echo, never touching blockers Gradient
+does not know) and pull request linking.
 
 ## Agents (MCP)
 
 `POST /mcp` speaks MCP over Streamable HTTP (protocol revisions 2025-03-26
 through 2026-07-28). Tools: `describe_workspace`, `list_issues`, `get_issue`,
-`create_issue`, `update_issue`. They take and return names (states, labels,
-people, GRD-12), never ids, and a bad name returns a tool error that lists the
-valid ones. Writes go through `Mutations.apply` with `origin: "mcp"`, so they
+`create_issue`, `update_issue`, `link_issues`, `unlink_issues`, `create_project`,
+`github_status`, `github_sign_in`. Issues report `blocked`, and `get_issue`
+lists blockers, blocked issues, related issues and pull requests. They take
+and return names (states, labels, people, GRD-12), never ids, and a bad name
+returns a tool error that lists the valid ones. Writes go through `Mutations.apply` with `origin: "mcp"`, so they
 appear live in the app and sync to GitHub. The server sends usage instructions
 on initialize and publishes a `gradient` skill (MCP skills extension).
 

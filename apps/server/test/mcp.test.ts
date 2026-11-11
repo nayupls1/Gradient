@@ -74,7 +74,9 @@ describe("MCP", () => {
       "get_issue",
       "github_sign_in",
       "github_status",
+      "link_issues",
       "list_issues",
+      "unlink_issues",
       "update_issue"
     ])
     expect(tools.github_status.annotations.readOnlyHint).toBe(true)
@@ -145,6 +147,39 @@ describe("MCP", () => {
       })
     )
     expect(origins).toHaveLength(1)
+  })
+
+  test("relations: link, read back from both sides, filter by blocked, replace and unlink", async () => {
+    const first = (await call("create_issue", { title: "Design the schema" })).data.id as string
+    const second = (await call("create_issue", { title: "Build the API" })).data.id as string
+
+    const linked = await call("link_issues", { id: second, relation: "blocked_by", other: first })
+    expect(linked.isError).toBe(false)
+    expect(linked.data).toMatchObject({ blocked: true, blocked_by: [{ id: first, title: "Design the schema", state: "Todo" }] })
+    expect((await call("get_issue", { id: first })).data.blocks.map((i: any) => i.id)).toEqual([second])
+
+    const blocked = await call("list_issues", { blocked: true, query: "Build the API" })
+    expect(blocked.data.issues.map((i: any) => i.id)).toEqual([second])
+    expect((await call("list_issues", { blocked: false, query: "Build the API" })).data.total).toBe(0)
+
+    // A loop is refused with the reason.
+    const third = (await call("create_issue", { title: "Ship the client" })).data.id as string
+    await call("link_issues", { id: third, relation: "blocked_by", other: second })
+    const loop = await call("link_issues", { id: first, relation: "blocked_by", other: third })
+    expect(loop.isError).toBe(true)
+    expect(loop.text).toContain(`${first} already blocks ${third}`)
+
+    // Finishing the blocker frees the issue.
+    await call("update_issue", { id: first, state: "Done" })
+    expect((await call("get_issue", { id: second })).data.blocked).toBe(false)
+
+    const replaced = await call("link_issues", { id: second, relation: "related", other: first })
+    expect(replaced.data).toMatchObject({ blocked_by: [], related: [{ id: first }] })
+    const removed = await call("unlink_issues", { id: first, other: second })
+    expect(removed.data.related).toEqual([])
+    const again = await call("unlink_issues", { id: first, other: second })
+    expect(again.isError).toBe(true)
+    expect(again.text).toContain("are not related")
   })
 
   test("bad names come back as tool errors that list the valid values", async () => {

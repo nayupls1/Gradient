@@ -5,6 +5,7 @@ import { createSignal, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
+import { IssuePullRequests, IssueRelations, type RelationApis } from "../app/relations.tsx"
 import { KeyScope, useCommands, useScope } from "../keys/solid.tsx"
 import { findIssue, formatRelative, issueKey, projectHref } from "../lib/select.ts"
 import { bareTextarea } from "../app/styles.ts"
@@ -66,6 +67,7 @@ export const IssuePage = () => {
   const actions = useIssueActions()
   const issue = () => findIssue(sync.state, params.ref ?? "")
   const apis: PickerApis = {}
+  const relationApis: RelationApis = {}
   let titleEl: HTMLTextAreaElement | undefined
   let descriptionEl: HTMLTextAreaElement | undefined
 
@@ -75,6 +77,9 @@ export const IssuePage = () => {
     { id: "issue.back", title: "Back to issues", group: "Navigation", keys: ["escape", "u"], scope: "issue.detail", run: () => navigate("/") },
     { id: "issue.editTitle", title: "Edit title", group: "Issue", keys: ["e"], scope: "issue.detail", run: () => titleEl?.focus() },
     { id: "issue.editDescription", title: "Edit description", group: "Issue", keys: ["d"], scope: "issue.detail", run: () => descriptionEl?.focus() },
+    { id: "issue.blockedBy", title: "Mark as blocked by…", group: "Issue", keys: ["b"], scope: "issue.detail", run: () => relationApis.blockedBy?.open() },
+    { id: "issue.blocks", title: "Mark as blocking…", group: "Issue", keys: ["shift+b"], scope: "issue.detail", run: () => relationApis.blocks?.open() },
+    { id: "issue.related", title: "Relate to…", group: "Issue", keys: ["shift+r"], scope: "issue.detail", run: () => relationApis.related?.open() },
     {
       id: "issue.blur",
       title: "Stop editing",
@@ -232,6 +237,9 @@ export const IssuePage = () => {
                 <span {...stylex.attrs(s.propLabel)}>Labels</span>
                 <LabelPicker apiRef={(a) => (apis.labels = a)} variant="row" teamId={current().teamId} value={current().labelIds} onChange={(labelIds) => actions.update(current(), { labelIds })} />
               </div>
+              <Separator xstyle={s.divider} />
+              <IssueRelations issue={current()} apis={relationApis} />
+              <IssuePullRequests issue={current()} />
               <Separator xstyle={s.divider} />
               <Show when={current().github}>
                 {(gh) => (

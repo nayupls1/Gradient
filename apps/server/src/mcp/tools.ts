@@ -32,12 +32,26 @@ export const IssueSummary = Schema.Struct({
   labels: Schema.Array(Schema.String),
   project: Schema.NullOr(Schema.String),
   github: Schema.NullOr(Schema.String),
+  /** Held up by an issue that is not done yet. */
+  blocked: Schema.Boolean,
   updated: Schema.String
 })
 export type IssueSummary = typeof IssueSummary.Type
 
+const RelatedIssue = Schema.Struct({ id: Schema.String, title: Schema.String, state: Schema.String })
+
 export const IssueDetail = Schema.Struct({
   ...IssueSummary.fields,
+  blocked_by: Schema.Array(RelatedIssue),
+  blocks: Schema.Array(RelatedIssue),
+  related: Schema.Array(RelatedIssue),
+  pull_requests: Schema.Array(Schema.Struct({
+    repo: Schema.String,
+    number: Schema.Int,
+    title: Schema.String,
+    state: Schema.String,
+    url: Schema.String
+  })),
   description: Schema.String,
   creator: Schema.String,
   created: Schema.String,
@@ -85,6 +99,9 @@ export const ListIssues = Tool.make("list_issues", {
     label: Schema.optionalKey(Schema.String.annotate({ description: "Label name." })),
     project: Schema.optionalKey(ProjectName),
     query: Schema.optionalKey(Schema.String.annotate({ description: "Text to find in the title or description." })),
+    blocked: Schema.optionalKey(Schema.Boolean.annotate({
+      description: "true: only issues waiting on an unfinished blocker. false: only issues free to start."
+    })),
     include_archived: Schema.optionalKey(Schema.Boolean),
     limit: Schema.optionalKey(Schema.Int.annotate({ description: "Default 50, max 200." }))
   }),
@@ -97,7 +114,8 @@ export const ListIssues = Tool.make("list_issues", {
   .annotate(Tool.OpenWorld, false)
 
 export const GetIssue = Tool.make("get_issue", {
-  description: "Everything about one issue, including its description and GitHub link.",
+  description:
+    "Everything about one issue: its description, GitHub link, what blocks it, what it blocks, related issues and the pull requests that refer to it.",
   parameters: Schema.Struct({ id: IssueRef }),
   success: IssueDetail,
   failure: ToolError,
@@ -142,6 +160,34 @@ export const UpdateIssue = Tool.make("update_issue", {
     project: Schema.optionalKey(ProjectName),
     archived: Schema.optionalKey(Schema.Boolean.annotate({ description: "Archive (true) or restore (false)." }))
   }),
+  success: IssueDetail,
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+
+export const LinkIssues = Tool.make("link_issues", {
+  description:
+    "Relate two issues. \"blocked_by\": `id` cannot finish before `other`. \"blocks\": the reverse. \"related\": loosely connected. " +
+    "Two issues have at most one relation; linking again replaces it. Blocking syncs with GitHub's issue dependencies when both issues are on GitHub.",
+  parameters: Schema.Struct({
+    id: IssueRef,
+    relation: Schema.Literals(["blocked_by", "blocks", "related"]),
+    other: IssueRef
+  }),
+  success: IssueDetail,
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+
+export const UnlinkIssues = Tool.make("unlink_issues", {
+  description: "Remove the relation between two issues, whichever kind it is.",
+  parameters: Schema.Struct({ id: IssueRef, other: IssueRef }),
   success: IssueDetail,
   failure: ToolError,
   failureMode: "return"
@@ -208,6 +254,8 @@ export const GradientToolkit = Toolkit.make(
   GetIssue,
   CreateIssue,
   UpdateIssue,
+  LinkIssues,
+  UnlinkIssues,
   CreateProject,
   GithubConnection,
   GithubSignIn

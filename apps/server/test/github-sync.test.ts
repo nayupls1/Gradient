@@ -369,3 +369,234 @@ describe("projects and repositories", () => {
     expect(imported.github).toBeNull()
   })
 })
+
+describe("relations and pull requests", () => {
+  const relations = () => ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.relations))
+  const pullRequests = () => ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.pullRequests))
+  const flush = () => ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.flushOutbox))
+  /** Models logged after `since`, in order. */
+  const loggedSince = (since: number) =>
+    ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.logSince(since, 100))).then((rows) => rows.map((r) => r.model))
+  const blocks = async (blocker: string, blocked: string, id = Bun.randomUUIDv7()) => {
+    const t = await team()
+    await mutate([{ _tag: "RelationCreate", id, teamId: t.id, type: "blocks", issueId: blocker, relatedIssueId: blocked }])
+    return id
+  }
+  const local = async (title: string, projectId: string | null = null) => {
+    const t = await team()
+    const todo = (await states(t.id)).find((s) => s.type === "unstarted")!
+    const id = Bun.randomUUIDv7()
+    await mutate([{
+      _tag: "IssueCreate",
+      id,
+      teamId: t.id,
+      projectId,
+      title,
+      description: "",
+      stateId: todo.id,
+      priority: 0,
+      assigneeId: null,
+      labelIds: [],
+      sortOrder: "a0"
+    }])
+    return id
+  }
+  const signed = async (event: string, payload: object, delivery: string) => {
+    const body = JSON.stringify(payload)
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+    const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)))
+    const signature = "sha256=" + Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("")
+    const res = await fetch(`http://127.0.0.1:${ctx.port}/webhooks/github`, {
+      method: "POST",
+      body,
+      headers: { "x-github-event": event, "x-github-delivery": delivery, "x-hub-signature-256": signature }
+    })
+    return { status: res.status, text: await res.text() }
+  }
+
+  test("relations refuse self links, duplicates in either direction and blocking loops; deleting an issue drops its links", async () => {
+    const [a, b, c] = [await local("A"), await local("B"), await local("C")]
+    await expect(blocks(a, a)).rejects.toThrow(/cannot relate to itself/)
+    await blocks(a, b)
+    await expect(blocks(b, a)).rejects.toThrow(/GRD-2 and GRD-1 are already related/)
+    await blocks(b, c)
+    await expect(blocks(c, a)).rejects.toThrow(/GRD-1 already blocks GRD-3/)
+    expect(await relations()).toHaveLength(2)
+
+    const before = await logSize()
+    await mutate([{ _tag: "IssueDelete", id: b }])
+    expect(await relations()).toEqual([])
+    // The issue and both relations were logged as deletes, so clients drop them.
+    expect((await loggedSince(before)).sort()).toEqual(["issue", "issueRelation", "issueRelation"])
+  })
+
+  test("blockers set on GitHub are imported, whatever order the issues arrive in, and removals flow in", async () => {
+    ctx.fake.seed({ title: "Ship it" })
+    ctx.fake.seed({ title: "Write tests" })
+    ctx.fake.block(1, 2) // #1 is blocked by #2, which is imported after it
+    await link()
+
+    const ship = await issueByGh(1)
+    const tests = await issueByGh(2)
+    expect((await relations()).map((r) => [r.type, r.issueId, r.relatedIssueId])).toEqual([["blocks", tests.id, ship.id]])
+
+    // GitHub does not bump updated_at for dependency changes; the next edit (or a webhook) brings it in.
+    ctx.fake.unblock(1, 2)
+    ctx.fake.edit(1, { body: "now unblocked" })
+    await syncNow()
+    expect(await relations()).toEqual([])
+    expect(ctx.fake.writes()).toHaveLength(0)
+  })
+
+  test("a blocker added in Gradient is pushed once, its echo changes nothing, and removing it removes it on GitHub", async () => {
+    ctx.fake.seed({ title: "Blocked" })
+    ctx.fake.seed({ title: "Blocker" })
+    await link()
+    const blocked = await issueByGh(1)
+    const blocker = await issueByGh(2)
+
+    const id = await blocks(blocker.id, blocked.id)
+    await flush()
+    expect(ctx.fake.blockersOf(1)).toEqual([2])
+    const posts = ctx.fake.writes().filter((w) => w.path.endsWith("/dependencies/blocked_by"))
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.body).toEqual({ issue_id: ctx.fake.issues[1]!.id })
+
+    // Our own write comes back with the next update of the issue: nothing new is logged or sent.
+    ctx.fake.edit(1, { body: "touched" })
+    await syncNow()
+    const before = await logSize()
+    ctx.fake.edit(1, { body: "touched again" })
+    await syncNow()
+    expect(await loggedSince(before)).toEqual(["issue", "githubRepo"]) // the body edit and the repo's sync time
+    expect(ctx.fake.writes().filter((w) => w.path.includes("/dependencies/"))).toHaveLength(1)
+    expect(await relations()).toHaveLength(1)
+
+    await mutate([{ _tag: "RelationDelete", id }])
+    await flush()
+    expect(ctx.fake.blockersOf(1)).toEqual([])
+    expect(ctx.fake.writes().filter((w) => w.method === "DELETE")).toHaveLength(1)
+  })
+
+  test("a blocker made in Gradient is created on GitHub first, then linked as the blocker", async () => {
+    ctx.fake.seed({ title: "Imported and blocked" })
+    const { projectId } = await link()
+    const imported = await issueByGh(1)
+    const fresh = await local("New blocker", projectId)
+    await blocks(fresh, imported.id)
+    await flush()
+
+    expect(ctx.fake.issues.map((i) => i.title)).toEqual(["Imported and blocked", "New blocker"])
+    expect(ctx.fake.blockersOf(1)).toEqual([2])
+  })
+
+  test("an issue whose GitHub blockers were never read adopts them before pushing, instead of removing them", async () => {
+    ctx.fake.seed({ title: "Blocked" })
+    ctx.fake.seed({ title: "Blocker on GitHub" })
+    ctx.fake.seed({ title: "Blocker in Gradient" })
+    await link()
+    // Like a link made before dependencies synced: GitHub has a blocker Gradient never read.
+    ctx.fake.block(1, 2)
+    await ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.sql`UPDATE github_issue_link SET blocked_by_shadow = NULL`))
+    await blocks((await issueByGh(3)).id, (await issueByGh(1)).id)
+    await flush()
+    expect(ctx.fake.blockersOf(1).sort()).toEqual([2, 3])
+    expect(await relations()).toHaveLength(2)
+    expect(ctx.fake.writes().filter((w) => w.method === "DELETE")).toHaveLength(0)
+  })
+
+  test("adding a blocker GitHub already has (unseen, since dependencies keep updated_at) recovers on retry", async () => {
+    ctx.fake.seed({ title: "Blocked" })
+    ctx.fake.seed({ title: "Blocker" })
+    await link()
+    ctx.fake.block(1, 2)
+    await blocks((await issueByGh(2)).id, (await issueByGh(1)).id)
+    await flush()
+    const queued = () => ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.sql`SELECT issue_id FROM github_outbox`))
+    expect(await queued()).toHaveLength(1) // the POST got a 422
+
+    await ctx.run(Effect.flatMap(Effect.service(Db), (db) => db.sql`UPDATE github_outbox SET next_attempt_at = 0`))
+    await flush()
+    expect(await queued()).toEqual([])
+    expect(ctx.fake.blockersOf(1)).toEqual([2])
+    expect(ctx.fake.writes().filter((w) => w.path.endsWith("/dependencies/blocked_by"))).toHaveLength(1)
+  })
+
+  test("blockers of local-only issues stay in Gradient and do not disturb GitHub's own", async () => {
+    ctx.fake.seed({ title: "Synced" })
+    ctx.fake.seed({ title: "Other blocker on GitHub" })
+    await link()
+    // Blocked on GitHub by an issue Gradient does not hold (its link is dropped to simulate that).
+    ctx.fake.block(1, 2)
+    await ctx.run(Effect.flatMap(Effect.service(Db), (db) =>
+      db.sql`DELETE FROM github_issue_link WHERE gh_number = 2`))
+    const loose = await local("Local only")
+    await blocks(loose, (await issueByGh(1)).id)
+    await flush()
+    expect(ctx.fake.blockersOf(1)).toEqual([2])
+    expect(ctx.fake.writes().filter((w) => w.path.includes("/dependencies/"))).toHaveLength(0)
+  })
+
+  test("pull requests are stored with their state and the issues they close or mention", async () => {
+    ctx.fake.seed({ title: "Crash on save" })
+    ctx.fake.seed({ title: "Fix crash", body: "Fixes #1", pull_request: { url: "x", merged_at: "2026-01-02T00:00:00Z" } })
+    ctx.fake.seed({ title: "WID-1: follow-up", draft: true, pull_request: { url: "y" } })
+    const { imported } = await link()
+    expect(imported).toBe(1)
+
+    const prs = (await pullRequests()).sort((a, b) => a.number - b.number)
+    expect(prs.map((p) => [p.number, p.state, p.author])).toEqual([[2, "merged", "someone"], [3, "draft", "someone"]])
+    expect(prs[0]!.closes).toEqual([{ owner: "acme", repo: "widgets", number: 1 }])
+    expect(prs[1]!.mentions).toEqual(["WID-1"])
+    expect(prs[0]!.url).toBe("https://github.com/acme/widgets/pull/2")
+
+    // An unchanged pull request logs nothing on the next poll.
+    const before = await logSize()
+    ctx.fake.edit(1, { body: "bump" })
+    await syncNow()
+    expect(await loggedSince(before)).toEqual(["issue", "githubRepo"])
+  })
+
+  test("webhooks: pull_request events update a pull request, issue_dependencies events re-read blockers", async () => {
+    ctx.fake.seed({ title: "Target" })
+    ctx.fake.seed({ title: "Blocker" })
+    await link()
+
+    const pr = await signed("pull_request", {
+      action: "opened",
+      pull_request: {
+        number: 3,
+        html_url: "https://github.com/acme/widgets/pull/3",
+        title: "Resolve target",
+        body: "closes #1",
+        state: "open",
+        draft: false,
+        merged_at: null,
+        user: { login: "dev" },
+        updated_at: "2026-02-01T00:00:00Z"
+      },
+      repository: { name: "widgets", owner: { login: "acme" } }
+    }, "pr-1")
+    expect(pr).toEqual({ status: 202, text: "pull_request" })
+    expect((await pullRequests()).map((p) => [p.number, p.state, p.author])).toEqual([[3, "open", "dev"]])
+
+    ctx.fake.block(1, 2)
+    const dep = await signed("issue_dependencies", {
+      action: "blocked_by_added",
+      blocked_issue: { html_url: "https://github.com/acme/widgets/issues/1" },
+      blocking_issue: { html_url: "https://github.com/acme/widgets/issues/2" },
+      repository: { name: "widgets", owner: { login: "acme" } }
+    }, "dep-1")
+    expect(dep).toEqual({ status: 202, text: "dependencies" })
+    expect((await relations()).map((r) => [r.issueId, r.relatedIssueId])).toEqual([[(await issueByGh(2)).id, (await issueByGh(1)).id]])
+  })
+
+  test("unlinking a repository removes its pull requests", async () => {
+    ctx.fake.seed({ title: "A PR", pull_request: { url: "x" } })
+    await link()
+    expect(await pullRequests()).toHaveLength(1)
+    const id = await repoId()
+    await ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.unlinkRepo(id)))
+    expect(await pullRequests()).toEqual([])
+  })
+})

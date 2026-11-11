@@ -1,4 +1,4 @@
-import type { Priority, StateType } from "@gradient/domain"
+import type { Priority, PullRequestState, StateType } from "@gradient/domain"
 import {
   Archive,
   ArchiveArrowUp,
@@ -16,12 +16,17 @@ import {
   Command,
   Copy,
   Ellipsis,
+  GitMerge,
+  GitPullRequest,
+  GitPullRequestClosed,
+  GitPullRequestDraft,
   type IconNode,
   Keyboard,
   Minus,
   Monitor,
   Moon,
   OctagonExclamationPoint,
+  OctagonMinus,
   Palette,
   Pencil,
   Plus,
@@ -110,6 +115,33 @@ export const PencilIcon = wrap(Pencil)
 export const RefreshIcon = wrap(RefreshCw)
 export const UnlinkIcon = wrap(Unlink)
 export const ProjectIcon = wrap(Box)
+/** An issue waiting on another one. Takes the surrounding text color. */
+export const BlockedIcon = wrap(OctagonMinus)
+
+const pullRequestIcons: Record<PullRequestState, IconNode> = {
+  open: GitPullRequest,
+  draft: GitPullRequestDraft,
+  merged: GitMerge,
+  closed: GitPullRequestClosed
+}
+// GitHub's own state colors, readable on light and dark surfaces. Drafts take the text color.
+const pullRequestColors: Record<PullRequestState, string> = {
+  open: "#46a758",
+  draft: "currentColor",
+  merged: "#8e4ec6",
+  closed: "#e5484d"
+}
+
+export const PullRequestIcon = (props: { state: PullRequestState; size?: number }) => (
+  <Icon icon={pullRequestIcons[props.state]} size={props.size ?? 14} stroke={pullRequestColors[props.state]} stroke-width={1.9} />
+)
+
+export const pullRequestLabel: Record<PullRequestState, string> = {
+  open: "Open",
+  draft: "Draft",
+  merged: "Merged",
+  closed: "Closed"
+}
 
 /** GitHub's mark (Primer Octicons, MIT). Brand icons are not part of Lucide. */
 export const GithubIcon = (p: IconProps) => (

@@ -1,4 +1,15 @@
-import { identifier, type Issue, parseIdentifier, projectKeyFor, type WorkflowState } from "@gradient/domain"
+import {
+  identifier,
+  type Issue,
+  type IssueRelation,
+  isOpenBlocker,
+  parseIdentifier,
+  projectKeyFor,
+  type PullRequest,
+  pullRequestRefersTo,
+  teamKeys,
+  type WorkflowState
+} from "@gradient/domain"
 import type { SyncState } from "../sync/engine.ts"
 
 export const firstTeam = (state: SyncState) => Object.values(state.teams)[0]
@@ -79,4 +90,46 @@ export const formatRelative = (ms: number) => {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
   return formatDate(ms)
+}
+
+export interface RelatedIssue {
+  readonly relation: IssueRelation
+  readonly issue: Issue
+}
+
+/** An issue's relations from its side: what blocks it, what it blocks, and loose relations. */
+export const relationsOf = (state: SyncState, issueId: string) => {
+  const blockedBy: Array<RelatedIssue> = []
+  const blocks: Array<RelatedIssue> = []
+  const related: Array<RelatedIssue> = []
+  for (const relation of Object.values(state.issueRelations)) {
+    const mine = relation.issueId === issueId
+    if (!mine && relation.relatedIssueId !== issueId) continue
+    const other = state.issues[mine ? relation.relatedIssueId : relation.issueId]
+    if (!other) continue
+    const entry = { relation, issue: other }
+    if (relation.type === "related") related.push(entry)
+    else if (mine) blocks.push(entry)
+    else blockedBy.push(entry)
+  }
+  const byNumber = (a: RelatedIssue, b: RelatedIssue) => a.issue.number - b.issue.number
+  return { blockedBy: blockedBy.sort(byNumber), blocks: blocks.sort(byNumber), related: related.sort(byNumber) }
+}
+
+/** Blockers that still hold the issue up: not completed, canceled or archived. */
+export const openBlockers = (state: SyncState, issueId: string): Array<Issue> =>
+  Object.values(state.issueRelations).flatMap((r) => {
+    if (r.type !== "blocks" || r.relatedIssueId !== issueId) return []
+    const blocker = state.issues[r.issueId]
+    return blocker && isOpenBlocker(blocker, state.workflowStates[blocker.stateId]?.type) ? [blocker] : []
+  })
+
+/** Pull requests that close the issue on GitHub or mention its identifier, newest first. */
+export const pullRequestsFor = (state: SyncState, issue: Issue): Array<PullRequest> => {
+  const team = state.teams[issue.teamId]
+  if (!team) return []
+  const keys = teamKeys(team, Object.values(state.projects).filter((p) => p.teamId === team.id))
+  return Object.values(state.pullRequests)
+    .filter((pr) => pullRequestRefersTo(pr, issue, keys))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
 }

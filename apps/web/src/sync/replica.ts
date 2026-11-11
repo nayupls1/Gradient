@@ -2,16 +2,20 @@ import {
   applyIssueMutation,
   applyLabelMutation,
   applyProjectMutation,
+  applyRelationMutation,
   type Delta,
   type GithubRepo,
   type Issue,
+  type IssueRelation,
   type Label,
   type Mutation,
   type Project,
+  type PullRequest,
   type Snapshot,
   type Team,
   touchedIssueId,
   touchedProjectId,
+  touchedRelationId,
   type User,
   type WorkflowState
 } from "@gradient/domain"
@@ -33,6 +37,8 @@ export interface Tables {
   projects: Project
   issues: Issue
   githubRepos: GithubRepo
+  issueRelations: IssueRelation
+  pullRequests: PullRequest
 }
 export type TableName = keyof Tables
 export type Changes = Map<TableName, Set<string>>
@@ -44,7 +50,17 @@ export interface PendingTx {
   confirmedAt: number | null
 }
 
-export const TABLES: ReadonlyArray<TableName> = ["teams", "users", "workflowStates", "labels", "projects", "issues", "githubRepos"]
+export const TABLES: ReadonlyArray<TableName> = [
+  "teams",
+  "users",
+  "workflowStates",
+  "labels",
+  "projects",
+  "issues",
+  "githubRepos",
+  "issueRelations",
+  "pullRequests"
+]
 
 const tableOf: Record<string, TableName> = {
   team: "teams",
@@ -53,7 +69,9 @@ const tableOf: Record<string, TableName> = {
   label: "labels",
   project: "projects",
   issue: "issues",
-  githubRepo: "githubRepos"
+  githubRepo: "githubRepos",
+  issueRelation: "issueRelations",
+  pullRequest: "pullRequests"
 }
 
 const emptyBase = () => Object.fromEntries(TABLES.map((t) => [t, new Map()])) as { [K in TableName]: Map<string, Tables[K]> }
@@ -80,6 +98,8 @@ export const createReplica = (options: { now?: () => number } = {}) => {
         if (m._tag === "LabelCreate") mark(c, "labels", m.id)
         const projectId = touchedProjectId(m)
         if (projectId) mark(c, "projects", projectId)
+        const relationId = touchedRelationId(m)
+        if (relationId) mark(c, "issueRelations", relationId)
       }
     }
     return c
@@ -102,6 +122,13 @@ export const createReplica = (options: { now?: () => number } = {}) => {
           if (touchedProjectId(m) === id) value = applyProjectMutation(value ?? undefined, m, ctx)
         }
       }
+    } else if (table === "issueRelations") {
+      const ctx = { now: now() }
+      for (const tx of pending) {
+        for (const m of tx.mutations) {
+          if (touchedRelationId(m) === id) value = applyRelationMutation(value ?? undefined, m, ctx)
+        }
+      }
     } else if (table === "labels") {
       for (const tx of pending) {
         for (const m of tx.mutations) if (m._tag === "LabelCreate" && m.id === id) value ??= applyLabelMutation(m)
@@ -122,6 +149,8 @@ export const createReplica = (options: { now?: () => number } = {}) => {
     for (const p of snap.projects) base.projects.set(p.id, p)
     for (const i of snap.issues) base.issues.set(i.id, i)
     for (const r of snap.githubRepos) base.githubRepos.set(r.id, r)
+    for (const r of snap.issueRelations) base.issueRelations.set(r.id, r)
+    for (const p of snap.pullRequests) base.pullRequests.set(p.id, p)
     for (const t of TABLES) for (const id of base[t].keys()) mark(c, t, id)
     lastSyncId = snap.lastSyncId
     viewerId = snap.viewerId
