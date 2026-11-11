@@ -9,6 +9,7 @@ import { colors } from "../lib/tokens.stylex.ts"
 import { color } from "../theme/tokens.stylex.ts"
 import { Button } from "../ui/button.tsx"
 import { GithubIcon, PlusIcon, SettingsIcon } from "../ui/icons.tsx"
+import { auth } from "./auth.ts"
 import {
   Sidebar,
   SidebarContent,
@@ -33,6 +34,7 @@ import { Composer } from "./Composer.tsx"
 import { type ComposerDefaults, ComposerContext, ProjectDialogsContext, Sync } from "./context.ts"
 import { ProjectDialog, type ProjectDialogMode } from "./ProjectDialog.tsx"
 import { ProjectGlyph } from "./ProjectGlyph.tsx"
+import { UserAvatar } from "./UserAvatar.tsx"
 import { github } from "./github.ts"
 
 const s = stylex.create({
@@ -77,8 +79,8 @@ const logoDots = [0, 1, 2].flatMap((row) =>
   [0, 1, 2].map((col) => ({ cx: 7 + col * 9, cy: 7 + row * 9, r: 4.2 - (row + col) * 0.55, opacity: 1 - (row + col) * 0.2 }))
 )
 
-const Logo = () => (
-  <svg {...stylex.attrs(s.logo)} width={20} height={20} viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+export const Logo = (props: { size?: number }) => (
+  <svg {...stylex.attrs(s.logo)} width={props.size ?? 20} height={props.size ?? 20} viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
     <For each={logoDots}>{(d) => <circle cx={d.cx} cy={d.cy} r={d.r} opacity={d.opacity} />}</For>
   </svg>
 )
@@ -133,6 +135,7 @@ export const Shell = (props: { children: JSX.Element }) => {
   const openComposer = (defaults: ComposerDefaults = {}) =>
     setComposer({ open: true, defaults: { projectId: projectIdFromPath(location.pathname) ?? null, ...defaults } })
   const team = () => firstTeam(sync.state)
+  const viewer = () => sync.state.users[sync.state.viewerId]
   const projects = () => (team() ? teamProjects(sync.state, team()!.id) : [])
   const [projectDialog, setProjectDialog] = createSignal<ProjectDialogMode | null>(null)
   const projectDialogs = {
@@ -146,6 +149,8 @@ export const Shell = (props: { children: JSX.Element }) => {
     { id: "nav.issues", title: "Go to all issues", group: "Navigation", keys: ["g i"], run: () => navigate("/") },
     { id: "project.create", title: "New project", group: "General", keys: ["shift+c"], run: () => projectDialogs.create() },
     { id: "nav.settings", title: "Go to settings", group: "Navigation", keys: ["g s", "mod+,"], run: () => navigate("/settings") },
+    { id: "nav.profile", title: "Go to profile", group: "Navigation", keys: ["g p"], run: () => navigate("/profile") },
+    { id: "auth.signOut", title: "Sign out", group: "Account", run: () => void auth.signOut() },
     {
       id: "theme.toggleMode",
       title: "Switch light / dark",
@@ -239,6 +244,12 @@ export const Shell = (props: { children: JSX.Element }) => {
           </SidebarContent>
           <SidebarFooter>
             <SidebarMenu>
+              <SidebarMenuItem>
+                <NavLink href="/profile">
+                  <UserAvatar name={viewer()?.name ?? auth.session()?.user.name ?? null} src={viewer()?.avatarUrl ?? null} size={16} />
+                  <span {...stylex.attrs(s.projectName)}>{viewer()?.name ?? auth.session()?.user.name ?? "Profile"}</span>
+                </NavLink>
+              </SidebarMenuItem>
               <SidebarMenuItem>
                 <NavLink href="/settings">
                   <SettingsIcon size={15} />

@@ -1,5 +1,5 @@
-import { Schema } from "effect"
-import { Rpc, RpcGroup } from "effect/rpc"
+import { Context, Schema } from "effect"
+import { Rpc, RpcGroup, RpcMiddleware } from "effect/rpc"
 import { ProjectIconFile } from "./models.ts"
 import { Mutation } from "./mutations.ts"
 import { Snapshot, SyncEvent } from "./sync.ts"
@@ -7,6 +7,29 @@ import { Snapshot, SyncEvent } from "./sync.ts"
 export class MutationRejected extends Schema.TaggedError<MutationRejected>()("MutationRejected", {
   message: Schema.String
 }) {}
+
+/** The connection has no valid session: signed out, expired, or revoked. Sign in again. */
+export class Unauthorized extends Schema.TaggedError<Unauthorized>()("Unauthorized", {
+  message: Schema.String
+}) {}
+
+/** Who is calling: the signed-in account and the Gradient user it acts as. */
+export class CurrentViewer extends Context.Service<CurrentViewer, {
+  /** The Gradient user (issues, assignees, the sync log's actor). */
+  readonly userId: string
+  /** The Better Auth account behind the session. */
+  readonly accountId: string
+}>()("gradient/CurrentViewer") {}
+
+/**
+ * Every RPC needs a signed-in session. The server resolves it from the
+ * session cookie on each call and provides `CurrentViewer`; a missing or
+ * revoked session fails with `Unauthorized`.
+ */
+export class AuthMiddleware extends RpcMiddleware.Service<AuthMiddleware, { provides: CurrentViewer }>()(
+  "gradient/AuthMiddleware",
+  { error: Unauthorized }
+) {}
 
 export class GithubError extends Schema.TaggedError<GithubError>()("GithubError", {
   message: Schema.String
@@ -141,4 +164,4 @@ export class GradientRpcs extends RpcGroup.make(
     },
     error: GithubError
   })
-) {}
+).middleware(AuthMiddleware) {}

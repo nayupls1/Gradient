@@ -236,5 +236,88 @@ export const migrations = {
     yield* sql`CREATE INDEX issue_comment_issue ON issue_comment (issue_id, created_at)`
     yield* sql`ALTER TABLE github_repo ADD COLUMN comments_since TEXT`
     yield* sql`ALTER TABLE github_repo ADD COLUMN comments_etag TEXT`
+  }),
+  /**
+   * Accounts (Better Auth, email and password). Better Auth's models live in
+   * `auth_*` tables; the adapter maps its camelCase fields to these columns.
+   * Dates are ISO strings, booleans 0/1. A Gradient user acts for at most one
+   * account (`user.account_id`); users without one are people known from
+   * GitHub (assignees, authors).
+   */
+  "0008_auth": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE auth_user (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      email_verified INTEGER NOT NULL DEFAULT 0,
+      image TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+    yield* sql`CREATE TABLE auth_session (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES auth_user(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      ip_address TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+    yield* sql`CREATE INDEX auth_session_user ON auth_session (user_id)`
+    yield* sql`CREATE TABLE auth_account (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES auth_user(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      access_token TEXT,
+      refresh_token TEXT,
+      id_token TEXT,
+      access_token_expires_at TEXT,
+      refresh_token_expires_at TEXT,
+      scope TEXT,
+      password TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+    yield* sql`CREATE INDEX auth_account_user ON auth_account (user_id)`
+    yield* sql`CREATE TABLE auth_verification (
+      id TEXT PRIMARY KEY,
+      identifier TEXT NOT NULL,
+      value TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+    yield* sql`CREATE INDEX auth_verification_identifier ON auth_verification (identifier)`
+    yield* sql`CREATE TABLE auth_api_key (
+      id TEXT PRIMARY KEY,
+      config_id TEXT NOT NULL DEFAULT 'default',
+      name TEXT,
+      start TEXT,
+      reference_id TEXT NOT NULL REFERENCES auth_user(id) ON DELETE CASCADE,
+      prefix TEXT,
+      key TEXT NOT NULL,
+      refill_interval INTEGER,
+      refill_amount INTEGER,
+      last_refill_at TEXT,
+      enabled INTEGER,
+      rate_limit_enabled INTEGER,
+      rate_limit_time_window INTEGER,
+      rate_limit_max INTEGER,
+      request_count INTEGER,
+      remaining INTEGER,
+      last_request TEXT,
+      expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      permissions TEXT,
+      metadata TEXT
+    )`
+    yield* sql`CREATE INDEX auth_api_key_key ON auth_api_key (key)`
+    yield* sql`CREATE INDEX auth_api_key_reference ON auth_api_key (reference_id)`
+    yield* sql`ALTER TABLE user ADD COLUMN account_id TEXT REFERENCES auth_user(id) ON DELETE SET NULL`
+    yield* sql`CREATE UNIQUE INDEX user_account ON user (account_id)`
   })
 }

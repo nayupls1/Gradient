@@ -169,6 +169,11 @@ const makeDb = Effect.gen(function*() {
 
     users: all(sql`SELECT * FROM user ORDER BY name`, toUser),
     getUser: (id: string) => one(sql`SELECT * FROM user WHERE id = ${id}`, toUser),
+    /** The Gradient user a signed-in account acts as. */
+    userForAccount: (accountId: string) => one(sql`SELECT * FROM user WHERE account_id = ${accountId}`, toUser),
+    linkAccount: (userId: string, accountId: string) =>
+      sql`UPDATE user SET account_id = ${accountId} WHERE id = ${userId}`,
+    accountCount: one(sql`SELECT COUNT(*) AS n FROM auth_user`, (r) => num(r.n)).pipe(Effect.map((n) => n ?? 0)),
     getUserByLogin: (login: string) => one(sql`SELECT * FROM user WHERE github_login = ${login}`, toUser),
     putUser: (u: User) =>
       sql`INSERT INTO user (id, name, github_login, avatar_url) VALUES (${u.id}, ${u.name}, ${u.githubLogin}, ${u.avatarUrl})

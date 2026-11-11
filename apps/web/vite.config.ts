@@ -11,6 +11,8 @@ export default defineConfig({
     port: webPort,
     proxy: {
       "/rpc": { target: `ws://localhost:${serverPort}`, ws: true },
+      "/api": `http://localhost:${serverPort}`,
+      "/mcp": `http://localhost:${serverPort}`,
       "/webhooks": `http://localhost:${serverPort}`,
       "/repo-files": `http://localhost:${serverPort}`,
       "/health": `http://localhost:${serverPort}`

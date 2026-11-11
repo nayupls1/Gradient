@@ -1,45 +1,18 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { GradientRpcs, type SyncEvent } from "@gradient/domain"
-import { Effect, Fiber, Layer, ManagedRuntime, Option, Stream } from "effect"
-import { RpcClient, RpcSerialization } from "effect/rpc"
-import { Socket } from "effect/socket"
-import { AppServices, HttpLive } from "../src/app.ts"
-import { ServerConfig } from "../src/config.ts"
+import { Effect, Fiber, Stream } from "effect"
+import type { RpcClient } from "effect/rpc"
+import { runRpc, signUp, startServer } from "./helpers.ts"
 
-const port = 20000 + Math.floor(Math.random() * 20000)
-const server = ManagedRuntime.make(
-  Layer.merge(AppServices, HttpLive.pipe(Layer.provide(AppServices))).pipe(
-    Layer.provideMerge(Layer.succeed(ServerConfig, {
-      port,
-      host: "127.0.0.1",
-      dbPath: ":memory:",
-      webDist: "/nonexistent",
-      seedSampleData: true,
-      github: {
-        enabled: false,
-        token: Option.none(),
-        tokenSource: null,
-        apiUrl: "http://127.0.0.1:1",
-        webUrl: "http://127.0.0.1:1",
-        app: { clientId: null, slug: null },
-        webhookSecret: Option.none(),
-        pollIntervalSeconds: 3600
-      }
-    }))
-  )
-)
-
-const client = RpcClient.layerProtocolSocket().pipe(
-  Layer.provide(Socket.layerWebSocket(`ws://127.0.0.1:${port}/rpc`)),
-  Layer.provide(Socket.layerWebSocketConstructorGlobal),
-  Layer.provide(RpcSerialization.layerJson)
-)
+const server = startServer()
+let cookie = ""
 const run = <A, E>(f: (c: RpcClient.FromGroup<typeof GradientRpcs>) => Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.gen(function*() {
-    return yield* f((yield* RpcClient.make(GradientRpcs)) as any)
-  }).pipe(Effect.scoped, Effect.provide(client)))
+  runRpc(server.port, cookie, f)
 
-beforeAll(() => server.runPromise(Effect.void))
+beforeAll(async () => {
+  await server.start()
+  cookie = await signUp(server.base)
+})
 afterAll(() => server.dispose())
 
 test("subscribe replays the log from a cursor, then streams live commits in order", async () => {

@@ -5,12 +5,21 @@ Runs locally. Built with Effect v4, Bun, SQLite, Solid 2 and StyleX.
 
 ## Connect your agent
 
-Gradient is an MCP server. With Gradient running:
+Gradient is an MCP server. Agents authenticate with an **agent key**: create
+one on your profile (sidebar → your name, or `g p`), which also shows these
+commands with the key filled in:
 
 ```bash
-claude mcp add --transport http --scope user gradient http://127.0.0.1:4100/mcp   # Claude Code
-codex mcp add gradient --url http://127.0.0.1:4100/mcp                            # Codex
+# Claude Code
+claude mcp add --transport http --scope user gradient http://127.0.0.1:4100/mcp \
+  --header "Authorization: Bearer grd_..."
+# Codex
+export GRADIENT_API_KEY=grd_...
+codex mcp add gradient --url http://127.0.0.1:4100/mcp --bearer-token-env-var GRADIENT_API_KEY
 ```
+
+The agent acts as the key's owner ("me" is you). Make one key per agent or
+machine; deleting a key locks that agent out at once.
 
 Agents get `describe_workspace`, `list_issues`, `get_issue`, `create_issue`,
 `update_issue`, `create_project` (optionally from a GitHub repo), `github_status` and `github_sign_in` (which hands the user a
@@ -31,6 +40,20 @@ bun run dev
 Open http://localhost:4200. The API server runs on 127.0.0.1:4100 and Vite
 proxies to it. The database is `apps/server/gradient.db`, created and seeded
 on first start.
+
+The first visit asks you to create an account (email and password). The first
+account owns the workspace: it takes over the seeded user, its issues and the
+GitHub connection. After that, sign-up is closed; start the server with
+`GRADIENT_ALLOW_SIGNUP=true` to let more people create accounts.
+
+## Accounts
+
+Accounts use [Better Auth](https://www.better-auth.com) with email and
+password, stored in the same SQLite database. Your profile (`/profile`) edits
+your name, changes your password, lists where you are signed in (sign out any
+session), and manages agent keys. Sessions live in an HttpOnly cookie for 7
+days and renew while you use the app. Sign-in and sign-up are rate limited per
+address. There is no password reset by email yet.
 
 To run the compiled versions, build both once, then start both:
 
@@ -133,10 +156,13 @@ Remap any command in localStorage under `gradient.keymap`, for example
 | Variable | Default | |
 |---|---|---|
 | `GRADIENT_PORT` | `4100` | API server port |
-| `GRADIENT_HOST` | `127.0.0.1` | Bind address. Keep it local: there is no auth yet. Requests from non-local browser origins are refused. |
+| `GRADIENT_HOST` | `127.0.0.1` | Bind address. Requests from browser origins other than loopback and `GRADIENT_URL` are refused. |
+| `GRADIENT_URL` | none | Public URL when Gradient is reached through a domain (e.g. behind a TLS proxy). Its origin is trusted, and cookies are `Secure` when it is https. |
+| `GRADIENT_AUTH_SECRET` | generated | Signs session cookies (`BETTER_AUTH_SECRET` works too). Without one, a random secret is created once and kept in the database. |
+| `GRADIENT_ALLOW_SIGNUP` | `false` | Let anyone who can reach the server create an account. The first account can always be created. |
 | `GRADIENT_DB` | `./gradient.db` | SQLite file |
 | `GRADIENT_SEED_SAMPLE` | `true` | Add sample issues to a new database |
-| `GRADIENT_USER_NAME` | `Me` | Name of the local user on first start |
+| `GRADIENT_USER_NAME` | `Me` | Name of the workspace's user until the first account takes it over |
 | `GITHUB_TOKEN` | from `gh auth token` | GitHub access |
 | `GITHUB_WEBHOOK_SECRET` | none | Enables `/webhooks/github` |
 | `GITHUB_POLL_INTERVAL` | `15` | Seconds between polls |
@@ -146,7 +172,7 @@ Remap any command in localStorage under `gradient.keymap`, for example
 
 ```
 packages/domain   Schemas, mutations, RPC contract, shared by both sides
-apps/server       Bun + Effect: SQLite, sync engine, GitHub sync
+apps/server       Bun + Effect: SQLite, sync engine, GitHub sync, accounts (Better Auth)
 apps/web          Solid 2 + StyleX: client sync store, shadcn-solid components, views
 ```
 

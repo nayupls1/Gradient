@@ -9,9 +9,11 @@
     "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
+    "@better-auth/api-key": "1.7.20",
     "@effect/platform-bun": "4.1.2",
     "@effect/sql-sqlite-bun": "4.1.2",
     "@gradient/domain": "workspace:*",
+    "better-auth": "1.7.20",
     "effect": "4.1.2"
   }
 }

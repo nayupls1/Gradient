@@ -7,6 +7,7 @@ import { Db } from "../src/db/Db.ts"
 import { GithubSync } from "../src/github/GithubSync.ts"
 import { verifySignature } from "../src/github/webhook.ts"
 import { Mutations } from "../src/sync/Mutations.ts"
+import { signUp } from "./helpers.ts"
 import { makeFakeGithub } from "./fake-github.ts"
 
 const SECRET = "test-secret"
@@ -20,6 +21,7 @@ const setup = () => {
     dbPath: ":memory:",
     webDist: "/nonexistent",
     seedSampleData: false,
+    auth: { secret: Option.some("test-secret-0123456789abcdef0123456789"), url: Option.none(), allowSignUp: false },
     github: {
       enabled: true,
       token: Option.some("test-token"),
@@ -673,7 +675,10 @@ describe("project icons", () => {
     await link()
     const id = await repoId()
     const url = `http://127.0.0.1:${ctx.port}/repo-files/${id}/${sha}/favicon.svg`
-    const res = await fetch(url)
+    // Repository files are for signed-in users only.
+    expect((await fetch(url)).status).toBe(401)
+    const auth = { headers: { cookie: await signUp(`http://127.0.0.1:${ctx.port}`) } }
+    const res = await fetch(url, auth)
     expect(res.status).toBe(200)
     expect(res.headers.get("content-type")).toBe("image/svg+xml")
     expect(res.headers.get("content-security-policy")).toContain("sandbox")
@@ -681,13 +686,13 @@ describe("project icons", () => {
 
     const blobReads = () => ctx.fake.requests.filter((r) => r.path.includes("/git/blobs/")).length
     const before = blobReads()
-    expect((await fetch(url)).status).toBe(200)
+    expect((await fetch(url, auth)).status).toBe(200)
     expect(blobReads()).toBe(before)
 
-    expect((await fetch(`http://127.0.0.1:${ctx.port}/repo-files/${id}/${sha}/notes.html`)).status).toBe(404)
+    expect((await fetch(`http://127.0.0.1:${ctx.port}/repo-files/${id}/${sha}/notes.html`, auth)).status).toBe(404)
     // Other files of the repository are not served, whatever name the URL gives them.
     const secret = ctx.fake.putFile(".env", "TOKEN=x")
-    expect((await fetch(`http://127.0.0.1:${ctx.port}/repo-files/${id}/${secret}/env.png`)).status).toBe(404)
+    expect((await fetch(`http://127.0.0.1:${ctx.port}/repo-files/${id}/${secret}/env.png`, auth)).status).toBe(404)
   })
 
   test("unlinking goes back to the cube, and a picked file back to auto", async () => {

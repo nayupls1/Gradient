@@ -7,6 +7,24 @@ export interface ServerConfigShape {
   /** Built web app to serve, when it exists. In dev, Vite serves the UI instead. */
   readonly webDist: string
   readonly seedSampleData: boolean
+  readonly auth: {
+    /**
+     * Signs session cookies. GRADIENT_AUTH_SECRET (or BETTER_AUTH_SECRET);
+     * without one, a random secret is generated once and kept in the database.
+     */
+    readonly secret: Option.Option<string>
+    /**
+     * Where users reach Gradient, e.g. https://gradient.example.com
+     * (GRADIENT_URL). Its origin is trusted besides loopback, and cookies are
+     * marked Secure when it is https. Unset, Gradient answers loopback only.
+     */
+    readonly url: Option.Option<string>
+    /**
+     * The first account can always be created. Later sign-ups need
+     * GRADIENT_ALLOW_SIGNUP=true, so a reachable server is not open to anyone.
+     */
+    readonly allowSignUp: boolean
+  }
   readonly github: {
     /** False when GRADIENT_GITHUB_DISABLED is set: no sync, no sign-in. */
     readonly enabled: boolean
@@ -44,6 +62,11 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
         Config.withDefault(new URL("../../web/dist", import.meta.url).pathname)
       )
       const seedSampleData = yield* Config.Boolean("GRADIENT_SEED_SAMPLE").pipe(Config.withDefault(true))
+      const authSecret = yield* Config.option(
+        Config.Redacted("GRADIENT_AUTH_SECRET").pipe(Config.orElse(() => Config.Redacted("BETTER_AUTH_SECRET")))
+      )
+      const publicUrl = yield* Config.option(Config.String("GRADIENT_URL"))
+      const allowSignUp = yield* Config.Boolean("GRADIENT_ALLOW_SIGNUP").pipe(Config.withDefault(false))
       const disabled = yield* Config.Boolean("GRADIENT_GITHUB_DISABLED").pipe(Config.withDefault(false))
       const envToken = yield* Config.option(Config.Redacted("GITHUB_TOKEN"))
       const apiUrl = (yield* Config.String("GITHUB_API_URL").pipe(Config.withDefault("https://api.github.com")))
@@ -69,6 +92,11 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
         dbPath,
         webDist,
         seedSampleData,
+        auth: {
+          secret: Option.map(authSecret, Redacted.value),
+          url: Option.map(publicUrl, (u) => u.replace(/\/$/, "")),
+          allowSignUp
+        },
         github: {
           enabled: !disabled,
           token: disabled ? Option.none() : token,

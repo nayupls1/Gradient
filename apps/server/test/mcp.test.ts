@@ -1,32 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { Effect, Layer, ManagedRuntime, Option } from "effect"
-import { AppServices, HttpLive } from "../src/app.ts"
-import { ServerConfig } from "../src/config.ts"
+import { Effect } from "effect"
 import { Db } from "../src/db/Db.ts"
+import { createApiKey, signUp, startServer } from "./helpers.ts"
 
-const port = 20000 + Math.floor(Math.random() * 20000)
-const base = `http://127.0.0.1:${port}`
-const server = ManagedRuntime.make(
-  Layer.merge(AppServices, HttpLive.pipe(Layer.provide(AppServices))).pipe(
-    Layer.provideMerge(Layer.succeed(ServerConfig, {
-      port,
-      host: "127.0.0.1",
-      dbPath: ":memory:",
-      webDist: "/nonexistent",
-      seedSampleData: true,
-      github: {
-        enabled: false,
-        token: Option.none(),
-        tokenSource: null,
-        apiUrl: "http://127.0.0.1:1",
-        webUrl: "http://127.0.0.1:1",
-        app: { clientId: null, slug: null },
-        webhookSecret: Option.none(),
-        pollIntervalSeconds: 3600
-      }
-    }))
-  )
-)
+const server = startServer()
+const { base } = server
+let agentKey = ""
 
 let session = ""
 let nextId = 1
@@ -37,6 +16,7 @@ const rpc = async (method: string, params: object = {}) => {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
       "mcp-protocol-version": "2025-06-18",
+      authorization: `Bearer ${agentKey}`,
       ...(session ? { "mcp-session-id": session } : {})
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: nextId++, method, params })
@@ -53,11 +33,18 @@ const call = async (name: string, args: object = {}) => {
 }
 
 beforeAll(async () => {
-  await server.runPromise(Effect.void)
+  await server.start()
+  agentKey = (await createApiKey(base, await signUp(base))).key
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } })
   await fetch(`${base}/mcp`, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-session-id": session, "mcp-protocol-version": "2025-06-18" },
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      "mcp-session-id": session,
+      "mcp-protocol-version": "2025-06-18",
+      authorization: `Bearer ${agentKey}`
+    },
     body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })
   })
 })
@@ -158,7 +145,7 @@ describe("MCP", () => {
     expect(listed.data.issues.map((i: any) => i.id)).toEqual([id])
 
     // The write went through the sync log, tagged as an agent change.
-    const origins = await server.runPromise(
+    const origins = await server.runtime.runPromise(
       Effect.gen(function*() {
         const db = yield* Db
         return yield* db.sql`SELECT DISTINCT origin FROM sync_log WHERE model = 'issue' AND origin = 'mcp'`

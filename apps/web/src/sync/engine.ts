@@ -39,6 +39,9 @@ export interface SyncState {
   errors: Array<{ id: string; message: string }>
 }
 
+const isUnauthorized = (e: unknown) =>
+  typeof e === "object" && e !== null && (e as { _tag?: unknown })._tag === "Unauthorized"
+
 const rpcUrl = () => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/rpc`
 
 const ProtocolLive = RpcClient.layerProtocolSocket({ retryTransientErrors: true }).pipe(
@@ -47,11 +50,18 @@ const ProtocolLive = RpcClient.layerProtocolSocket({ retryTransientErrors: true 
   Layer.provide(RpcSerialization.layerJson)
 )
 
+export interface SyncEngineOptions {
+  /** The server refused the session (signed out, revoked, expired). The engine stops. */
+  onUnauthorized?: () => void
+  /** The connection failed; the socket refuses to open without a session, so it may be that. */
+  onDisconnected?: () => void
+}
+
 /**
  * The client half of the sync engine: the network loop around a `Replica`
  * (see replica.ts), mirrored into a Solid store for the UI.
  */
-export const createSyncEngine = () => {
+export const createSyncEngine = (options: SyncEngineOptions = {}) => {
   const [state, setState] = createStore<SyncState>({
     ready: false,
     connection: "connecting",
@@ -132,9 +142,15 @@ export const createSyncEngine = () => {
         )
       )
     }).pipe(
-      Effect.tapCause(() => Effect.sync(() => setConnection("offline"))),
-      Effect.retry(Schedule.spaced("1 second")),
-      Effect.forever
+      Effect.tapCause(() =>
+        Effect.sync(() => {
+          setConnection("offline")
+          options.onDisconnected?.()
+        })
+      ),
+      Effect.retry({ schedule: Schedule.spaced("1 second"), while: (e) => !isUnauthorized(e) }),
+      Effect.forever,
+      Effect.catchIf(isUnauthorized, () => Effect.sync(() => options.onUnauthorized?.()))
     )
 
     // Send queued transactions in order. Network errors retry (Mutate is idempotent); rejections roll back.
@@ -148,9 +164,12 @@ export const createSyncEngine = () => {
             reportError(e.message)
           })
         ),
-        Effect.retry(Schedule.spaced("1 second"))
+        Effect.retry({ schedule: Schedule.spaced("1 second"), while: (e) => !isUnauthorized(e) })
       )
-    }).pipe(Effect.forever)
+    }).pipe(
+      Effect.forever,
+      Effect.catchIf(isUnauthorized, () => Effect.sync(() => options.onUnauthorized?.()))
+    )
 
     yield* Effect.all([subscribe, send], { concurrency: "unbounded", discard: true })
   }).pipe(Effect.scoped)

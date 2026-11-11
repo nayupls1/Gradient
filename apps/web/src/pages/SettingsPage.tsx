@@ -4,6 +4,7 @@ import { useNavigate } from "@solidjs/router"
 import { createMemo, createSignal, For, onSettled, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
 import { github } from "../app/github.ts"
+import { agentCommands, useMcpUrl } from "../app/agents.ts"
 import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
 import { ProjectGlyph } from "../app/ProjectGlyph.tsx"
 import { firstTeam, formatRelative, projectHref } from "../lib/select.ts"
@@ -291,21 +292,10 @@ const Appearance = () => {
   )
 }
 
-/** The server's MCP URL, from the server itself (it knows its host and port). */
-const useMcpUrl = () => {
-  const sync = useContext(Sync)
-  const [url, setUrl] = createSignal("http://127.0.0.1:4100/mcp")
-  sync.call((c) => c.ServerInfo()).then((info) => setUrl(info.mcpUrl), () => {})
-  return url
-}
-
 /** The one-liners that connect a coding agent to this Gradient over MCP. */
 const Agents = () => {
   const url = useMcpUrl()
-  const commands = createMemo(() => [
-    { name: "Claude Code", command: `claude mcp add --transport http --scope user gradient ${url()}` },
-    { name: "Codex", command: `codex mcp add gradient --url ${url()}` }
-  ])
+  const commands = createMemo(() => agentCommands(url(), null))
   const [copied, setCopied] = createSignal<string | null>(null)
   const copy = async (text: string) => {
     await navigator.clipboard?.writeText(text)
@@ -317,6 +307,7 @@ const Agents = () => {
       <h2 {...stylex.attrs(s.h2)}><BotIcon size={16} /> Agents</h2>
       <p {...stylex.attrs(s.lede)}>
         Gradient is an MCP server. Agents read and change issues through the same sync engine as this app, so their edits show up here live.
+        Each agent needs an agent key: <a href="/profile" {...stylex.attrs(s.link)}>create one on your profile</a>, which fills it into these commands.
       </p>
       <Card size="sm">
         <CardContent>
