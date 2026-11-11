@@ -9,7 +9,21 @@ import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, PriorityPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
 import { Shortcut, useCommands, useScope } from "../keys/solid.tsx"
 import { compareIssues, firstTeam, formatDate, formatRelative, issueHref, issueKey, projectRepo, teamStates } from "../lib/select.ts"
-import { color, font, radius } from "../theme/tokens.stylex.ts"
+import { KeyScope } from "../keys/solid.tsx"
+import { colors } from "../lib/tokens.stylex.ts"
+import { color } from "../theme/tokens.stylex.ts"
+import { Badge } from "../ui/badge.tsx"
+import { Button, type ButtonProps } from "../ui/button.tsx"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible.tsx"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "../ui/dropdown-menu.tsx"
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -23,7 +37,6 @@ import {
   TrashIcon,
   UnlinkIcon
 } from "../ui/icons.tsx"
-import { Button, Popover } from "../ui/kit.tsx"
 import { PageHeader } from "./Header.tsx"
 
 const s = stylex.create({
@@ -41,26 +54,13 @@ const s = stylex.create({
     backgroundColor: color.subtle,
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
-    borderBottomColor: color.border,
-    fontSize: font.md,
+    borderBottomColor: colors.border,
     fontWeight: 500,
     userSelect: "none"
   },
-  groupToggle: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: 0,
-    borderWidth: 0,
-    backgroundColor: "transparent",
-    color: color.fg,
-    fontFamily: "inherit",
-    fontSize: "inherit",
-    fontWeight: "inherit",
-    cursor: "pointer"
-  },
-  chevron: { color: color.fgSubtle, display: "inline-flex" },
-  count: { color: color.fgSubtle, fontWeight: 400 },
+  groupToggle: { display: "flex", alignItems: "center", gap: 8, fontWeight: "inherit", cursor: "pointer" },
+  chevron: { color: colors.mutedForeground, display: "inline-flex" },
+  count: { color: colors.mutedForeground, fontWeight: 400 },
   spacer: { flexGrow: 1 },
   row: {
     position: "relative",
@@ -72,12 +72,9 @@ const s = stylex.create({
     paddingRight: 16,
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
-    borderBottomColor: color.border,
+    borderBottomColor: colors.border,
     backgroundColor: "transparent",
-    fontSize: font.md,
     cursor: "pointer",
-    color: color.fg,
-    textDecoration: "none",
     outline: "none"
   },
   rowFocused: {
@@ -87,8 +84,8 @@ const s = stylex.create({
   key: {
     width: 58,
     flexShrink: 0,
-    color: color.fgSubtle,
-    fontSize: font.sm,
+    color: colors.mutedForeground,
+    fontSize: "0.75rem",
     fontVariantNumeric: "tabular-nums"
   },
   title: {
@@ -100,31 +97,17 @@ const s = stylex.create({
     fontWeight: 500
   },
   labels: { display: "flex", gap: 4, flexShrink: 0 },
-  label: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 5,
-    height: 20,
-    paddingInline: 7,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: color.border,
-    color: color.fgMuted,
-    fontSize: font.xs,
-    fontWeight: 500
-  },
+  label: { color: colors.mutedForeground },
   dot: { width: 7, height: 7, borderRadius: "50%" },
-  meta: { color: color.fgSubtle, fontSize: font.sm, width: 48, textAlign: "right", flexShrink: 0 },
-  gh: { color: color.fgSubtle, display: "inline-flex", flexShrink: 0 },
+  meta: { color: colors.mutedForeground, fontSize: "0.75rem", width: 48, textAlign: "right", flexShrink: 0 },
+  gh: { color: colors.mutedForeground, display: "inline-flex", flexShrink: 0 },
   empty: {
     display: "grid",
     placeItems: "center",
     alignContent: "center",
     gap: 12,
     height: "60%",
-    color: color.fgMuted,
-    fontSize: font.md
+    color: colors.mutedForeground
   },
   projectChip: {
     display: "inline-flex",
@@ -132,55 +115,23 @@ const s = stylex.create({
     gap: 5,
     flexShrink: 0,
     maxWidth: 140,
-    color: color.fgMuted,
-    fontSize: font.sm,
+    color: colors.mutedForeground,
+    fontSize: "0.75rem",
     overflow: "hidden",
     whiteSpace: "nowrap",
     textOverflow: "ellipsis"
   },
-  repoChip: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    height: 26,
-    paddingInline: 8,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: color.border,
-    color: color.fgMuted,
-    fontSize: font.sm,
-    textDecoration: "none"
-  },
+  repoChip: { color: colors.mutedForeground },
   repoDot: { width: 6, height: 6, borderRadius: "50%" },
   repoOk: { backgroundColor: "#46a758" },
-  repoBad: { backgroundColor: color.danger },
-  menu: { display: "flex", flexDirection: "column", padding: 4, minWidth: 200 },
-  menuItem: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    height: 30,
-    paddingInline: 8,
-    borderWidth: 0,
-    borderRadius: radius.sm,
-    backgroundColor: { default: "transparent", ":hover": color.hover },
-    color: color.fg,
-    fontFamily: "inherit",
-    fontSize: font.md,
-    textAlign: "left",
-    cursor: "pointer"
-  },
-  menuDanger: { color: color.danger },
-  menuNote: { paddingInline: 8, paddingBlock: 4, color: color.fgSubtle, fontSize: font.sm },
-  headerCount: {
-    color: color.fgSubtle,
-    fontWeight: 400,
-    paddingInline: 6,
-    borderRadius: radius.sm,
-    backgroundColor: color.subtle
-  }
+  repoBad: { backgroundColor: colors.destructive },
+  menu: { minWidth: 220 },
+  headerCount: { color: colors.mutedForeground, fontWeight: 400 }
 })
+
+/** Clicks on a row's own controls (pickers, links) should not open the issue. */
+const fromControl = (e: MouseEvent) =>
+  e.target instanceof Element && e.target.closest("button, a, input, [data-slot=popover-content]") !== null
 
 const IssueRow = (props: {
   issue: Issue
@@ -208,7 +159,7 @@ const IssueRow = (props: {
       role="link"
       aria-current={props.focused ? "true" : undefined}
       data-issue={props.issue.id}
-      onClick={() => navigate(issueHref(sync.state, props.issue))}
+      onClick={(e) => !fromControl(e) && navigate(issueHref(sync.state, props.issue))}
       onMouseMove={() => !props.focused && props.onFocus()}
       {...stylex.attrs(s.row, props.focused && s.rowFocused)}
     >
@@ -230,10 +181,10 @@ const IssueRow = (props: {
       <div {...stylex.attrs(s.labels)}>
         <For each={labels()}>
           {(label) => (
-            <span {...stylex.attrs(s.label)}>
+            <Badge variant="outline" xstyle={s.label}>
               <span {...stylex.attrs(s.dot)} style={{ "background-color": label.color }} />
               {label.name}
-            </span>
+            </Badge>
           )}
         </For>
       </div>
@@ -275,9 +226,9 @@ const Group = (props: {
 }) => {
   const composer = useContext(ComposerContext)
   return (
-    <section>
+    <Collapsible render={<section />} open={!props.collapsed} onOpenChange={() => props.onToggle()}>
       <div {...stylex.attrs(s.group)}>
-        <button type="button" onClick={() => props.onToggle()} {...stylex.attrs(s.groupToggle)}>
+        <CollapsibleTrigger xstyle={s.groupToggle}>
           <span {...stylex.attrs(s.chevron)}>
             <Show when={props.collapsed} fallback={<ChevronDownIcon size={13} />}>
               <ChevronRightIcon size={13} />
@@ -286,13 +237,13 @@ const Group = (props: {
           <StateIcon type={props.state.type} color={props.state.color} />
           {props.state.name}
           <span {...stylex.attrs(s.count)}>{props.issues.length}</span>
-        </button>
+        </CollapsibleTrigger>
         <span {...stylex.attrs(s.spacer)} />
-        <Button variant="ghost" size="icon-sm" title={`New issue in ${props.state.name}`} onClick={() => composer.open({ stateId: props.state.id })}>
+        <Button variant="ghost" size="icon-xs" title={`New issue in ${props.state.name}`} onClick={() => composer.open({ stateId: props.state.id })}>
           <PlusIcon size={14} />
         </Button>
       </div>
-      <Show when={!props.collapsed}>
+      <CollapsibleContent>
         <For each={props.issues}>
           {(issue) => (
             <IssueRow
@@ -304,8 +255,8 @@ const Group = (props: {
             />
           )}
         </For>
-      </Show>
-    </section>
+      </CollapsibleContent>
+    </Collapsible>
   )
 }
 
@@ -341,8 +292,8 @@ const ProjectRepo = (props: { projectId: string }) => {
         <GithubRepoPicker
           align="end"
           onPick={(r) => void link(r.owner, r.name)}
-          trigger={(attrs) => (
-            <Button size="sm" variant="ghost" disabled={busy()} {...attrs}>
+          trigger={(p) => (
+            <Button {...(p as ButtonProps)} size="xs" variant="ghost" disabled={busy()}>
               <GithubIcon size={13} />
               {busy() ? "Importing…" : "Link GitHub repo"}
             </Button>
@@ -351,17 +302,22 @@ const ProjectRepo = (props: { projectId: string }) => {
       }
     >
       {(r) => (
-        <a
-          href={`https://github.com/${r().owner}/${r().name}`}
-          target="_blank"
-          rel="noreferrer"
-          title={r().lastError ?? (r().lastSyncedAt ? `Synced ${formatRelative(r().lastSyncedAt!)}` : "Not synced yet")}
-          {...stylex.attrs(s.repoChip)}
+        <Badge
+          variant="outline"
+          xstyle={s.repoChip}
+          render={
+            <a
+              href={`https://github.com/${r().owner}/${r().name}`}
+              target="_blank"
+              rel="noreferrer"
+              title={r().lastError ?? (r().lastSyncedAt ? `Synced ${formatRelative(r().lastSyncedAt!)}` : "Not synced yet")}
+            />
+          }
         >
           <span {...stylex.attrs(s.repoDot, r().lastError ? s.repoBad : s.repoOk)} />
-          <GithubIcon size={13} />
+          <GithubIcon size={12} />
           {r().owner}/{r().name}
-        </a>
+        </Badge>
       )}
     </Show>
   )
@@ -376,53 +332,49 @@ const ProjectMenu = (props: { projectId: string }) => {
   const call = (work: () => Promise<unknown>) =>
     work().catch((e) => alert((e as { message?: string }).message ?? String(e)))
   return (
-    <Popover
-      align="end"
-      trigger={(attrs) => (
-        <Button variant="ghost" size="icon-sm" title="Project actions" {...attrs}>
-          <MoreIcon size={15} />
-        </Button>
-      )}
-    >
-      {(api) => (
-        <div {...stylex.attrs(s.menu)}>
-          <button type="button" {...stylex.attrs(s.menuItem)} onClick={() => (api.close(), dialogs.edit(props.projectId))}>
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={(p) => (
+          <Button {...(p as ButtonProps)} variant="ghost" size="icon-sm" title="Project actions">
+            <MoreIcon size={15} />
+          </Button>
+        )}
+      />
+      <DropdownMenuContent align="end" xstyle={s.menu}>
+        <KeyScope name="menu" blocking>
+          <DropdownMenuItem onClick={() => dialogs.edit(props.projectId)}>
             <PencilIcon size={14} /> Rename or recolor…
-          </button>
+          </DropdownMenuItem>
           <Show when={repo()}>
             {(r) => (
               <>
-                <button
-                  type="button"
-                  {...stylex.attrs(s.menuItem)}
-                  onClick={() => (api.close(), void call(() => sync.call((c) => c.GithubSyncNow({ repoId: r().id }))))}
-                >
+                <DropdownMenuItem onClick={() => void call(() => sync.call((c) => c.GithubSyncNow({ repoId: r().id })))}>
                   <RefreshIcon size={14} /> Sync with GitHub now
-                </button>
-                <button
-                  type="button"
-                  {...stylex.attrs(s.menuItem)}
+                </DropdownMenuItem>
+                <DropdownMenuItem
                   onClick={() => {
-                    api.close()
                     if (confirm(`Unlink ${r().owner}/${r().name}? Issues stay in the project.`)) {
                       void call(() => sync.call((c) => c.GithubUnlinkRepo({ repoId: r().id })))
                     }
                   }}
                 >
                   <UnlinkIcon size={14} /> Unlink {r().owner}/{r().name}
-                </button>
+                </DropdownMenuItem>
               </>
             )}
           </Show>
+          <DropdownMenuSeparator />
           <Show
             when={!repo()}
-            fallback={<div {...stylex.attrs(s.menuNote)}>Unlink the repository to delete the project.</div>}
+            fallback={
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Unlink the repository to delete the project.</DropdownMenuLabel>
+              </DropdownMenuGroup>
+            }
           >
-            <button
-              type="button"
-              {...stylex.attrs(s.menuItem, s.menuDanger)}
+            <DropdownMenuItem
+              variant="destructive"
               onClick={() => {
-                api.close()
                 const project = sync.state.projects[props.projectId]
                 if (project && confirm(`Delete the project "${project.name}"? Its issues stay, without a project.`)) {
                   sync.mutate({ _tag: "ProjectDelete", id: project.id })
@@ -431,11 +383,11 @@ const ProjectMenu = (props: { projectId: string }) => {
               }}
             >
               <TrashIcon size={14} /> Delete project
-            </button>
+            </DropdownMenuItem>
           </Show>
-        </div>
-      )}
-    </Popover>
+        </KeyScope>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -525,12 +477,12 @@ export const IssuesPage = () => {
     <>
       <PageHeader
         title={
-          <Show when={project()} fallback={<>All issues<span {...stylex.attrs(s.headerCount)}>{total()}</span></>}>
+          <Show when={project()} fallback={<>All issues<Badge variant="secondary" xstyle={s.headerCount}>{total()}</Badge></>}>
             {(p) => (
               <>
                 <ProjectIcon size={15} color={p().color} />
                 {p().name}
-                <span {...stylex.attrs(s.headerCount)}>{total()}</span>
+                <Badge variant="secondary" xstyle={s.headerCount}>{total()}</Badge>
               </>
             )}
           </Show>
@@ -545,7 +497,7 @@ export const IssuesPage = () => {
                 </>
               )}
             </Show>
-            <Button size="sm" onClick={() => composer.open()}>
+            <Button variant="outline" size="xs" onClick={() => composer.open()}>
               <PlusIcon size={13} />
               New issue
               <Shortcut binding="c" />
@@ -563,7 +515,7 @@ export const IssuesPage = () => {
           fallback={
             <div {...stylex.attrs(s.empty)}>
               {project() ? `No issues in ${project()!.name} yet.` : "No issues yet."}
-              <Button variant="primary" onClick={() => composer.open()}>Create an issue</Button>
+              <Button onClick={() => composer.open()}>Create an issue</Button>
             </div>
           }
         >

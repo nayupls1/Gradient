@@ -1,5 +1,8 @@
+import * as stylex from "@stylexjs/stylex"
 import { createSignal } from "solid-js"
-import { type ColorTokens, paletteById, type Scheme } from "./presets.ts"
+import { darkMode, lightMode } from "../lib/theme.ts"
+import { colors as uiColors } from "../lib/tokens.stylex.ts"
+import { type ColorTokens, paletteById, type Scheme, uiTokensFrom } from "./presets.ts"
 import { color } from "./tokens.stylex.ts"
 
 export type Mode = "system" | "light" | "dark"
@@ -39,13 +42,24 @@ export const resolveColors = (theme: Theme, scheme: Scheme = schemeOf(theme)): C
   ...theme.custom[scheme]
 })
 
+const setVars = (root: HTMLElement, tokens: object, values: Record<string, string>) => {
+  for (const [key, value] of Object.entries(values)) {
+    const name = varName(String((tokens as Record<string, string>)[key]))
+    if (name) root.style.setProperty(name, value)
+  }
+}
+
+/** The shadcn components need `lightMode` or `darkMode` on an ancestor for their `light-dark()` colors. */
+const modeClass = { light: stylex.attrs(lightMode).class ?? "", dark: stylex.attrs(darkMode).class ?? "" }
+
 const apply = (theme: Theme) => {
   const scheme = schemeOf(theme)
   const root = document.documentElement
-  for (const [key, value] of Object.entries(resolveColors(theme, scheme))) {
-    const name = varName(String((color as unknown as Record<string, string>)[key]))
-    if (name) root.style.setProperty(name, value)
-  }
+  const colors = resolveColors(theme, scheme)
+  setVars(root, color, colors)
+  // The shadcn components read their own tokens; derive them from the same palette.
+  setVars(root, uiColors, uiTokensFrom(colors))
+  root.className = modeClass[scheme]
   root.style.colorScheme = scheme
   root.dataset.scheme = scheme
 }

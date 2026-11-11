@@ -119,3 +119,39 @@ export const palettes: ReadonlyArray<Palette> = [
 ]
 
 export const paletteById = (id: string) => palettes.find((p) => p.id === id) ?? palettes[0]!
+
+/**
+ * The shadcn components (`ui/`) use shadcn's token names (`lib/tokens.stylex.ts`).
+ * Each one maps to a Gradient token, so palettes and custom colors style them too.
+ */
+const UI_TOKENS = {
+  background: "bg",
+  foreground: "fg",
+  card: "panel",
+  cardForeground: "fg",
+  popover: "panel",
+  popoverForeground: "fg",
+  primary: "accent",
+  primaryForeground: "accentFg",
+  secondary: "subtle",
+  secondaryForeground: "fg",
+  muted: "hover",
+  mutedForeground: "fgMuted",
+  accent: "hover",
+  accentForeground: "fg",
+  destructive: "danger",
+  border: "border",
+  input: "border",
+  ring: "fgSubtle",
+  sidebar: "bg",
+  sidebarForeground: "fg",
+  sidebarPrimary: "accent",
+  sidebarPrimaryForeground: "accentFg",
+  sidebarAccent: "hover",
+  sidebarAccentForeground: "fg",
+  sidebarBorder: "border",
+  sidebarRing: "fgSubtle"
+} as const satisfies Record<string, keyof ColorTokens>
+
+export const uiTokensFrom = (tokens: ColorTokens): Record<keyof typeof UI_TOKENS, string> =>
+  Object.fromEntries(Object.entries(UI_TOKENS).map(([ui, own]) => [ui, tokens[own]])) as Record<keyof typeof UI_TOKENS, string>

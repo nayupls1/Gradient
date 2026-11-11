@@ -1,13 +1,33 @@
 import * as stylex from "@stylexjs/stylex"
 import { useLocation, useNavigate } from "@solidjs/router"
 import type { JSX } from "@solidjs/web"
-import { createSignal, For, onSettled, Show, useContext } from "solid-js"
+import { createEffect, createSignal, For, onSettled, Show, useContext } from "solid-js"
 import { Shortcut, useCommands } from "../keys/solid.tsx"
 import { firstTeam, projectHref, projectIdFromPath, projectRepo, teamProjects } from "../lib/select.ts"
 import { updateTheme, activeScheme } from "../theme/theme.ts"
-import { color, font, radius } from "../theme/tokens.stylex.ts"
+import { colors } from "../lib/tokens.stylex.ts"
+import { color } from "../theme/tokens.stylex.ts"
+import { Button } from "../ui/button.tsx"
 import { GithubIcon, PlusIcon, ProjectIcon, SettingsIcon } from "../ui/icons.tsx"
-import { Toaster } from "../ui/kit.tsx"
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupAction,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
+  SidebarProvider,
+  useSidebar
+} from "../ui/sidebar.tsx"
+import { Toaster, toast } from "../ui/sonner.tsx"
 import { CommandSurfaces } from "./CommandMenu.tsx"
 import { Composer } from "./Composer.tsx"
 import { type ComposerDefaults, ComposerContext, ProjectDialogsContext, Sync } from "./context.ts"
@@ -15,144 +35,82 @@ import { ProjectDialog, type ProjectDialogMode } from "./ProjectDialog.tsx"
 import { github } from "./github.ts"
 
 const s = stylex.create({
-  shell: {
-    display: "grid",
-    gridTemplateColumns: "232px 1fr",
-    height: "100vh",
-    backgroundColor: color.bg,
-    color: color.fg
-  },
-  sidebar: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
-    paddingInline: 10,
-    paddingBlock: 12,
-    borderRightWidth: 1,
-    borderRightStyle: "solid",
-    borderRightColor: color.border,
-    minHeight: 0
-  },
-  workspace: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    paddingInline: 6,
-    height: 32,
-    marginBottom: 6,
-    fontSize: font.md,
-    fontWeight: 600
-  },
+  workspace: { display: "flex", alignItems: "center", gap: 8, paddingInline: 6, height: 32, fontWeight: 600 },
   logo: {
     width: 20,
     height: 20,
     borderRadius: 6,
     backgroundImage: `linear-gradient(135deg, ${color.fgSubtle}, ${color.fg})`
   },
-  newIssue: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    height: 30,
-    paddingInline: 8,
-    marginBottom: 10,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: color.border,
-    backgroundColor: { default: color.panel, ":hover": color.hover },
-    color: color.fg,
-    fontFamily: "inherit",
-    fontSize: font.md,
-    fontWeight: 500,
-    cursor: "pointer",
-    boxShadow: `0 1px 2px ${color.shadow}`
-  },
+  newIssue: { width: "100%", justifyContent: "flex-start" },
   grow: { flexGrow: 1, textAlign: "left" },
-  section: {
-    marginTop: 6,
-    marginBottom: 2,
-    paddingInline: 8,
-    color: color.fgSubtle,
-    fontSize: font.xs,
-    fontWeight: 500
-  },
-  link: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    height: 28,
-    paddingInline: 8,
-    borderRadius: radius.md,
-    color: { default: color.fgMuted, ":hover": color.fg },
-    backgroundColor: { default: "transparent", ":hover": color.hover },
-    fontSize: font.md,
-    fontWeight: 500,
-    textDecoration: "none"
-  },
-  linkActive: { backgroundColor: color.active, color: color.fg },
-  teamRow: { backgroundColor: { default: "transparent", ":hover": "transparent" }, color: color.fg, cursor: "default" },
   teamBadge: {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
     width: 16,
     height: 16,
+    flexShrink: 0,
     borderRadius: 4,
-    backgroundColor: color.subtle,
+    backgroundColor: colors.muted,
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: color.border,
+    borderColor: colors.border,
     fontSize: 9,
     fontWeight: 700,
-    color: color.fgMuted
+    color: colors.mutedForeground
   },
-  indent: { paddingLeft: 32 },
-  sectionRow: { display: "flex", alignItems: "center", marginTop: 14, marginBottom: 2, paddingLeft: 8, paddingRight: 2 },
-  sectionLabel: { flexGrow: 1, color: color.fgSubtle, fontSize: font.xs, fontWeight: 500 },
-  sectionAdd: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 20,
-    height: 20,
-    padding: 0,
-    borderWidth: 0,
-    borderRadius: radius.sm,
-    backgroundColor: { default: "transparent", ":hover": color.hover },
-    color: { default: color.fgSubtle, ":hover": color.fg },
-    cursor: "pointer"
-  },
-  projects: { display: "flex", flexDirection: "column", gap: 2, overflowY: "auto", minHeight: 0 },
   projectName: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  projectGh: { color: color.fgSubtle, display: "inline-flex", flexShrink: 0 },
-  emptyProjects: { paddingInline: 8, paddingBlock: 4, color: color.fgSubtle, fontSize: font.sm },
-  spacer: { flexGrow: 1 },
-  status: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    paddingInline: 8,
-    height: 28,
-    color: color.fgSubtle,
-    fontSize: font.sm
-  },
+  projectGh: { color: colors.mutedForeground, display: "inline-flex", flexShrink: 0 },
+  emptyProjects: { paddingInline: 8, paddingBlock: 4, color: colors.mutedForeground, fontSize: "0.75rem" },
+  status: { display: "flex", alignItems: "center", gap: 8, paddingInline: 8, height: 28, color: colors.mutedForeground, fontSize: "0.75rem" },
   statusDot: { width: 6, height: 6, borderRadius: "50%" },
   online: { backgroundColor: "#46a758" },
   connecting: { backgroundColor: "#f5a524" },
-  offline: { backgroundColor: color.danger },
-  main: { minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" },
-  loading: { display: "grid", placeItems: "center", height: "100%", color: color.fgSubtle, fontSize: font.md }
+  offline: { backgroundColor: colors.destructive },
+  main: { minWidth: 0, minHeight: 0, height: "100svh", overflow: "hidden", backgroundColor: color.bg, color: color.fg },
+  loading: { display: "grid", placeItems: "center", height: "100%", color: colors.mutedForeground }
 })
 
-const NavLink = (props: { href: string; children: JSX.Element; indent?: boolean; match?: (path: string) => boolean }) => {
+/** A sidebar link, marked active for the current route. */
+const NavLink = (props: { href: string; children: JSX.Element; sub?: boolean; match?: (path: string) => boolean }) => {
   const location = useLocation()
   const active = () => (props.match ? props.match(location.pathname) : location.pathname === props.href)
   return (
-    <a href={props.href} {...stylex.attrs(s.link, props.indent && s.indent, active() && s.linkActive)}>
-      {props.children}
-    </a>
+    <Show
+      when={props.sub}
+      fallback={<SidebarMenuButton isActive={active()} render={<a href={props.href} />}>{props.children}</SidebarMenuButton>}
+    >
+      <SidebarMenuSubButton isActive={active()} href={props.href}>{props.children}</SidebarMenuSubButton>
+    </Show>
   )
+}
+
+/** ⌘B, as a command, so it shows in ⌘K and "?" (shadcn binds it with a window listener). */
+const SidebarCommands = () => {
+  const sidebar = useSidebar()
+  useCommands([
+    { id: "sidebar.toggle", title: "Toggle sidebar", group: "Appearance", keys: ["mod+b"], run: () => sidebar.toggleSidebar() }
+  ])
+  return null
+}
+
+/** Sync errors (rejected changes) show as toasts until they expire or are dismissed. */
+const ErrorToasts = () => {
+  const sync = useContext(Sync)
+  const shown = new Set<string>()
+  createEffect(
+    () => sync.state.errors.map((e) => ({ id: e.id, message: e.message })),
+    (errors) => {
+      for (const error of errors) {
+        if (shown.has(error.id)) continue
+        shown.add(error.id)
+        const dismiss = () => sync.dismissError(error.id)
+        toast.error(error.message, { id: error.id, duration: 6000, onDismiss: dismiss, onAutoClose: dismiss })
+      }
+    }
+  )
+  return <Toaster />
 }
 
 export const Shell = (props: { children: JSX.Element }) => {
@@ -206,70 +164,92 @@ export const Shell = (props: { children: JSX.Element }) => {
   return (
     <ComposerContext value={{ open: openComposer }}>
       <ProjectDialogsContext value={projectDialogs}>
-      <div {...stylex.attrs(s.shell)}>
-        <nav {...stylex.attrs(s.sidebar)}>
-          <div {...stylex.attrs(s.workspace)}>
-            <span {...stylex.attrs(s.logo)} />
-            Gradient
-          </div>
-          <button type="button" onClick={() => openComposer()} {...stylex.attrs(s.newIssue)}>
-            <PlusIcon size={14} />
-            <span {...stylex.attrs(s.grow)}>New issue</span>
-            <Shortcut binding="c" />
-          </button>
-          <div {...stylex.attrs(s.section)}>Your team</div>
-          <div {...stylex.attrs(s.link, s.teamRow)}>
-            <span {...stylex.attrs(s.teamBadge)}>{team()?.key.slice(0, 1) ?? "·"}</span>
-            {team()?.name ?? "Team"}
-          </div>
-          <NavLink href="/" indent match={(p) => p === "/"}>All issues</NavLink>
-          <div {...stylex.attrs(s.sectionRow)}>
-            <span {...stylex.attrs(s.sectionLabel)}>Projects</span>
-            <button type="button" title="New project" onClick={() => projectDialogs.create()} {...stylex.attrs(s.sectionAdd)}>
-              <PlusIcon size={13} />
-            </button>
-          </div>
-          <div {...stylex.attrs(s.projects)}>
-            <For
-              each={projects()}
-              keyed={(p) => p.id}
-              fallback={<div {...stylex.attrs(s.emptyProjects)}>Group issues by product or repo.</div>}
-            >
-              {(project) => (
-                <NavLink href={projectHref(project().id)}>
-                  <ProjectIcon size={14} color={project().color} />
-                  <span {...stylex.attrs(s.projectName)}>{project().name}</span>
-                  <Show when={projectRepo(sync.state, project().id)}>
-                    {(r) => (
-                      <span {...stylex.attrs(s.projectGh)} title={`Syncs with ${r().owner}/${r().name}`}>
-                        <GithubIcon size={12} />
-                      </span>
-                    )}
-                  </Show>
+      <SidebarProvider>
+        <SidebarCommands />
+        <Sidebar>
+          <SidebarHeader>
+            <div {...stylex.attrs(s.workspace)}>
+              <span {...stylex.attrs(s.logo)} />
+              Gradient
+            </div>
+            <Button variant="outline" size="sm" xstyle={s.newIssue} onClick={() => openComposer()}>
+              <PlusIcon size={14} />
+              <span {...stylex.attrs(s.grow)}>New issue</span>
+              <Shortcut binding="c" />
+            </Button>
+          </SidebarHeader>
+          <SidebarContent>
+            <SidebarGroup>
+              <SidebarGroupLabel>Your team</SidebarGroupLabel>
+              <SidebarMenu>
+                <SidebarMenuItem>
+                  <SidebarMenuButton render={<div />}>
+                    <span {...stylex.attrs(s.teamBadge)}>{team()?.key.slice(0, 1) ?? "·"}</span>
+                    {team()?.name ?? "Team"}
+                  </SidebarMenuButton>
+                  <SidebarMenuSub>
+                    <SidebarMenuSubItem>
+                      <NavLink href="/" sub match={(p) => p === "/"}>All issues</NavLink>
+                    </SidebarMenuSubItem>
+                  </SidebarMenuSub>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroup>
+            <SidebarGroup>
+              <SidebarGroupLabel>Projects</SidebarGroupLabel>
+              <SidebarGroupAction title="New project" onClick={() => projectDialogs.create()}>
+                <PlusIcon size={14} />
+              </SidebarGroupAction>
+              <SidebarMenu>
+                <For
+                  each={projects()}
+                  keyed={(p) => p.id}
+                  fallback={<div {...stylex.attrs(s.emptyProjects)}>Group issues by product or repo.</div>}
+                >
+                  {(project) => (
+                    <SidebarMenuItem>
+                      <NavLink href={projectHref(project().id)}>
+                        <ProjectIcon size={14} color={project().color} />
+                        <span {...stylex.attrs(s.projectName)}>{project().name}</span>
+                        <Show when={projectRepo(sync.state, project().id)}>
+                          {(r) => (
+                            <span {...stylex.attrs(s.projectGh)} title={`Syncs with ${r().owner}/${r().name}`}>
+                              <GithubIcon size={12} />
+                            </span>
+                          )}
+                        </Show>
+                      </NavLink>
+                    </SidebarMenuItem>
+                  )}
+                </For>
+              </SidebarMenu>
+            </SidebarGroup>
+          </SidebarContent>
+          <SidebarFooter>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <NavLink href="/settings">
+                  <SettingsIcon size={15} />
+                  Settings
                 </NavLink>
-              )}
-            </For>
-          </div>
-          <div {...stylex.attrs(s.spacer)} />
-          <NavLink href="/settings">
-            <SettingsIcon size={15} />
-            Settings
-          </NavLink>
-          <div {...stylex.attrs(s.status)} title="Sync connection">
-            <span {...stylex.attrs(s.statusDot, s[sync.state.connection])} />
-            {sync.state.connection === "online" ? "Synced" : sync.state.connection === "connecting" ? "Connecting…" : "Offline, retrying"}
-          </div>
-        </nav>
-        <main {...stylex.attrs(s.main)}>
+              </SidebarMenuItem>
+            </SidebarMenu>
+            <div {...stylex.attrs(s.status)} title="Sync connection">
+              <span {...stylex.attrs(s.statusDot, s[sync.state.connection])} />
+              {sync.state.connection === "online" ? "Synced" : sync.state.connection === "connecting" ? "Connecting…" : "Offline, retrying"}
+            </div>
+          </SidebarFooter>
+        </Sidebar>
+        <SidebarInset xstyle={s.main}>
           <Show when={sync.state.ready} fallback={<div {...stylex.attrs(s.loading)}>Loading…</div>}>
             {props.children}
           </Show>
-        </main>
-      </div>
+        </SidebarInset>
+      </SidebarProvider>
       <Composer open={composer().open} defaults={composer().defaults} onClose={() => setComposer((c) => ({ ...c, open: false }))} />
       <CommandSurfaces />
       <ProjectDialog mode={projectDialog()} onClose={() => setProjectDialog(null)} />
-      <Toaster errors={sync.state.errors} onDismiss={sync.dismissError} />
+      <ErrorToasts />
       </ProjectDialogsContext>
     </ComposerContext>
   )

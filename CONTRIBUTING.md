@@ -44,7 +44,8 @@ Server tests never touch GitHub: they use `apps/server/test/fake-github.ts`.
 | A write | Go through `Mutations.apply` / `Mutations.transact`. Direct table writes skip the sync log, live updates and GitHub. |
 | A user action | A command via `useCommands` (id, title, group, scope, optional keys). It then shows in ⌘K and `?` and can be remapped. No ad-hoc `keydown` listeners. |
 | An agent capability | A tool in `apps/server/src/mcp/tools.ts` + handler in `server.ts`. Names in, names out, errors that list valid values. |
-| An icon | Import it per file from `@lucide/solid/icons/<name>` in `ui/icons.tsx` |
+| A UI element | A shadcn-solid component, copied in with its CLI (`shadcn-solid add <name> --cwd apps/web`), composed in `app/` |
+| An icon | Import its data from `lucide` in `ui/icons.tsx` |
 | A color | A token in `theme/tokens.stylex.ts`, set in every palette for both light and dark |
 | A dependency | Only when it carries real weight. Say why in the commit. |
 

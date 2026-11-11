@@ -1,61 +1,62 @@
 import * as stylex from "@stylexjs/stylex"
+import { Archive } from "lucide"
 import { useNavigate, useParams } from "@solidjs/router"
 import { createSignal, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
-import { useCommands, useScope } from "../keys/solid.tsx"
+import { KeyScope, useCommands, useScope } from "../keys/solid.tsx"
 import { findIssue, formatRelative, issueKey, projectHref } from "../lib/select.ts"
-import { color, font, radius } from "../theme/tokens.stylex.ts"
-import { ArchiveIcon, ChevronRightIcon, GithubIcon, MoreIcon, RestoreIcon, TrashIcon } from "../ui/icons.tsx"
-import { AutoTextarea, Avatar, Button, PickerList, Popover } from "../ui/kit.tsx"
+import { bareTextarea } from "../app/styles.ts"
+import { UserAvatar } from "../app/UserAvatar.tsx"
+import { colors } from "../lib/tokens.stylex.ts"
+import { Alert, AlertAction, alertIconStyles, AlertTitle } from "../ui/alert.tsx"
+import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "../ui/breadcrumb.tsx"
+import { Button, type ButtonProps } from "../ui/button.tsx"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "../ui/dropdown-menu.tsx"
+import { Icon } from "../ui/icon.tsx"
+import { ArchiveIcon, GithubIcon, MoreIcon, RestoreIcon, TrashIcon } from "../ui/icons.tsx"
+import { Separator } from "../ui/separator.tsx"
+import { Textarea } from "../ui/textarea.tsx"
 import { PageHeader } from "./Header.tsx"
 
 const s = stylex.create({
   layout: { display: "grid", gridTemplateColumns: "1fr 280px", flexGrow: 1, minHeight: 0 },
   main: { overflowY: "auto", paddingTop: 36, paddingBottom: 80 },
-  column: { maxWidth: 720, marginInline: "auto", paddingInline: 32 },
-  title: { fontSize: font.xl, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3 },
-  description: { marginTop: 14, minHeight: 120, fontSize: 14, lineHeight: 1.65, color: color.fg },
-  archived: {
-    marginBottom: 16,
-    paddingBlock: 8,
-    paddingInline: 12,
-    borderRadius: radius.md,
-    backgroundColor: color.subtle,
-    color: color.fgMuted,
-    fontSize: font.md,
-    display: "flex",
-    alignItems: "center",
-    gap: 10
-  },
+  column: { display: "flex", flexDirection: "column", maxWidth: 720, marginInline: "auto", paddingInline: 32 },
+  title: { fontSize: 22, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3 },
+  description: { marginTop: 14, minHeight: 120, fontSize: 14, lineHeight: 1.65 },
+  archived: { marginBottom: 16 },
   side: {
     overflowY: "auto",
     paddingBlock: 20,
     paddingInline: 16,
     borderLeftWidth: 1,
     borderLeftStyle: "solid",
-    borderLeftColor: color.border,
+    borderLeftColor: colors.border,
     display: "flex",
     flexDirection: "column",
     gap: 2
   },
-  prop: { display: "grid", gridTemplateColumns: "84px 1fr", alignItems: "center", minHeight: 32 },
-  propLabel: { color: color.fgMuted, fontSize: font.sm },
-  divider: { height: 1, backgroundColor: color.border, marginBlock: 14 },
-  meta: { display: "flex", alignItems: "center", gap: 8, color: color.fgMuted, fontSize: font.sm, minHeight: 26 },
+  prop: { display: "grid", gridTemplateColumns: "84px minmax(0, 1fr)", alignItems: "center", minHeight: 32 },
+  propLabel: { color: colors.mutedForeground, fontSize: "0.75rem" },
+  divider: { marginBlock: 14 },
+  meta: { display: "flex", alignItems: "center", gap: 8, color: colors.mutedForeground, fontSize: "0.75rem", minHeight: 26 },
   ghLink: {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    color: { default: color.fgMuted, ":hover": color.fg },
-    fontSize: font.sm,
-    textDecoration: "none",
+    color: { default: colors.mutedForeground, ":hover": colors.foreground },
+    fontSize: "0.75rem",
     minHeight: 26
   },
-  crumb: { color: color.fgMuted, textDecoration: "none", fontWeight: 500 },
-  crumbSep: { color: color.fgSubtle, display: "inline-flex" },
-  missing: { display: "grid", placeItems: "center", height: "60%", color: color.fgMuted }
+  missing: { display: "grid", placeItems: "center", height: "60%", color: colors.mutedForeground }
 })
 
 export const IssuePage = () => {
@@ -109,66 +110,84 @@ export const IssuePage = () => {
         <>
           <PageHeader
             title={
-              <>
-                <a href="/" {...stylex.attrs(s.crumb)}>{sync.state.teams[current().teamId]?.name}</a>
-                <span {...stylex.attrs(s.crumbSep)}><ChevronRightIcon size={12} /></span>
-                <Show when={current().projectId ? sync.state.projects[current().projectId!] : undefined}>
-                  {(p) => (
-                    <>
-                      <a href={projectHref(p().id)} {...stylex.attrs(s.crumb)}>{p().name}</a>
-                      <span {...stylex.attrs(s.crumbSep)}><ChevronRightIcon size={12} /></span>
-                    </>
-                  )}
-                </Show>
-                <span>{issueKey(sync.state, current())}</span>
-              </>
+              <Breadcrumb>
+                <BreadcrumbList>
+                  <BreadcrumbItem>
+                    <BreadcrumbLink href="/">{sync.state.teams[current().teamId]?.name}</BreadcrumbLink>
+                  </BreadcrumbItem>
+                  <BreadcrumbSeparator />
+                  <Show when={current().projectId ? sync.state.projects[current().projectId!] : undefined}>
+                    {(p) => (
+                      <>
+                        <BreadcrumbItem>
+                          <BreadcrumbLink href={projectHref(p().id)}>{p().name}</BreadcrumbLink>
+                        </BreadcrumbItem>
+                        <BreadcrumbSeparator />
+                      </>
+                    )}
+                  </Show>
+                  <BreadcrumbItem>
+                    <BreadcrumbPage>{issueKey(sync.state, current())}</BreadcrumbPage>
+                  </BreadcrumbItem>
+                </BreadcrumbList>
+              </Breadcrumb>
             }
             actions={
-              <Popover
-                align="end"
-                trigger={(attrs) => (
-                  <Button variant="ghost" size="icon-sm" title="More actions" {...attrs}>
-                    <MoreIcon size={15} />
-                  </Button>
-                )}
-              >
-                {(api) => (
-                  <PickerList
-                    placeholder="Actions…"
-                    selected={[]}
-                    close={api.close}
-                    items={[
-                      current().archivedAt === null
-                        ? { value: "archive", label: "Archive", icon: () => <ArchiveIcon size={14} /> }
-                        : { value: "unarchive", label: "Restore from archive", icon: () => <RestoreIcon size={14} /> },
-                      { value: "delete", label: "Delete…", icon: () => <TrashIcon size={14} /> }
-                    ]}
-                    onPick={(action) => {
-                      const id = current().id
-                      if (action === "archive") sync.mutate({ _tag: "IssueArchive", id })
-                      if (action === "unarchive") sync.mutate({ _tag: "IssueUnarchive", id })
-                      if (action === "delete" && confirm("Delete this issue? This cannot be undone.")) {
-                        sync.mutate({ _tag: "IssueDelete", id })
-                        navigate("/")
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={(p) => (
+                    <Button {...(p as ButtonProps)} variant="ghost" size="icon-sm" title="More actions">
+                      <MoreIcon size={15} />
+                    </Button>
+                  )}
+                />
+                <DropdownMenuContent align="end">
+                  <KeyScope name="menu" blocking>
+                    <Show
+                      when={current().archivedAt === null}
+                      fallback={
+                        <DropdownMenuItem onClick={() => sync.mutate({ _tag: "IssueUnarchive", id: current().id })}>
+                          <RestoreIcon size={14} /> Restore from archive
+                        </DropdownMenuItem>
                       }
-                    }}
-                  />
-                )}
-              </Popover>
+                    >
+                      <DropdownMenuItem onClick={() => sync.mutate({ _tag: "IssueArchive", id: current().id })}>
+                        <ArchiveIcon size={14} /> Archive
+                      </DropdownMenuItem>
+                    </Show>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={() => {
+                        if (!confirm("Delete this issue? This cannot be undone.")) return
+                        sync.mutate({ _tag: "IssueDelete", id: current().id })
+                        navigate("/")
+                      }}
+                    >
+                      <TrashIcon size={14} /> Delete…
+                    </DropdownMenuItem>
+                  </KeyScope>
+                </DropdownMenuContent>
+              </DropdownMenu>
             }
           />
           <div {...stylex.attrs(s.layout)}>
             <div {...stylex.attrs(s.main)}>
               <div {...stylex.attrs(s.column)}>
                 <Show when={current().archivedAt !== null}>
-                  <div {...stylex.attrs(s.archived)}>
-                    <ArchiveIcon size={14} />
-                    This issue is archived.
-                    <Button size="sm" onClick={() => sync.mutate({ _tag: "IssueUnarchive", id: current().id })}>Restore</Button>
-                  </div>
+                  <Alert xstyle={s.archived}>
+                    <Icon icon={Archive} {...stylex.attrs(alertIconStyles)} />
+                    <AlertTitle>This issue is archived.</AlertTitle>
+                    <AlertAction>
+                      <Button size="xs" variant="outline" onClick={() => sync.mutate({ _tag: "IssueUnarchive", id: current().id })}>
+                        Restore
+                      </Button>
+                    </AlertAction>
+                  </Alert>
                 </Show>
-                <AutoTextarea
-                  ref={(el) => (titleEl = el)}
+                <Textarea
+                  ref={(el: HTMLTextAreaElement) => (titleEl = el)}
+                  rows={1}
                   aria-label="Title"
                   value={title()}
                   onInput={(e) => setTitle(e.currentTarget.value)}
@@ -179,16 +198,16 @@ export const IssuePage = () => {
                       e.currentTarget.blur()
                     }
                   }}
-                  sx={s.title}
+                  xstyle={[bareTextarea, s.title]}
                 />
-                <AutoTextarea
-                  ref={(el) => (descriptionEl = el)}
+                <Textarea
+                  ref={(el: HTMLTextAreaElement) => (descriptionEl = el)}
                   aria-label="Description"
                   placeholder="Add a description…"
                   value={description()}
                   onInput={(e) => setDescription(e.currentTarget.value)}
                   onBlur={commitDescription}
-                  sx={s.description}
+                  xstyle={[bareTextarea, s.description]}
                 />
               </div>
             </div>
@@ -213,7 +232,7 @@ export const IssuePage = () => {
                 <span {...stylex.attrs(s.propLabel)}>Labels</span>
                 <LabelPicker apiRef={(a) => (apis.labels = a)} variant="row" teamId={current().teamId} value={current().labelIds} onChange={(labelIds) => actions.update(current(), { labelIds })} />
               </div>
-              <div {...stylex.attrs(s.divider)} />
+              <Separator xstyle={s.divider} />
               <Show when={current().github}>
                 {(gh) => (
                   <a href={gh().url} target="_blank" rel="noreferrer" {...stylex.attrs(s.ghLink)}>
@@ -223,7 +242,7 @@ export const IssuePage = () => {
                 )}
               </Show>
               <div {...stylex.attrs(s.meta)}>
-                <Avatar name={sync.state.users[current().creatorId]?.name ?? null} src={sync.state.users[current().creatorId]?.avatarUrl ?? null} size={16} />
+                <UserAvatar name={sync.state.users[current().creatorId]?.name ?? null} src={sync.state.users[current().creatorId]?.avatarUrl ?? null} size={16} />
                 Created by {sync.state.users[current().creatorId]?.name ?? "someone"} · {formatRelative(current().createdAt)}
               </div>
               <div {...stylex.attrs(s.meta)}>Updated {formatRelative(current().updatedAt)}</div>

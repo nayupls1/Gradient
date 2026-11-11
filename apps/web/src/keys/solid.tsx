@@ -1,7 +1,8 @@
 import * as stylex from "@stylexjs/stylex"
 import type { JSX } from "@solidjs/web"
 import { createContext, createSignal, For, onSettled, useContext } from "solid-js"
-import { color, font, radius } from "../theme/tokens.stylex.ts"
+import { colors } from "../lib/tokens.stylex.ts"
+import { Kbd, KbdGroup } from "../ui/kbd.tsx"
 import { type CommandDef, createKeymap, type Keymap } from "./core.ts"
 
 /*
@@ -84,44 +85,22 @@ export const useKeymapVersion = () => {
 }
 
 const s = stylex.create({
-  combo: { display: "inline-flex", alignItems: "center", gap: 4 },
-  chord: { display: "inline-flex", gap: 2 },
-  then: { color: color.fgSubtle, fontSize: font.xs },
-  key: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    minWidth: 18,
-    height: 18,
-    paddingInline: 4,
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: color.border,
-    backgroundColor: color.subtle,
-    color: color.fgMuted,
-    fontFamily: font.sans,
-    fontSize: 11,
-    fontWeight: 500,
-    lineHeight: 1
-  }
+  then: { color: colors.mutedForeground, fontSize: "0.6875rem" }
 })
 
 /** Renders a binding for this platform, e.g. ⌘ K, or G then I. */
 export const Shortcut = (props: { binding: string }) => {
   const keymap = useKeymap()
   return (
-    <span {...stylex.attrs(s.combo)}>
+    <KbdGroup>
       <For each={keymap.format(props.binding)} keyed={false}>
         {(chord, i) => (
           <>
             {i > 0 && <span {...stylex.attrs(s.then)}>then</span>}
-            <span {...stylex.attrs(s.chord)}>
-              <For each={chord()} keyed={false}>{(key) => <kbd {...stylex.attrs(s.key)}>{key()}</kbd>}</For>
-            </span>
+            <For each={chord()} keyed={false}>{(key) => <Kbd>{key()}</Kbd>}</For>
           </>
         )}
       </For>
-    </span>
+    </KbdGroup>
   )
 }

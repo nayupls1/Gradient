@@ -143,7 +143,7 @@ Remap any command in localStorage under `gradient.keymap`, for example
 ```
 packages/domain   Schemas, mutations, RPC contract, shared by both sides
 apps/server       Bun + Effect: SQLite, sync engine, GitHub sync
-apps/web          Solid 2 + StyleX: client sync store, UI kit, views
+apps/web          Solid 2 + StyleX: client sync store, shadcn-solid components, views
 ```
 
 See [docs/PLAN.md](docs/PLAN.md) for the architecture,

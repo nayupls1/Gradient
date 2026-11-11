@@ -1,57 +1,59 @@
 import type { Priority, StateType } from "@gradient/domain"
-import type { LucideProps } from "@lucide/solid"
-import { Dynamic, type JSX } from "@solidjs/web"
-import Archive from "@lucide/solid/icons/archive"
-import ArchiveRestore from "@lucide/solid/icons/archive-arrow-up"
-import ArrowUpRight from "@lucide/solid/icons/arrow-up-right"
-import Bot from "@lucide/solid/icons/bot"
-import Box from "@lucide/solid/icons/box"
-import Check from "@lucide/solid/icons/check"
-import ChevronDown from "@lucide/solid/icons/chevron-down"
-import ChevronRight from "@lucide/solid/icons/chevron-right"
-import Circle from "@lucide/solid/icons/circle"
-import CircleCheck from "@lucide/solid/icons/circle-check"
-import CircleDashed from "@lucide/solid/icons/circle-dashed"
-import CircleDot from "@lucide/solid/icons/circle-dot"
-import CircleX from "@lucide/solid/icons/circle-x"
-import Command from "@lucide/solid/icons/command"
-import Copy from "@lucide/solid/icons/copy"
-import Ellipsis from "@lucide/solid/icons/ellipsis"
-import Keyboard from "@lucide/solid/icons/keyboard"
-import Minus from "@lucide/solid/icons/minus"
-import Monitor from "@lucide/solid/icons/monitor"
-import Moon from "@lucide/solid/icons/moon"
-import OctagonAlert from "@lucide/solid/icons/octagon-exclamation-point"
-import Palette from "@lucide/solid/icons/palette"
-import Pencil from "@lucide/solid/icons/pencil"
-import Plus from "@lucide/solid/icons/plus"
-import RefreshCw from "@lucide/solid/icons/refresh-cw"
-import Search from "@lucide/solid/icons/search"
-import Settings from "@lucide/solid/icons/settings"
-import SignalHigh from "@lucide/solid/icons/signal-high"
-import SignalLow from "@lucide/solid/icons/signal-low"
-import SignalMedium from "@lucide/solid/icons/signal-medium"
-import Sun from "@lucide/solid/icons/sun"
-import Tag from "@lucide/solid/icons/tag"
-import Trash from "@lucide/solid/icons/trash"
-import Unlink from "@lucide/solid/icons/unlink"
-import UserRound from "@lucide/solid/icons/user-round"
-import X from "@lucide/solid/icons/x"
+import {
+  Archive,
+  ArchiveArrowUp,
+  ArrowUpRight,
+  Bot,
+  Box,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  CircleCheck,
+  CircleDashed,
+  CircleDot,
+  CircleX,
+  Command,
+  Copy,
+  Ellipsis,
+  type IconNode,
+  Keyboard,
+  Minus,
+  Monitor,
+  Moon,
+  OctagonExclamationPoint,
+  Palette,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings,
+  SignalHigh,
+  SignalLow,
+  SignalMedium,
+  Sun,
+  Tag,
+  Trash,
+  Unlink,
+  UserRound,
+  X
+} from "lucide"
+import { Icon } from "./icon.tsx"
 
 /*
- * Icons come from Lucide, at one stroke weight and size scale. Import one file
- * per icon so dev loads stay small. The only non-Lucide glyph is GitHub's own
- * mark, since Lucide ships no brand icons.
+ * Icons are Lucide's icon data (the framework-agnostic `lucide` package),
+ * drawn by shadcn's `Icon` like the components in this folder, at one stroke
+ * weight and size scale. The only non-Lucide glyph is GitHub's own mark,
+ * since Lucide ships no brand icons.
  */
 
 type IconProps = { size?: number; color?: string }
-type Lucide = (props: LucideProps) => JSX.Element
 
-const wrap = (Icon: Lucide) => (p: IconProps) => (
-  <Icon size={p.size ?? 16} color={p.color ?? "currentColor"} stroke-width={1.75} aria-hidden="true" />
+const wrap = (icon: IconNode) => (p: IconProps) => (
+  <Icon icon={icon} size={p.size ?? 16} stroke={p.color ?? "currentColor"} stroke-width={1.75} />
 )
 
-const stateIcons: Record<StateType, Lucide> = {
+const stateIcons: Record<StateType, IconNode> = {
   backlog: CircleDashed,
   unstarted: Circle,
   started: CircleDot,
@@ -60,24 +62,23 @@ const stateIcons: Record<StateType, Lucide> = {
 }
 
 export const StateIcon = (props: { type: StateType; color: string; size?: number }) => (
-  <Dynamic component={stateIcons[props.type]} size={props.size ?? 15} color={props.color} stroke-width={2} aria-hidden="true" />
+  <Icon icon={stateIcons[props.type]} size={props.size ?? 15} stroke={props.color} stroke-width={2} />
 )
 
-const priorityIcons: Record<Priority, Lucide> = {
+const priorityIcons: Record<Priority, IconNode> = {
   0: Minus,
-  1: OctagonAlert,
+  1: OctagonExclamationPoint,
   2: SignalHigh,
   3: SignalMedium,
   4: SignalLow
 }
 
 export const PriorityIcon = (props: { priority: Priority; size?: number }) => (
-  <Dynamic
-    component={priorityIcons[props.priority]}
+  <Icon
+    icon={priorityIcons[props.priority]}
     size={props.size ?? 15}
-    color={props.priority === 1 ? "#e5602f" : "currentColor"}
+    stroke={props.priority === 1 ? "#e5602f" : "currentColor"}
     stroke-width={props.priority === 1 ? 2 : 1.9}
-    aria-hidden="true"
   />
 )
 
@@ -93,7 +94,7 @@ export const SettingsIcon = wrap(Settings)
 export const UserIcon = wrap(UserRound)
 export const TagIcon = wrap(Tag)
 export const ArchiveIcon = wrap(Archive)
-export const RestoreIcon = wrap(ArchiveRestore)
+export const RestoreIcon = wrap(ArchiveArrowUp)
 export const TrashIcon = wrap(Trash)
 export const SearchIcon = wrap(Search)
 export const PaletteIcon = wrap(Palette)

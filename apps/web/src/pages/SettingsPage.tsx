@@ -10,8 +10,15 @@ import type { JSX } from "@solidjs/web"
 import { type ColorTokens, paletteById, palettes } from "../theme/presets.ts"
 import { activeScheme, type Mode, resolveColors, theme, updateTheme } from "../theme/theme.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
+import { UserAvatar } from "../app/UserAvatar.tsx"
+import { Button, type ButtonProps } from "../ui/button.tsx"
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card.tsx"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible.tsx"
 import { BotIcon, CheckIcon, CopyIcon, ExternalIcon, GithubIcon, ProjectIcon, MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from "../ui/icons.tsx"
-import { Avatar, Button, Input } from "../ui/kit.tsx"
+import { Input } from "../ui/input.tsx"
+import { Label } from "../ui/label.tsx"
+import { Separator } from "../ui/separator.tsx"
+import { ToggleGroup, ToggleGroupItem } from "../ui/toggle-group.tsx"
 import { PageHeader } from "./Header.tsx"
 
 const s = stylex.create({
@@ -46,34 +53,8 @@ const s = stylex.create({
     display: "grid",
     gridTemplateColumns: "1fr 1fr"
   },
-  fieldLabel: { marginBottom: 8, marginTop: 4, color: color.fgMuted, fontSize: font.sm, fontWeight: 500 },
-  segmented: {
-    display: "inline-flex",
-    padding: 2,
-    gap: 2,
-    marginBottom: 20,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: color.border,
-    backgroundColor: color.subtle
-  },
-  segment: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    height: 26,
-    paddingInline: 10,
-    borderRadius: 4,
-    borderWidth: 0,
-    backgroundColor: "transparent",
-    color: { default: color.fgMuted, ":hover": color.fg },
-    fontFamily: "inherit",
-    fontSize: font.md,
-    fontWeight: 500,
-    cursor: "pointer"
-  },
-  segmentOn: { backgroundColor: color.panel, color: color.fg, boxShadow: `0 1px 2px ${color.shadow}` },
+  fieldLabel: { display: "block", marginBottom: 8, marginTop: 4, color: color.fgMuted },
+  modes: { marginBottom: 20 },
   agentRow: { display: "flex", alignItems: "center", gap: 10 },
   agentName: { width: 96, flexShrink: 0, fontSize: font.md, fontWeight: 500 },
   swatchActive: { boxShadow: `0 0 0 2px ${color.accent}`, borderColor: "transparent" },
@@ -89,16 +70,8 @@ const s = stylex.create({
     backgroundColor: color.accent,
     color: color.accentFg
   },
-  custom: {
-    marginTop: 16,
-    padding: 16,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: color.border,
-    backgroundColor: color.panel
-  },
-  customGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 10, marginTop: 12 },
+  custom: { marginTop: 16 },
+  customGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 10 },
   colorField: { display: "flex", alignItems: "center", gap: 10, fontSize: font.md },
   colorInput: {
     width: 28,
@@ -114,17 +87,6 @@ const s = stylex.create({
   row: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   muted: { color: color.fgMuted, fontSize: font.md },
   subtle: { color: color.fgSubtle, fontSize: font.sm },
-  panel: {
-    padding: 16,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: color.border,
-    backgroundColor: color.panel,
-    display: "flex",
-    flexDirection: "column",
-    gap: 12
-  },
   statusRow: { display: "flex", alignItems: "center", gap: 8, fontSize: font.md },
   dot: { width: 7, height: 7, borderRadius: "50%" },
   ok: { backgroundColor: "#46a758" },
@@ -148,7 +110,6 @@ const s = stylex.create({
   grow: { flexGrow: 1, minWidth: 200 },
   account: { display: "flex", alignItems: "center", gap: 10 },
   accountName: { fontSize: font.md, fontWeight: 600 },
-  divider: { height: 1, backgroundColor: color.border, marginInline: -16 },
   device: {
     display: "flex",
     flexDirection: "column",
@@ -196,7 +157,9 @@ const s = stylex.create({
     paddingInline: 10
   },
   link: { display: "inline-flex", alignItems: "center", gap: 4, color: color.accent, fontSize: font.md, textDecoration: "none" },
-  repoInput: { flexGrow: 1, flexBasis: 0, width: "auto", minWidth: 200 }
+  repoInput: { flexGrow: 1, flexBasis: 0, width: "auto", minWidth: 200 },
+  webhooks: { display: "flex", flexDirection: "column", gap: 8 },
+  webhooksTrigger: { textAlign: "left", cursor: "pointer" }
 })
 
 /** A tiny rendering of the app in one palette and scheme. */
@@ -255,25 +218,29 @@ const Appearance = () => {
       <h2 {...stylex.attrs(s.h2)}><PaletteIcon size={16} /> Appearance</h2>
       <p {...stylex.attrs(s.lede)}>Mode and palette are separate: every palette has a light and a dark version. Saved in this browser.</p>
 
-      <div {...stylex.attrs(s.fieldLabel)}>Mode</div>
-      <div {...stylex.attrs(s.segmented)} role="radiogroup" aria-label="Mode">
+      <Label xstyle={s.fieldLabel}>Mode</Label>
+      <ToggleGroup
+        variant="outline"
+        size="sm"
+        aria-label="Mode"
+        xstyle={s.modes}
+        value={[theme().mode]}
+        onValueChange={(value: ReadonlyArray<string>) => {
+          const mode = value[0] as Mode | undefined
+          if (mode) updateTheme((t) => ({ ...t, mode }))
+        }}
+      >
         <For each={MODES}>
           {(m) => (
-            <button
-              type="button"
-              role="radio"
-              aria-checked={theme().mode === m.value ? "true" : "false"}
-              onClick={() => updateTheme((t) => ({ ...t, mode: m.value }))}
-              {...stylex.attrs(s.segment, theme().mode === m.value && s.segmentOn)}
-            >
+            <ToggleGroupItem value={m.value}>
               {m.icon()}
               {m.label}
-            </button>
+            </ToggleGroupItem>
           )}
         </For>
-      </div>
+      </ToggleGroup>
 
-      <div {...stylex.attrs(s.fieldLabel)}>Palette</div>
+      <Label xstyle={s.fieldLabel}>Palette</Label>
       <div {...stylex.attrs(s.grid)}>
         <For each={palettes}>
           {(palette) => (
@@ -291,34 +258,34 @@ const Appearance = () => {
         </For>
       </div>
 
-      <div {...stylex.attrs(s.custom)}>
-        <div {...stylex.attrs(s.row)}>
-          <div {...stylex.attrs(s.grow)}>
-            <div style={{ "font-weight": 600, "font-size": "13px" }}>Custom colors</div>
-            <div {...stylex.attrs(s.subtle)}>
-              Changes apply to the {scheme()} version of {paletteById(theme().palette).name}.
-            </div>
-          </div>
+      <Card size="sm" xstyle={s.custom}>
+        <CardHeader>
+          <CardTitle>Custom colors</CardTitle>
+          <CardDescription>Changes apply to the {scheme()} version of {paletteById(theme().palette).name}.</CardDescription>
           <Show when={customized()}>
-            <Button variant="ghost" onClick={resetColors}>Reset</Button>
+            <CardAction>
+              <Button variant="ghost" size="sm" onClick={resetColors}>Reset</Button>
+            </CardAction>
           </Show>
-        </div>
-        <div {...stylex.attrs(s.customGrid)}>
-          <For each={EDITABLE}>
-            {(field) => (
-              <label {...stylex.attrs(s.colorField)}>
-                <input
-                  type="color"
-                  value={toHex(colors()[field.key])}
-                  onInput={(e) => setColor(field.key, e.currentTarget.value)}
-                  {...stylex.attrs(s.colorInput)}
-                />
-                {field.label}
-              </label>
-            )}
-          </For>
-        </div>
-      </div>
+        </CardHeader>
+        <CardContent>
+          <div {...stylex.attrs(s.customGrid)}>
+            <For each={EDITABLE}>
+              {(field) => (
+                <label {...stylex.attrs(s.colorField)}>
+                  <input
+                    type="color"
+                    value={toHex(colors()[field.key])}
+                    onInput={(e) => setColor(field.key, e.currentTarget.value)}
+                    {...stylex.attrs(s.colorInput)}
+                  />
+                  {field.label}
+                </label>
+              )}
+            </For>
+          </div>
+        </CardContent>
+      </Card>
     </section>
   )
 }
@@ -350,13 +317,14 @@ const Agents = () => {
       <p {...stylex.attrs(s.lede)}>
         Gradient is an MCP server. Agents read and change issues through the same sync engine as this app, so their edits show up here live.
       </p>
-      <div {...stylex.attrs(s.panel)}>
+      <Card size="sm">
+        <CardContent>
         <For each={commands()} keyed={(c) => c.name}>
           {(entry) => (
             <div {...stylex.attrs(s.agentRow)}>
               <span {...stylex.attrs(s.agentName)}>{entry().name}</span>
               <code {...stylex.attrs(s.code, s.grow)}>{entry().command}</code>
-              <Button size="icon" variant="ghost" title="Copy" onClick={() => copy(entry().command)}>
+              <Button size="icon-sm" variant="ghost" title="Copy" onClick={() => copy(entry().command)}>
                 <Show when={copied() === entry().command} fallback={<CopyIcon size={14} />}>
                   <CheckIcon size={14} />
                 </Show>
@@ -367,7 +335,8 @@ const Agents = () => {
         <div {...stylex.attrs(s.subtle)}>
           Tools: list, get, create and update issues, create projects (optionally from a GitHub repo), describe the workspace, and check or start the GitHub sign-in. The server also publishes a Gradient skill with the conventions agents should follow.
         </div>
-      </div>
+        </CardContent>
+      </Card>
     </section>
   )
 }
@@ -406,7 +375,7 @@ const GithubAccount = () => {
     <>
       <div {...stylex.attrs(s.account)}>
         <Show when={status()?.login} fallback={<span {...stylex.attrs(s.dot, s.off)} />}>
-          {(login) => <Avatar name={login()} src={status()?.avatarUrl ?? null} size={24} />}
+          {(login) => <UserAvatar name={login()} src={status()?.avatarUrl ?? null} size={24} />}
         </Show>
         <div {...stylex.attrs(s.grow)}>
           <div {...stylex.attrs(s.accountName)}>
@@ -418,10 +387,10 @@ const GithubAccount = () => {
           <div {...stylex.attrs(s.subtle)}>{description()}</div>
         </div>
         <Show when={status()?.tokenSource === "app"}>
-          <Button size="sm" variant="ghost" onClick={() => void github.signOut(sync)}>Sign out</Button>
+          <Button size="xs" variant="ghost" onClick={() => void github.signOut(sync)}>Sign out</Button>
         </Show>
         <Show when={status()?.signIn.available && status()?.tokenSource !== "app" && !status()?.signIn.pending}>
-          <Button size="sm" variant={connected() ? "default" : "primary"} onClick={() => void github.signIn(sync)}>
+          <Button size="sm" variant={connected() ? "outline" : "default"} onClick={() => void github.signIn(sync)}>
             <GithubIcon size={14} /> Sign in with GitHub
           </Button>
         </Show>
@@ -432,12 +401,12 @@ const GithubAccount = () => {
             <div {...stylex.attrs(s.subtle)}>Enter this code on GitHub to sign in</div>
             <div {...stylex.attrs(s.row)}>
               <code {...stylex.attrs(s.userCode)}>{pending().userCode}</code>
-              <Button size="icon" variant="ghost" title="Copy code" onClick={() => copyCode(pending().userCode)}>
+              <Button size="icon-sm" variant="ghost" title="Copy code" onClick={() => copyCode(pending().userCode)}>
                 <Show when={copied()} fallback={<CopyIcon size={14} />}><CheckIcon size={14} /></Show>
               </Button>
               <span {...stylex.attrs(s.grow)} />
               <Button
-                variant="primary"
+                size="sm"
                 onClick={() => {
                   copyCode(pending().userCode)
                   window.open(pending().verificationUri, "_blank", "noopener")
@@ -445,7 +414,7 @@ const GithubAccount = () => {
               >
                 Copy code and open GitHub <ExternalIcon size={14} />
               </Button>
-              <Button variant="ghost" onClick={() => void github.cancel(sync)}>Cancel</Button>
+              <Button variant="ghost" size="sm" onClick={() => void github.cancel(sync)}>Cancel</Button>
             </div>
             <div {...stylex.attrs(s.subtle)}>
               Waiting for you to approve Gradient on GitHub. The code expires in {minutesLeft(pending().expiresAt)} min.
@@ -520,10 +489,11 @@ const GithubSettings = () => {
       <p {...stylex.attrs(s.lede)}>
         Each project can sync with one repository: title, description, open/closed, labels and assignee, both ways.
       </p>
-      <div {...stylex.attrs(s.panel)}>
+      <Card size="sm">
+        <CardContent>
         <GithubAccount />
-        <div {...stylex.attrs(s.divider)} />
-        <div {...stylex.attrs(s.fieldLabel)}>Linked repositories</div>
+        <Separator />
+        <Label xstyle={s.fieldLabel}>Linked repositories</Label>
         <Show
           when={repos().length > 0}
           fallback={<div {...stylex.attrs(s.subtle)}>None yet. Link one below, or from a project's header.</div>}
@@ -551,10 +521,10 @@ const GithubSettings = () => {
                         {r().lastSyncedAt ? `synced ${formatRelative(r().lastSyncedAt!)}` : "not synced yet"}
                       </span>
                       <span {...stylex.attrs(s.spacer)} />
-                      <Button size="sm" variant="ghost" disabled={busy()} onClick={() => run(async () => (await sync.call((c) => c.GithubSyncNow({ repoId: r().id })), `Synced ${r().owner}/${r().name}.`))}>
+                      <Button size="xs" variant="ghost" disabled={busy()} onClick={() => run(async () => (await sync.call((c) => c.GithubSyncNow({ repoId: r().id })), `Synced ${r().owner}/${r().name}.`))}>
                         Sync now
                       </Button>
-                      <Button size="sm" variant="danger" disabled={busy()} onClick={() => confirm(`Unlink ${r().owner}/${r().name}? Issues stay in their project.`) && run(async () => (await sync.call((c) => c.GithubUnlinkRepo({ repoId: r().id })), "Unlinked."))}>
+                      <Button size="xs" variant="destructive" disabled={busy()} onClick={() => confirm(`Unlink ${r().owner}/${r().name}? Issues stay in their project.`) && run(async () => (await sync.call((c) => c.GithubUnlinkRepo({ repoId: r().id })), "Unlinked."))}>
                         Unlink
                       </Button>
                     </div>
@@ -566,12 +536,12 @@ const GithubSettings = () => {
           </div>
         </Show>
 
-        <div {...stylex.attrs(s.fieldLabel)}>Link a repository</div>
+        <Label xstyle={s.fieldLabel}>Link a repository</Label>
         <div {...stylex.attrs(s.row)}>
           <GithubRepoPicker
             onPick={(r) => void linkRepo(r.owner, r.name)}
-            trigger={(attrs) => (
-              <Button variant="primary" disabled={busy() || !connected()} {...attrs}>
+            trigger={(p) => (
+              <Button {...(p as ButtonProps)} size="sm" disabled={busy() || !connected()}>
                 <GithubIcon size={14} /> {busy() ? "Importing…" : "Choose a repository"}
               </Button>
             )}
@@ -594,32 +564,35 @@ const GithubSettings = () => {
             value={target()}
             onInput={(e) => setTarget(e.currentTarget.value)}
             onKeyDown={(e) => e.key === "Enter" && linkTyped()}
-            sx={s.repoInput}
+            xstyle={s.repoInput}
           />
-          <Button disabled={busy() || !connected() || !target().trim()} onClick={linkTyped}>Link</Button>
+          <Button variant="outline" disabled={busy() || !connected() || !target().trim()} onClick={linkTyped}>Link</Button>
         </div>
         <Show when={message()}>
           {(m) => <div {...stylex.attrs(m().error ? s.error : s.muted)}>{m().text}</div>}
         </Show>
 
         <Show when={repos().length > 0}>
-          <details>
-            <summary {...stylex.attrs(s.subtle)}>
+          <Collapsible xstyle={s.webhooks}>
+            <CollapsibleTrigger xstyle={[s.subtle, s.webhooksTrigger]}>
               Changes from GitHub arrive every {status()?.pollIntervalSeconds ?? 15}s. Instant updates with webhooks…
-            </summary>
-            <div {...stylex.attrs(s.subtle)}>
-              {status()?.webhookSecretSet ? "Forward each repository's webhooks:" : "Set GITHUB_WEBHOOK_SECRET, restart, then forward each repository's webhooks:"}
-            </div>
-            <For each={repos()} keyed={(r) => r.id}>
-              {(r) => (
-                <code {...stylex.attrs(s.code)}>
-                  gh webhook forward --repo={r().owner}/{r().name} --events=issues --url={url().replace(/\/mcp$/, "")}/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
-                </code>
-              )}
-            </For>
-          </details>
+            </CollapsibleTrigger>
+            <CollapsibleContent xstyle={s.webhooks}>
+              <div {...stylex.attrs(s.subtle)}>
+                {status()?.webhookSecretSet ? "Forward each repository's webhooks:" : "Set GITHUB_WEBHOOK_SECRET, restart, then forward each repository's webhooks:"}
+              </div>
+              <For each={repos()} keyed={(r) => r.id}>
+                {(r) => (
+                  <code {...stylex.attrs(s.code)}>
+                    gh webhook forward --repo={r().owner}/{r().name} --events=issues --url={url().replace(/\/mcp$/, "")}/webhooks/github --secret=$GITHUB_WEBHOOK_SECRET
+                  </code>
+                )}
+              </For>
+            </CollapsibleContent>
+          </Collapsible>
         </Show>
-      </div>
+        </CardContent>
+      </Card>
     </section>
   )
 }

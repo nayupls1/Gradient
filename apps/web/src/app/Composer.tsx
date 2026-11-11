@@ -2,48 +2,35 @@ import { keyBetween, type Priority, uuidv7 } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { createEffect, createSignal, Show, useContext } from "solid-js"
 import { firstTeam, teamStates } from "../lib/select.ts"
-import { color, font } from "../theme/tokens.stylex.ts"
-import { ChevronRightIcon } from "../ui/icons.tsx"
-import { Shortcut, useCommands } from "../keys/solid.tsx"
-import { AutoTextarea, Button, Dialog } from "../ui/kit.tsx"
+import { KeyScope, Shortcut, useCommands } from "../keys/solid.tsx"
+import { a11y } from "../lib/a11y.ts"
+import { colors } from "../lib/tokens.stylex.ts"
+import { Badge } from "../ui/badge.tsx"
+import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "../ui/breadcrumb.tsx"
+import { Button } from "../ui/button.tsx"
+import { Dialog, DialogContent, DialogFooter, DialogTitle } from "../ui/dialog.tsx"
+import { Textarea } from "../ui/textarea.tsx"
+import { bareTextarea } from "./styles.ts"
 import type { ComposerDefaults } from "./context.ts"
 import { Sync } from "./context.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker } from "./properties.tsx"
 
 const s = stylex.create({
-  header: {
-    display: "flex",
-    alignItems: "center",
-    gap: 6,
-    paddingTop: 14,
-    paddingInline: 16,
-    color: color.fgMuted,
-    fontSize: font.sm
-  },
-  teamKey: {
-    paddingInline: 6,
-    paddingBlock: 2,
-    borderRadius: 4,
-    backgroundColor: color.subtle,
-    color: color.fg,
-    fontWeight: 500
-  },
-  body: { paddingInline: 16, paddingTop: 10, paddingBottom: 4 },
-  title: { fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", lineHeight: 1.35 },
-  description: { marginTop: 8, minHeight: 72, fontSize: font.md, lineHeight: 1.55, color: color.fg },
+  dialog: { maxWidth: "min(640px, calc(100vw - 32px))", padding: 0, gap: 0, top: "12vh", translate: "-50% 0" },
+  header: { paddingTop: 14, paddingInline: 16 },
+  body: { display: "flex", flexDirection: "column", paddingInline: 16, paddingTop: 10, paddingBottom: 4 },
+  title: { fontSize: 18, lineHeight: 1.35, fontWeight: 600, letterSpacing: "-0.01em" },
+  description: { marginTop: 8, minHeight: 72, fontSize: 13, lineHeight: 1.55 },
   chips: { display: "flex", flexWrap: "wrap", gap: 6, paddingInline: 16, paddingBlock: 10 },
   footer: {
-    display: "flex",
     alignItems: "center",
-    justifyContent: "flex-end",
-    gap: 8,
     paddingInline: 12,
     paddingBlock: 10,
     borderTopWidth: 1,
     borderTopStyle: "solid",
-    borderTopColor: color.border
+    borderTopColor: colors.border
   },
-  hint: { marginRight: "auto", color: color.fgSubtle, fontSize: font.sm, display: "flex", alignItems: "center", gap: 4 }
+  hint: { marginRight: "auto", color: colors.mutedForeground, fontSize: "0.75rem", display: "flex", alignItems: "center", gap: 4 }
 })
 
 /** The "New issue" modal. Creating is optimistic: the issue shows in the list before the server answers. */
@@ -109,42 +96,54 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
   ])
 
   return (
-    <Dialog open={props.open} onClose={props.onClose} label="New issue" scope="composer">
+    <Dialog open={props.open} onOpenChange={(open) => !open && props.onClose()}>
+      <DialogContent xstyle={s.dialog} showCloseButton={false}>
+      <KeyScope name="composer" blocking>
+      <DialogTitle xstyle={a11y.srOnly}>New issue</DialogTitle>
       <form
         onSubmit={(e) => {
           e.preventDefault()
           submit()
         }}
       >
-        <div {...stylex.attrs(s.header)}>
-          <span {...stylex.attrs(s.teamKey)}>{(projectId() ? sync.state.projects[projectId()!]?.key : undefined) ?? team()?.key}</span>
-          <ChevronRightIcon size={12} />
-          <Show when={projectId() ? sync.state.projects[projectId()!] : undefined}>
-            {(p) => (
-              <>
-                <span>{p().name}</span>
-                <ChevronRightIcon size={12} />
-              </>
-            )}
-          </Show>
-          <span>New issue</span>
-        </div>
+        <Breadcrumb xstyle={s.header}>
+          <BreadcrumbList>
+            <BreadcrumbItem>
+              <Badge variant="secondary">{(projectId() ? sync.state.projects[projectId()!]?.key : undefined) ?? team()?.key}</Badge>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator />
+            <Show when={projectId() ? sync.state.projects[projectId()!] : undefined}>
+              {(p) => (
+                <>
+                  <BreadcrumbItem>{p().name}</BreadcrumbItem>
+                  <BreadcrumbSeparator />
+                </>
+              )}
+            </Show>
+            <BreadcrumbItem>
+              <BreadcrumbPage>New issue</BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
         <div {...stylex.attrs(s.body)}>
-          <AutoTextarea
-            ref={(el) => requestAnimationFrame(() => el.focus())}
+          <Textarea
+            ref={(el: HTMLTextAreaElement) => requestAnimationFrame(() => el.focus())}
+            rows={1}
+            aria-label="Title"
             placeholder="Issue title"
             value={title()}
             onInput={(e) => setTitle(e.currentTarget.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) e.preventDefault()
             }}
-            sx={s.title}
+            xstyle={[bareTextarea, s.title]}
           />
-          <AutoTextarea
+          <Textarea
+            aria-label="Description"
             placeholder="Add description…"
             value={description()}
             onInput={(e) => setDescription(e.currentTarget.value)}
-            sx={s.description}
+            xstyle={[bareTextarea, s.description]}
           />
         </div>
         <div {...stylex.attrs(s.chips)}>
@@ -154,15 +153,17 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
           <AssigneePicker value={assigneeId()} onChange={setAssigneeId} variant="chip" />
           <LabelPicker teamId={team()?.id ?? ""} value={labelIds()} onChange={setLabelIds} variant="chip" />
         </div>
-        <div {...stylex.attrs(s.footer)}>
+        <DialogFooter xstyle={s.footer}>
           <span {...stylex.attrs(s.hint)}>
             <Shortcut binding="mod+enter" />
             to create
           </span>
-          <Button variant="ghost" onClick={props.onClose}>Cancel</Button>
-          <Button variant="primary" type="submit" disabled={title().trim() === ""}>Create issue</Button>
-        </div>
+          <Button variant="ghost" size="sm" onClick={props.onClose}>Cancel</Button>
+          <Button size="sm" type="submit" disabled={title().trim() === ""}>Create issue</Button>
+        </DialogFooter>
       </form>
+      </KeyScope>
+      </DialogContent>
     </Dialog>
   )
 }
