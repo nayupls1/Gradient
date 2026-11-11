@@ -2,6 +2,7 @@ import { AuthMiddleware, CurrentViewer, Unauthorized } from "@gradient/domain"
 import { Effect, Layer, Option, Schedule } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { Auth, AUTH_BASE_PATH, CLIENT_IP_HEADER, type Viewer } from "./Auth.ts"
+import { Members } from "./Members.ts"
 
 /**
  * Better Auth's endpoints. The client's address is passed on in a header the
@@ -30,6 +31,46 @@ export const AuthConfigRoute = HttpRouter.add(
   Effect.gen(function*() {
     const auth = yield* Auth
     return HttpServerResponse.jsonUnsafe(yield* auth.publicConfig)
+  })
+)
+
+/** What an invite link offers, for the page that opens it before anyone signs in. */
+export const InvitePreviewRoute = HttpRouter.add(
+  "GET",
+  "/api/invites/:token",
+  Effect.gen(function*() {
+    const members = yield* Members
+    const { token } = yield* HttpRouter.params
+    return yield* members.preview(token ?? "").pipe(
+      Effect.map((preview) => HttpServerResponse.jsonUnsafe(preview)),
+      Effect.catchTag("MemberError", (e) => Effect.succeed(HttpServerResponse.jsonUnsafe({ message: e.message }, { status: 404 })))
+    )
+  })
+)
+
+/**
+ * Create an account from an invite link (`{ name, email, password }`) and
+ * sign it in. Works while sign-up is closed; the response sets the session
+ * cookie, like Better Auth's own sign-up.
+ */
+export const InviteAcceptRoute = HttpRouter.add(
+  "POST",
+  "/api/invites/:token/accept",
+  Effect.gen(function*() {
+    const members = yield* Members
+    const { token } = yield* HttpRouter.params
+    const request = yield* HttpServerRequest.HttpServerRequest
+    const body = (yield* request.json.pipe(Effect.orElseSucceed(() => null))) as Record<string, unknown> | null
+    const field = (key: string) => (typeof body?.[key] === "string" ? (body[key] as string) : "")
+    if (!field("name").trim() || !field("email").trim() || !field("password")) {
+      return HttpServerResponse.jsonUnsafe({ message: "Name, email and password are required." }, { status: 400 })
+    }
+    const headers = new Headers(request.headers as Record<string, string>)
+    headers.delete(CLIENT_IP_HEADER)
+    return yield* members.acceptWithSignUp(token ?? "", { name: field("name"), email: field("email"), password: field("password") }, headers).pipe(
+      Effect.map((response) => HttpServerResponse.fromWeb(response)),
+      Effect.catchTag("MemberError", (e) => Effect.succeed(HttpServerResponse.jsonUnsafe({ message: e.message }, { status: 400 })))
+    )
   })
 )
 

@@ -3,12 +3,24 @@ import { useLocation, useNavigate } from "@solidjs/router"
 import type { JSX } from "@solidjs/web"
 import { createEffect, createSignal, For, onSettled, Show, useContext } from "solid-js"
 import { Shortcut, useCommands } from "../keys/solid.tsx"
-import { firstTeam, projectHref, projectIdFromPath, projectRepo, teamProjects } from "../lib/select.ts"
+import {
+  allTeams,
+  currentTeam,
+  myTeams,
+  projectHref,
+  projectIdFromPath,
+  projectRepo,
+  teamFromPath,
+  teamHref,
+  teamProjects,
+  teamSettingsHref,
+  viewerIsAdmin
+} from "../lib/select.ts"
 import { updateTheme, activeScheme } from "../theme/theme.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { color } from "../theme/tokens.stylex.ts"
 import { Button } from "../ui/button.tsx"
-import { GithubIcon, PlusIcon, SettingsIcon } from "../ui/icons.tsx"
+import { GithubIcon, PlusIcon, SettingsIcon, UserPlusIcon, UsersIcon } from "../ui/icons.tsx"
 import { auth } from "./auth.ts"
 import {
   Sidebar,
@@ -20,6 +32,7 @@ import {
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSub,
@@ -31,9 +44,12 @@ import {
 import { Toaster, toast } from "../ui/sonner.tsx"
 import { CommandSurfaces } from "./CommandMenu.tsx"
 import { Composer } from "./Composer.tsx"
-import { type ComposerDefaults, ComposerContext, ProjectDialogsContext, Sync } from "./context.ts"
+import { type ComposerDefaults, ComposerContext, ProjectDialogsContext, Sync, WorkspaceDialogsContext } from "./context.ts"
+import { InviteDialog } from "./InviteDialog.tsx"
 import { ProjectDialog, type ProjectDialogMode } from "./ProjectDialog.tsx"
 import { ProjectGlyph } from "./ProjectGlyph.tsx"
+import { TeamBadge } from "./TeamBadge.tsx"
+import { TeamDialog } from "./TeamDialog.tsx"
 import { UserAvatar } from "./UserAvatar.tsx"
 import { github } from "./github.ts"
 
@@ -42,22 +58,8 @@ const s = stylex.create({
   logo: { flexShrink: 0, color: color.fg },
   newIssue: { width: "100%", justifyContent: "flex-start" },
   grow: { flexGrow: 1, textAlign: "left" },
-  teamBadge: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 16,
-    height: 16,
-    flexShrink: 0,
-    borderRadius: 4,
-    backgroundColor: colors.muted,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: colors.border,
-    fontSize: 9,
-    fontWeight: 700,
-    color: colors.mutedForeground
-  },
+  teamName: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 },
+  browse: { color: colors.mutedForeground },
   projectName: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   projectGh: { color: colors.mutedForeground, display: "inline-flex", flexShrink: 0 },
   emptyProjects: { paddingInline: 8, paddingBlock: 4, color: colors.mutedForeground, fontSize: "0.75rem" },
@@ -131,23 +133,60 @@ export const Shell = (props: { children: JSX.Element }) => {
   const navigate = useNavigate()
   const location = useLocation()
   const [composer, setComposer] = createSignal<{ open: boolean; defaults: ComposerDefaults }>({ open: false, defaults: {} })
-  // New issues land in the project being viewed, unless the caller says otherwise.
-  const openComposer = (defaults: ComposerDefaults = {}) =>
-    setComposer({ open: true, defaults: { projectId: projectIdFromPath(location.pathname) ?? null, ...defaults } })
-  const team = () => firstTeam(sync.state)
+  // New issues land in the team and project being viewed, unless the caller says otherwise.
+  const openComposer = (defaults: ComposerDefaults = {}) => {
+    const team = teamFromPath(sync.state, location.pathname)
+    setComposer({
+      open: true,
+      defaults: { projectId: projectIdFromPath(location.pathname) ?? null, ...(team ? { teamId: team.id } : {}), ...defaults }
+    })
+  }
+  const team = () => currentTeam(sync.state, location.pathname)
   const viewer = () => sync.state.users[sync.state.viewerId]
-  const projects = () => (team() ? teamProjects(sync.state, team()!.id) : [])
+  const teams = () => myTeams(sync.state)
   const [projectDialog, setProjectDialog] = createSignal<ProjectDialogMode | null>(null)
   const projectDialogs = {
-    create: () => setProjectDialog({ kind: "create" }),
+    create: (teamId?: string) => {
+      const id = teamId ?? team()?.id
+      setProjectDialog({ kind: "create", ...(id ? { teamId: id } : {}) })
+    },
     edit: (projectId: string, focus?: "icon") =>
       setProjectDialog({ kind: "edit", projectId, ...(focus ? { focus } : {}) })
+  }
+  const [teamDialog, setTeamDialog] = createSignal(false)
+  const [inviteDialog, setInviteDialog] = createSignal<ReadonlyArray<string> | null>(null)
+  const workspaceDialogs = {
+    createTeam: () => setTeamDialog(true),
+    invite: (teamIds?: ReadonlyArray<string>) => setInviteDialog(teamIds ?? (team() ? [team()!.id] : []))
   }
 
   useCommands([
     { id: "issue.create", title: "New issue", group: "General", keys: ["c"], run: () => openComposer() },
-    { id: "nav.issues", title: "Go to all issues", group: "Navigation", keys: ["g i"], run: () => navigate("/") },
+    {
+      id: "nav.issues",
+      title: "Go to the team's issues",
+      group: "Navigation",
+      keys: ["g i"],
+      run: () => navigate(team() ? teamHref(team()!) : "/")
+    },
     { id: "project.create", title: "New project", group: "General", keys: ["shift+c"], run: () => projectDialogs.create() },
+    { id: "team.create", title: "New team", group: "Teams", run: () => workspaceDialogs.createTeam() },
+    { id: "nav.teams", title: "Go to teams", group: "Navigation", keys: ["g t"], run: () => navigate("/teams") },
+    {
+      id: "nav.teamSettings",
+      title: "Go to team settings",
+      group: "Navigation",
+      when: () => team() !== undefined,
+      run: () => navigate(teamSettingsHref(team()!))
+    },
+    { id: "nav.members", title: "Go to members", group: "Navigation", keys: ["g m"], run: () => navigate("/members") },
+    {
+      id: "member.invite",
+      title: "Invite people",
+      group: "Teams",
+      when: () => viewerIsAdmin(sync.state),
+      run: () => workspaceDialogs.invite()
+    },
     { id: "nav.settings", title: "Go to settings", group: "Navigation", keys: ["g s", "mod+,"], run: () => navigate("/settings") },
     { id: "nav.profile", title: "Go to profile", group: "Navigation", keys: ["g p"], run: () => navigate("/profile") },
     { id: "auth.signOut", title: "Sign out", group: "Account", run: () => void auth.signOut() },
@@ -181,6 +220,7 @@ export const Shell = (props: { children: JSX.Element }) => {
   return (
     <ComposerContext value={{ open: openComposer }}>
       <ProjectDialogsContext value={projectDialogs}>
+      <WorkspaceDialogsContext value={workspaceDialogs}>
       <SidebarProvider>
         <SidebarCommands />
         <Sidebar>
@@ -197,48 +237,53 @@ export const Shell = (props: { children: JSX.Element }) => {
           </SidebarHeader>
           <SidebarContent>
             <SidebarGroup>
-              <SidebarGroupLabel>Your team</SidebarGroupLabel>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton render={<div />}>
-                    <span {...stylex.attrs(s.teamBadge)}>{team()?.key.slice(0, 1) ?? "·"}</span>
-                    {team()?.name ?? "Team"}
-                  </SidebarMenuButton>
-                  <SidebarMenuSub>
-                    <SidebarMenuSubItem>
-                      <NavLink href="/" sub match={(p) => p === "/"}>All issues</NavLink>
-                    </SidebarMenuSubItem>
-                  </SidebarMenuSub>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroup>
-            <SidebarGroup>
-              <SidebarGroupLabel>Projects</SidebarGroupLabel>
-              <SidebarGroupAction title="New project" onClick={() => projectDialogs.create()}>
+              <SidebarGroupLabel>Your teams</SidebarGroupLabel>
+              <SidebarGroupAction title="New team" onClick={() => workspaceDialogs.createTeam()}>
                 <PlusIcon size={14} />
               </SidebarGroupAction>
               <SidebarMenu>
-                <For
-                  each={projects()}
-                  keyed={(p) => p.id}
-                  fallback={<div {...stylex.attrs(s.emptyProjects)}>Group issues by product or repo.</div>}
-                >
-                  {(project) => (
+                <For each={teams()} keyed={(t) => t.id}>
+                  {(t) => (
                     <SidebarMenuItem>
-                      <NavLink href={projectHref(project().id)}>
-                        <ProjectGlyph project={project()} size={14} />
-                        <span {...stylex.attrs(s.projectName)}>{project().name}</span>
-                        <Show when={projectRepo(sync.state, project().id)}>
-                          {(r) => (
-                            <span {...stylex.attrs(s.projectGh)} title={`Syncs with ${r().owner}/${r().name}`}>
-                              <GithubIcon size={12} />
-                            </span>
-                          )}
-                        </Show>
+                      <NavLink href={teamHref(t())} match={(p) => p === teamHref(t()) || (p === "/" && team()?.id === t().id)}>
+                        <TeamBadge team={t()} />
+                        <span {...stylex.attrs(s.teamName)}>{t().name}</span>
                       </NavLink>
+                      <SidebarMenuAction showOnHover title={`New project in ${t().name}`} onClick={() => projectDialogs.create(t().id)}>
+                        <PlusIcon size={14} />
+                      </SidebarMenuAction>
+                      <Show when={teamProjects(sync.state, t().id).length > 0}>
+                        <SidebarMenuSub>
+                          <For each={teamProjects(sync.state, t().id)} keyed={(p) => p.id}>
+                            {(project) => (
+                              <SidebarMenuSubItem>
+                                <NavLink sub href={projectHref(project().id)}>
+                                  <ProjectGlyph project={project()} size={14} />
+                                  <span {...stylex.attrs(s.projectName)}>{project().name}</span>
+                                  <Show when={projectRepo(sync.state, project().id)}>
+                                    {(r) => (
+                                      <span {...stylex.attrs(s.projectGh)} title={`Syncs with ${r().owner}/${r().name}`}>
+                                        <GithubIcon size={12} />
+                                      </span>
+                                    )}
+                                  </Show>
+                                </NavLink>
+                              </SidebarMenuSubItem>
+                            )}
+                          </For>
+                        </SidebarMenuSub>
+                      </Show>
                     </SidebarMenuItem>
                   )}
                 </For>
+                <SidebarMenuItem>
+                  <NavLink href="/teams" match={(p) => p === "/teams"}>
+                    <UsersIcon size={15} />
+                    <span {...stylex.attrs(s.browse)}>
+                      {teams().length < allTeams(sync.state).length ? "Browse all teams" : "All teams"}
+                    </span>
+                  </NavLink>
+                </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroup>
           </SidebarContent>
@@ -248,6 +293,12 @@ export const Shell = (props: { children: JSX.Element }) => {
                 <NavLink href="/profile">
                   <UserAvatar name={viewer()?.name ?? auth.session()?.user.name ?? null} src={viewer()?.avatarUrl ?? null} size={16} />
                   <span {...stylex.attrs(s.projectName)}>{viewer()?.name ?? auth.session()?.user.name ?? "Profile"}</span>
+                </NavLink>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <NavLink href="/members">
+                  <UserPlusIcon size={15} />
+                  Members
                 </NavLink>
               </SidebarMenuItem>
               <SidebarMenuItem>
@@ -272,7 +323,10 @@ export const Shell = (props: { children: JSX.Element }) => {
       <Composer open={composer().open} defaults={composer().defaults} onClose={() => setComposer((c) => ({ ...c, open: false }))} />
       <CommandSurfaces />
       <ProjectDialog mode={projectDialog()} onClose={() => setProjectDialog(null)} />
+      <TeamDialog open={teamDialog()} onClose={() => setTeamDialog(false)} />
+      <InviteDialog open={inviteDialog() !== null} teamIds={inviteDialog() ?? []} onClose={() => setInviteDialog(null)} />
       <ErrorToasts />
+      </WorkspaceDialogsContext>
       </ProjectDialogsContext>
     </ComposerContext>
   )

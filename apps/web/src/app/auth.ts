@@ -1,4 +1,5 @@
 import { apiKeyClient } from "@better-auth/api-key/client"
+import type { InvitePreview } from "@gradient/domain"
 import { createAuthClient } from "better-auth/client"
 import { createSignal } from "solid-js"
 
@@ -56,6 +57,32 @@ const signOut = async () => {
 export const authErrorMessage = (error: { message?: string | undefined; status?: number } | null | undefined, fallback: string) =>
   error?.message || (error?.status === 429 ? "Too many attempts. Wait a minute and try again." : fallback)
 
+/** The token of an invite link the page was opened with (`/invite/<token>`), if any. */
+export const inviteTokenFromPath = (path = location.pathname) => path.match(/^\/invite\/([^/?#]+)/)?.[1] ?? null
+
+/** What an invite offers, or the reason it cannot be used. */
+const invitePreview = async (token: string): Promise<{ ok: true; invite: InvitePreview } | { ok: false; message: string }> => {
+  try {
+    const res = await fetch(`/api/invites/${encodeURIComponent(token)}`)
+    const body = (await res.json()) as InvitePreview & { message?: string }
+    return res.ok ? { ok: true, invite: body } : { ok: false, message: body.message ?? "This invite link is not valid." }
+  } catch {
+    return { ok: false, message: "Gradient is not reachable. Is the server running?" }
+  }
+}
+
+/** Create an account from an invite; the response signs it in. Returns an error message, or null. */
+const acceptInvite = async (token: string, account: { name: string; email: string; password: string }) => {
+  const res = await fetch(`/api/invites/${encodeURIComponent(token)}/accept`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(account)
+  })
+  if (res.ok) return null
+  const body = (await res.json().catch(() => ({}))) as { message?: string }
+  return authErrorMessage({ message: body.message, status: res.status }, "Could not create the account.")
+}
+
 export const auth = {
   session,
   refresh,
@@ -65,6 +92,8 @@ export const auth = {
   sessionEnded: () => setSession(null),
   connectionLost,
   signOut,
+  invitePreview,
+  acceptInvite,
   config: async (): Promise<AuthConfig> => {
     const res = await fetch("/api/auth-config")
     return res.ok ? ((await res.json()) as AuthConfig) : { signUpOpen: false, firstAccount: false }

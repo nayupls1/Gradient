@@ -12,12 +12,16 @@ import {
   projectKeyFor,
   pullRequestRefersTo,
   type Reference,
+  type Team,
+  teamKeyFor,
   teamKeys,
   textReferences,
+  invitePath,
   uuidv7
 } from "@gradient/domain"
 import { Effect, Layer, Option } from "effect"
 import { McpProtocol, McpServer } from "effect/ai"
+import { Members } from "../auth/Members.ts"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
 import { GithubAuth } from "../github/GithubAuth.ts"
@@ -33,8 +37,9 @@ const iso = (ms: number) => new Date(ms).toISOString()
 export const mcpUrl = (config: { host: string; port: number }) =>
   `http://${config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host}:${config.port}/mcp`
 
-const INSTRUCTIONS = `Gradient is the user's issue tracker. Issues have identifiers like TES-12: the key of their project (or of the team, GRD, when they have none) and a number.
-Call describe_workspace once to learn workflow states, labels, people and projects, then use those names.
+const INSTRUCTIONS = `Gradient is the user's issue tracker. Issues have identifiers like TES-12: the key of their project (or of their team, GRD, when they have none) and a number.
+The workspace has teams; each has its own workflow states, labels and projects. Tools work in your first team unless you pass \`team\`; tools that take an identifier find its team themselves.
+Call describe_workspace once to learn teams, workflow states, labels, people and projects, then use those names.
 Put issues in the project they belong to; a project with a linked repo syncs its issues to GitHub.
 Record dependencies with link_issues ("blocked_by"); get_issue shows blockers, the pull requests that refer to an issue, its comments and what it mentions.
 Writes show up live in the user's app and sync to GitHub when a repo is linked, so keep titles short and specific, and put detail in the description (markdown).`
@@ -46,8 +51,9 @@ description: Track work in Gradient, the user's issue tracker. Use when planning
 
 # Working with Gradient
 
-1. Call \`describe_workspace\` once per session. It lists the workflow states in
-   order, the labels and the people. Use those exact names.
+1. Call \`describe_workspace\` once per session. It lists the teams, the workflow
+   states in order, the labels and the people. Use those exact names. Pass
+   \`team\` to work in a team other than your first.
 2. Before creating an issue, \`list_issues\` with a \`query\` to avoid duplicates.
 3. Titles: short and specific, in the imperative ("Fix crash when saving offline").
    Put context, reproduction steps and acceptance criteria in the description.
@@ -61,6 +67,9 @@ description: Track work in Gradient, the user's issue tracker. Use when planning
    "blocked_by". Prefer issues with \`blocked: false\` when picking what to do
    next (\`list_issues\` with \`blocked: false\`).
 7. Never mass-edit or archive issues you did not create unless the user asks.
+8. To bring a new person in, an admin can \`invite_person\`: hand the link to the
+   user to send on. Add people who already have an account with
+   \`add_team_member\`.
 `
 
 const ToolHandlers = GradientToolkit.toLayer(
@@ -70,28 +79,77 @@ const ToolHandlers = GradientToolkit.toLayer(
     const config = yield* ServerConfig
     const auth = yield* GithubAuth
     const github = yield* GithubSync
+    const members = yield* Members
 
-    /** Everything needed to translate between names and ids. Small enough to load per call. */
-    const workspace = Effect.gen(function*() {
-      const team = (yield* db.teams)[0]
-      if (!team) return yield* fail("No team exists yet.")
-      // The owner of the agent key, resolved by RequireApiKey for this request.
+    /** The user behind the agent key of this request (resolved by RequireApiKey). */
+    const viewerId = Effect.gen(function*() {
       const viewer = yield* Effect.serviceOption(CurrentViewer)
       if (Option.isNone(viewer)) return yield* fail("Not signed in: send an agent key from your Gradient profile.")
-      const viewerId = viewer.value.userId
-      const states = yield* db.statesForTeam(team.id)
-      const labels = yield* db.labelsForTeam(team.id)
-      const users = yield* db.users
-      const projects = yield* db.projectsForTeam(team.id)
-      const repos = (yield* db.githubRepos).filter((r) => r.teamId === team.id)
-      const relations = yield* db.relationsForTeam(team.id)
-      const pullRequests = yield* db.pullRequestsForTeam(team.id)
-      const issues = yield* db.issuesForTeam(team.id)
-      const comments = yield* db.commentsForTeam(team.id)
-      const keys = teamKeys(team, projects)
-      return { team, viewerId, states, labels, users, projects, repos, relations, pullRequests, comments, issues, keys }
-    }).pipe(Effect.catchTag("SqlError", Effect.die))
-    type Workspace = Effect.Success<typeof workspace>
+      return viewer.value.userId
+    })
+
+    const teamList = (teams: ReadonlyArray<Team>) => teams.map((t) => `"${t.name}" (${t.key})`).join(", ")
+
+    /**
+     * The team a tool works in: the one named (by name or key), else the
+     * caller's first team by name, else the first team.
+     */
+    const resolveTeam = (ref: string | undefined, userId: string) =>
+      Effect.gen(function*() {
+        const teams = yield* db.teams
+        if (teams.length === 0) return yield* fail("No team exists yet. Call create_team.")
+        if (ref !== undefined && ref.trim() !== "") {
+          const n = ref.trim().toLowerCase()
+          const team = teams.find((t) => t.key.toLowerCase() === n || t.name.toLowerCase() === n)
+          return team ?? (yield* fail(`Unknown team "${ref}". Valid: ${teamList(teams)}.`))
+        }
+        const mine = new Set((yield* db.teamsOfUser(userId)).map((m) => m.teamId))
+        return teams.find((t) => mine.has(t.id)) ?? teams[0]!
+      }).pipe(Effect.catchTag("SqlError", Effect.die))
+
+    /** Everything needed to translate between names and ids in one team. Small enough to load per call. */
+    const workspace = (teamRef?: string) =>
+      Effect.gen(function*() {
+        const viewer = yield* viewerId
+        const team = yield* resolveTeam(teamRef, viewer)
+        const states = yield* db.statesForTeam(team.id)
+        const labels = yield* db.labelsForTeam(team.id)
+        const users = yield* db.users
+        const projects = yield* db.projectsForTeam(team.id)
+        const repos = (yield* db.githubRepos).filter((r) => r.teamId === team.id)
+        const relations = yield* db.relationsForTeam(team.id)
+        const pullRequests = yield* db.pullRequestsForTeam(team.id)
+        const issues = yield* db.issuesForTeam(team.id)
+        const comments = yield* db.commentsForTeam(team.id)
+        const keys = teamKeys(team, projects)
+        return { team, viewerId: viewer, states, labels, users, projects, repos, relations, pullRequests, comments, issues, keys }
+      }).pipe(Effect.catchTag("SqlError", Effect.die))
+
+    /** The workspace of the team an identifier belongs to: GRD-12 by the team key, TES-12 by a project's. */
+    const workspaceForIssue = (ref: string) =>
+      Effect.gen(function*() {
+        const parsed = parseIdentifier(ref)
+        if (parsed) {
+          const team = (yield* db.getTeamByKey(parsed.key)) ??
+            (yield* db.getTeam((yield* db.projects).find((p) => p.key === parsed.key)?.teamId ?? ""))
+          if (team) return yield* workspace(team.key)
+        } else {
+          const issue = yield* db.getIssue(ref)
+          const team = issue ? yield* db.getTeam(issue.teamId) : undefined
+          if (team) return yield* workspace(team.key)
+        }
+        return yield* workspace()
+      }).pipe(Effect.catchTag("SqlError", Effect.die))
+
+    /** With no team named, a project's name picks its team, when only one team has a project of that name. */
+    const teamForProject = (team: string | undefined, project: string | undefined) =>
+      Effect.gen(function*() {
+        if (team !== undefined || project === undefined) return team
+        const n = project.trim().toLowerCase()
+        const owners = [...new Set((yield* db.projects).filter((p) => p.name.toLowerCase() === n).map((p) => p.teamId))]
+        return owners.length === 1 ? (yield* db.getTeam(owners[0]!))?.key : undefined
+      }).pipe(Effect.catchTag("SqlError", Effect.die))
+    type Workspace = Effect.Success<ReturnType<typeof workspace>>
 
     const names = (list: ReadonlyArray<{ name: string }>) => list.map((x) => `"${x.name}"`).join(", ")
 
@@ -257,10 +315,45 @@ const ToolHandlers = GradientToolkit.toLayer(
     /** The issue as it is now, read with a fresh workspace so new relations show. */
     const reload = (id: string) =>
       Effect.gen(function*() {
-        const ws = yield* workspace
+        const row = yield* db.getIssue(id).pipe(Effect.orDie)
+        const team = row ? yield* db.getTeam(row.teamId).pipe(Effect.orDie) : undefined
+        const ws = yield* workspace(team?.key)
         const issue = ws.issues.find((i) => i.id === id)
         return issue ? detail(ws, issue) : yield* fail("The issue disappeared.")
       })
+
+    /** Where people open the app: GRADIENT_URL, else this server. */
+    const appUrl = Option.isSome(config.auth.url)
+      ? config.auth.url.value.replace(/\/$/, "")
+      : `http://${config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host}:${config.port}`
+
+    const applyAs = (actorId: string, list: ReadonlyArray<Mutation>) =>
+      mutations.apply({ origin: "mcp", actorId, clientTxId: null }, list).pipe(
+        Effect.mapError((e) => new ToolError({ message: e.message }))
+      )
+
+    /** A team as the team tools return it. */
+    const teamResult = (teamId: string) =>
+      Effect.gen(function*() {
+        const team = yield* db.getTeam(teamId)
+        if (!team) return yield* fail("The team disappeared.")
+        const users = yield* db.users
+        const people = (yield* db.membersOfTeam(teamId)).flatMap((m) => users.find((u) => u.id === m.userId)?.name ?? [])
+        return { name: team.name, key: team.key, members: people }
+      }).pipe(Effect.catchTag("SqlError", Effect.die))
+
+    /** "me", or someone with an account, by name or GitHub login. */
+    const resolveMember = (actorId: string, who: string) =>
+      Effect.gen(function*() {
+        const n = who.trim().replace(/^@/, "").toLowerCase()
+        if (n === "me") return actorId
+        const people = (yield* db.users).filter((u) => u.role !== null)
+        const user = people.find((u) => u.name.toLowerCase() === n || u.githubLogin?.toLowerCase() === n)
+        if (user) return user.id
+        return yield* fail(
+          `No one called "${who}" has an account. Valid: "me", ${names(people)}. To bring someone new in, use invite_person.`
+        )
+      }).pipe(Effect.catchTag("SqlError", Effect.die))
 
     /** How an agent reads a project's icon: "auto", "none", or the picked file. */
     const iconName = (p: Project) => (p.iconMode === "repo" ? p.icon?.path ?? "auto" : p.iconMode)
@@ -273,15 +366,31 @@ const ToolHandlers = GradientToolkit.toLayer(
       [issue.priority === 0 ? 5 : issue.priority, ws.states.findIndex((s) => s.id === issue.stateId) * -1] as const
 
     return GradientToolkit.of({
-      describe_workspace: Effect.fn("mcp.describe_workspace")(function*() {
-        const ws = yield* workspace
+      describe_workspace: Effect.fn("mcp.describe_workspace")(function*(input) {
+        const ws = yield* workspace(input.team)
         const issues = ws.issues
+        const teams = yield* db.teams.pipe(Effect.orDie)
+        const memberships = yield* db.teamMembers.pipe(Effect.orDie)
+        const teamKeysOf = (userId: string) =>
+          memberships.flatMap((m) => (m.userId === userId ? teams.find((t) => t.id === m.teamId)?.key ?? [] : []))
+        const me = ws.users.find((u) => u.id === ws.viewerId)
         return {
-          team: { key: ws.team.key, name: ws.team.name },
-          you: ws.users.find((u) => u.id === ws.viewerId)?.name ?? "me",
+          team: {
+            key: ws.team.key,
+            name: ws.team.name,
+            members: memberships.filter((m) => m.teamId === ws.team.id).flatMap((m) => ws.users.find((u) => u.id === m.userId)?.name ?? [])
+          },
+          teams: teams.map((t) => ({
+            key: t.key,
+            name: t.name,
+            members: memberships.filter((m) => m.teamId === t.id).length,
+            you_are_member: memberships.some((m) => m.teamId === t.id && m.userId === ws.viewerId)
+          })),
+          you: me?.name ?? "me",
+          your_role: me?.role ?? "member",
           states: ws.states.map((s) => ({ name: s.name, type: s.type })),
           labels: ws.labels.map((l) => l.name),
-          people: ws.users.map((u) => ({ name: u.name, githubLogin: u.githubLogin })),
+          people: ws.users.map((u) => ({ name: u.name, githubLogin: u.githubLogin, role: u.role, teams: teamKeysOf(u.id) })),
           projects: ws.projects.map((p) => ({
             name: p.name,
             key: p.key,
@@ -294,7 +403,7 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       list_issues: Effect.fn("mcp.list_issues")(function*(input) {
-        const ws = yield* workspace
+        const ws = yield* workspace(yield* teamForProject(input.team, input.project))
         let issues = [...ws.issues]
         if (!input.include_archived) issues = issues.filter((i) => i.archivedAt === null)
         const state = (input.state ?? "open").trim().toLowerCase()
@@ -332,12 +441,12 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       get_issue: Effect.fn("mcp.get_issue")(function*({ id }) {
-        const ws = yield* workspace
+        const ws = yield* workspaceForIssue(id)
         return detail(ws, yield* findIssue(ws, id))
       }),
 
       create_issue: Effect.fn("mcp.create_issue")(function*(input) {
-        const ws = yield* workspace
+        const ws = yield* workspace(yield* teamForProject(input.team, input.project))
         if (input.title.trim() === "") return yield* fail("A title is required.")
         const state = input.state
           ? yield* resolveState(ws, input.state)
@@ -361,7 +470,7 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       update_issue: Effect.fn("mcp.update_issue")(function*(input) {
-        const ws = yield* workspace
+        const ws = yield* workspaceForIssue(input.id)
         const issue = yield* findIssue(ws, input.id)
         const patch: { -readonly [K in keyof Extract<Mutation, { _tag: "IssueUpdate" }>["patch"]]: any } = {}
         if (input.title !== undefined) patch.title = input.title
@@ -386,9 +495,11 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       link_issues: Effect.fn("mcp.link_issues")(function*(input) {
-        const ws = yield* workspace
+        const ws = yield* workspaceForIssue(input.id)
         const issue = yield* findIssue(ws, input.id)
-        const other = yield* findIssue(ws, input.other)
+        const other = yield* findIssue(ws, input.other).pipe(
+          Effect.mapError(() => new ToolError({ message: `No issue "${input.other}" in ${ws.team.name}: only issues of the same team can be related.` }))
+        )
         if (issue.id === other.id) return yield* fail("An issue cannot relate to itself.")
         const [from, to] = input.relation === "blocked_by" ? [other, issue] : [issue, other]
         const type = input.relation === "related" ? "related" as const : "blocks" as const
@@ -406,7 +517,7 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       unlink_issues: Effect.fn("mcp.unlink_issues")(function*(input) {
-        const ws = yield* workspace
+        const ws = yield* workspaceForIssue(input.id)
         const issue = yield* findIssue(ws, input.id)
         const other = yield* findIssue(ws, input.other)
         const existing = ws.relations.find((r) =>
@@ -418,8 +529,10 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       github_status: Effect.fn("mcp.github_status")(function*() {
-        const ws = yield* workspace
+        yield* viewerId
         const status = yield* github.status
+        const allRepos = yield* db.githubRepos.pipe(Effect.orDie)
+        const allProjects = yield* db.projects.pipe(Effect.orDie)
         const via = status.tokenSource === "app"
           ? "Sign in with GitHub"
           : status.tokenSource === "env"
@@ -427,9 +540,9 @@ const ToolHandlers = GradientToolkit.toLayer(
           : status.tokenSource === "gh-cli"
           ? "GitHub CLI"
           : null
-        const repos = ws.repos.map((r) => ({
+        const repos = allRepos.map((r) => ({
           repo: `${r.owner}/${r.name}`,
-          project: ws.projects.find((p) => p.id === r.projectId)?.name ?? "?"
+          project: allProjects.find((p) => p.id === r.projectId)?.name ?? "?"
         }))
         const hint = status.signIn.pending
           ? `Waiting for the user to enter ${status.signIn.pending.userCode} at ${status.signIn.pending.verificationUri}.`
@@ -453,7 +566,8 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       create_project: Effect.fn("mcp.create_project")(function*(input) {
-        const ws = yield* workspace
+        const ws = yield* workspace(input.team)
+        const takenKeys = [...(yield* db.teams.pipe(Effect.orDie)).map((t) => t.key), ...(yield* db.projects.pipe(Effect.orDie)).map((p) => p.key)]
         if (input.github_repo) {
           const [owner, name] = input.github_repo.trim().replace(/^https?:\/\/github\.com\//, "").split("/")
           if (!owner || !name) return yield* fail(`Use "owner/name" for github_repo, not "${input.github_repo}".`)
@@ -474,7 +588,7 @@ const ToolHandlers = GradientToolkit.toLayer(
           _tag: "ProjectCreate",
           id: uuidv7(),
           teamId: ws.team.id,
-          key: input.key?.trim().toUpperCase() || projectKeyFor(input.name, [ws.team.key, ...ws.projects.map((p) => p.key)]),
+          key: input.key?.trim().toUpperCase() || projectKeyFor(input.name, takenKeys),
           name: input.name.trim(),
           color: PROJECT_COLORS[ws.projects.length % PROJECT_COLORS.length]!
         }])
@@ -482,7 +596,7 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       update_project: Effect.fn("mcp.update_project")(function*(input) {
-        const ws = yield* workspace
+        const ws = yield* workspace(yield* teamForProject(input.team, input.project))
         const projectId = yield* resolveProject(ws, input.project)
         const project = ws.projects.find((p) => p.id === projectId)
         if (!project) return yield* fail(`Name a project. Valid: ${names(ws.projects)}.`)
@@ -511,6 +625,64 @@ const ToolHandlers = GradientToolkit.toLayer(
           github_repo: repoName(ws, now.id),
           icon: iconName(now),
           icon_file: now.icon?.path ?? null
+        }
+      }),
+
+      create_team: Effect.fn("mcp.create_team")(function*(input) {
+        const actor = yield* viewerId
+        const name = input.name.trim()
+        if (!name) return yield* fail("Give the team a name.")
+        const taken = [...(yield* db.teams.pipe(Effect.orDie)).map((t) => t.key), ...(yield* db.projects.pipe(Effect.orDie)).map((p) => p.key)]
+        const id = uuidv7()
+        yield* applyAs(actor, [{ _tag: "TeamCreate", id, name, key: input.key?.trim().toUpperCase() || teamKeyFor(name, taken) }])
+        return yield* teamResult(id)
+      }),
+
+      update_team: Effect.fn("mcp.update_team")(function*(input) {
+        const actor = yield* viewerId
+        const team = yield* resolveTeam(input.team, actor)
+        const patch: { name?: string; key?: string } = {}
+        if (input.name !== undefined) patch.name = input.name.trim()
+        if (input.key !== undefined) patch.key = input.key.trim().toUpperCase()
+        if (Object.keys(patch).length > 0) yield* applyAs(actor, [{ _tag: "TeamUpdate", id: team.id, patch }])
+        return yield* teamResult(team.id)
+      }),
+
+      add_team_member: Effect.fn("mcp.add_team_member")(function*(input) {
+        const actor = yield* viewerId
+        const team = yield* resolveTeam(input.team, actor)
+        const userId = yield* resolveMember(actor, input.person)
+        if (!(yield* db.membership(team.id, userId).pipe(Effect.orDie))) {
+          yield* applyAs(actor, [{ _tag: "TeamMemberAdd", id: uuidv7(), teamId: team.id, userId }])
+        }
+        return yield* teamResult(team.id)
+      }),
+
+      remove_team_member: Effect.fn("mcp.remove_team_member")(function*(input) {
+        const actor = yield* viewerId
+        const team = yield* resolveTeam(input.team, actor)
+        const userId = yield* resolveMember(actor, input.person)
+        const membership = yield* db.membership(team.id, userId).pipe(Effect.orDie)
+        if (membership) yield* applyAs(actor, [{ _tag: "TeamMemberRemove", id: membership.id }])
+        return yield* teamResult(team.id)
+      }),
+
+      invite_person: Effect.fn("mcp.invite_person")(function*(input) {
+        const actor = yield* viewerId
+        const teams = input.teams && input.teams.length > 0
+          ? yield* Effect.forEach(input.teams, (t) => resolveTeam(t, actor))
+          : [yield* resolveTeam(undefined, actor)]
+        const { invite, token } = yield* members.createInvite(actor, {
+          email: input.email ?? null,
+          role: input.role ?? "member",
+          teamIds: teams.map((t) => t.id)
+        }).pipe(Effect.mapError((e) => new ToolError({ message: e.message })))
+        return {
+          url: `${appUrl}${invitePath(token)}`,
+          email: invite.email,
+          role: invite.role,
+          teams: teams.map((t) => t.name),
+          expires: iso(invite.expiresAt)
         }
       }),
 

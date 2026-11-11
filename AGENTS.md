@@ -41,6 +41,11 @@ Run both checks before you push.
   workspace's original user. Accounts are Better Auth's: change them through
   `/api/auth/*` or `auth.api`, not its tables, and add its new tables in a
   migration (`auth_*`, snake_case; `auth/adapter.ts` maps the names).
+- **Teams and roles.** Permission checks for people's writes (team
+  membership, the admin role) live in `Mutations.applyOne` and run for the
+  `client` and `mcp` origins only. Keys (team and project) are unique across
+  the workspace. Invites are not synced: their tokens are secrets, stored
+  hashed (`auth/Members.ts`).
 - **Keyboard first.** New actions are commands registered with `useCommands`
   (stable id, title, group, scope, optional default keys), never ad-hoc
   `keydown` listeners. The command then shows up in ⌘K, in `?`, and can be

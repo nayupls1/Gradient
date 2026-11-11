@@ -1,24 +1,9 @@
-import { type Issue, keyBetween, PROJECT_COLORS, type StateType } from "@gradient/domain"
+import { type Issue, keyBetween, PROJECT_COLORS } from "@gradient/domain"
 import { Effect } from "effect"
 import { ServerConfig } from "./config.ts"
 import { Db } from "./db/Db.ts"
+import { DEFAULT_LABELS, DEFAULT_STATES } from "./db/defaults.ts"
 import { Mutations } from "./sync/Mutations.ts"
-
-const STATES: ReadonlyArray<{ name: string; type: StateType; color: string }> = [
-  { name: "Backlog", type: "backlog", color: "#8b8d98" },
-  { name: "Todo", type: "unstarted", color: "#b9bbc6" },
-  { name: "In Progress", type: "started", color: "#f5a524" },
-  { name: "In Review", type: "started", color: "#3e9b4f" },
-  { name: "Done", type: "completed", color: "#6e56cf" },
-  { name: "Canceled", type: "canceled", color: "#8b8d98" }
-]
-
-const LABELS = [
-  { name: "Bug", color: "#e5484d" },
-  { name: "Feature", color: "#8e4ec6" },
-  { name: "Improvement", color: "#0090ff" },
-  { name: "Chore", color: "#8b8d98" }
-]
 
 const SAMPLE: ReadonlyArray<{
   title: string
@@ -61,19 +46,23 @@ export const seed = Effect.gen(function*() {
       const viewerId = Bun.randomUUIDv7()
       yield* db.putTeam({ id: teamId, key: "GRD", name: "Gradient", issueCounter: 0 })
       tx.touch("team", teamId)
-      yield* db.putUser({ id: viewerId, name: process.env.GRADIENT_USER_NAME ?? "Me", githubLogin: null, avatarUrl: null })
+      // No role until an account takes this user over (the first account becomes its admin).
+      yield* db.putUser({ id: viewerId, name: process.env.GRADIENT_USER_NAME ?? "Me", githubLogin: null, avatarUrl: null, role: null })
       yield* db.setMeta("viewer_id", viewerId)
       tx.touch("user", viewerId)
+      const memberId = Bun.randomUUIDv7()
+      yield* db.putTeamMember({ id: memberId, teamId, userId: viewerId, createdAt: tx.now })
+      tx.touch("teamMember", memberId)
 
       const stateIds = new Map<string, string>()
-      for (const [position, s] of STATES.entries()) {
+      for (const [position, s] of DEFAULT_STATES.entries()) {
         const id = Bun.randomUUIDv7()
         stateIds.set(s.name, id)
         yield* db.putState({ id, teamId, name: s.name, type: s.type, position, color: s.color })
         tx.touch("workflowState", id)
       }
       const labelIds = new Map<string, string>()
-      for (const l of LABELS) {
+      for (const l of DEFAULT_LABELS) {
         const id = Bun.randomUUIDv7()
         labelIds.set(l.name, id)
         yield* db.putLabel({ id, teamId, name: l.name, color: l.color })

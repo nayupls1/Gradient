@@ -5,7 +5,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api"
 import { Context, Effect, Layer, Option } from "effect"
 import { SqlClient } from "effect/sql"
 import { ServerConfig } from "../config.ts"
-import { Db } from "../db/Db.ts"
+import { Db, type InviteRow } from "../db/Db.ts"
 import { Mutations } from "../sync/Mutations.ts"
 import { sqliteAdapter } from "./adapter.ts"
 
@@ -32,6 +32,7 @@ export interface Viewer {
 export interface AccountRef {
   readonly id: string
   readonly name: string
+  readonly email?: string
 }
 
 const makeAuth = Effect.gen(function*() {
@@ -43,27 +44,49 @@ const makeAuth = Effect.gen(function*() {
   const secret = Option.isSome(config.auth.secret) ? config.auth.secret.value : yield* storedSecret(db)
 
   /**
+   * Invites claimed for a sign-up in progress, by lowercased email (see
+   * `Members.acceptWithSignUp`). They let that sign-up through while sign-up
+   * is closed, and tell `ensureMember` the new person's role and teams.
+   */
+  const pendingInvites = new Map<string, InviteRow>()
+
+  /**
    * The Gradient user an account acts as, created on first use. The first
    * account takes over the workspace's original user (the seeded "Me", who
-   * owns the existing issues and the GitHub connection); later accounts get a
-   * user of their own. Runs in `Mutations.transact`, so clients see the user.
+   * owns the existing issues and the GitHub connection) and becomes its admin;
+   * later accounts get a user of their own. An invited person gets the
+   * invite's role and teams; anyone else joins every team. Runs in
+   * `Mutations.transact`, so clients see the user and the memberships.
    */
   const ensureMember = (account: AccountRef) =>
     mutations.transact({ origin: "system", actorId: null }, (tx) =>
       Effect.gen(function*() {
         const linked = yield* db.userForAccount(account.id)
         if (linked) return linked.id
+        const invite = account.email ? pendingInvites.get(account.email.toLowerCase()) : undefined
         const ownerId = yield* db.getMeta("viewer_id")
         const owner = ownerId ? yield* db.getUser(ownerId) : undefined
         const ownerFree = owner
           ? (yield* db.sql`SELECT account_id FROM user WHERE id = ${owner.id}`)[0]?.account_id == null
           : false
-        const user = owner && ownerFree
-          ? { ...owner, name: account.name }
-          : { id: uuidv7(), name: account.name, githubLogin: null, avatarUrl: null }
+        const takesOver = owner !== undefined && ownerFree && !invite
+        const role = takesOver ? "admin" : invite?.role ?? "member"
+        const user = takesOver
+          ? { ...owner, name: account.name, role }
+          : { id: uuidv7(), name: account.name, githubLogin: null, avatarUrl: null, role }
         yield* db.putUser(user)
+        yield* db.setRole(user.id, role)
         yield* db.linkAccount(user.id, account.id)
         tx.touch("user", user.id)
+        const teams = yield* db.teams
+        const teamIds = invite ? teams.filter((t) => invite.teamIds.includes(t.id)).map((t) => t.id) : teams.map((t) => t.id)
+        for (const teamId of teamIds) {
+          if (yield* db.membership(teamId, user.id)) continue
+          const memberId = uuidv7()
+          yield* db.putTeamMember({ id: memberId, teamId, userId: user.id, createdAt: tx.now })
+          tx.touch("teamMember", memberId)
+        }
+        if (invite) yield* db.inviteAcceptedBy(invite.id, user.id)
         return user.id
       })).pipe(Effect.map(({ value }) => value), Effect.orDie)
 
@@ -122,9 +145,11 @@ const makeAuth = Effect.gen(function*() {
     },
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
-        if (ctx.path === "/sign-up/email" && !(await run(signUpOpen))) {
+        if (ctx.path !== "/sign-up/email") return
+        const email = typeof ctx.body?.email === "string" ? ctx.body.email.toLowerCase() : ""
+        if (!pendingInvites.has(email) && !(await run(signUpOpen))) {
           throw new APIError("FORBIDDEN", {
-            message: "Sign-up is closed. Ask the owner to start Gradient with GRADIENT_ALLOW_SIGNUP=true."
+            message: "Sign-up is closed. Ask an admin for an invite link, or start Gradient with GRADIENT_ALLOW_SIGNUP=true."
           })
         }
       })
@@ -190,6 +215,7 @@ const makeAuth = Effect.gen(function*() {
 
   return {
     auth,
+    pendingInvites,
     handler: (request: Request) => auth.handler(request),
     signUpOpen,
     publicConfig,

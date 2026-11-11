@@ -4,12 +4,13 @@ import * as stylex from "@stylexjs/stylex"
 import type { HTMLProps } from "base-ui-solidjs/types"
 import { For, omit, Show, useContext } from "solid-js"
 import type { JSX } from "@solidjs/web"
-import { projectRepo, suggestProjectKey, teamLabels, teamProjects, teamStates, users } from "../lib/select.ts"
+import { allTeams, membership, projectRepo, suggestProjectKey, teamLabels, teamProjects, teamStates, users } from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { PriorityIcon, priorityLabel, ProjectIcon, StateIcon, TagIcon, UserIcon } from "../ui/icons.tsx"
 import { Button, type ButtonProps } from "../ui/button.tsx"
 import { Picker, type PickerApi } from "./Picker.tsx"
 import { ProjectGlyph } from "./ProjectGlyph.tsx"
+import { TeamBadge } from "./TeamBadge.tsx"
 import { UserAvatar } from "./UserAvatar.tsx"
 import { Sync } from "./context.ts"
 
@@ -209,6 +210,38 @@ export const ProjectPicker = (props: {
             <span {...stylex.attrs(s.text, props.value === null && s.muted)}>
               {current()?.name ?? (props.variant === "chip" ? "Project" : "No project")}
             </span>
+          </Show>
+        </Trigger>
+      )}
+    />
+  )
+}
+
+/** Which team a new issue goes to. The viewer's teams come first. */
+export const TeamPicker = (props: { value: string; onChange: (id: string) => void; variant: Variant; apiRef?: (api: PickerApi) => void }) => {
+  const sync = useContext(Sync)
+  const current = () => sync.state.teams[props.value]
+  const mine = (teamId: string) => membership(sync.state, teamId, sync.state.viewerId) !== undefined
+  return (
+    <Picker
+      {...(props.apiRef ? { apiRef: props.apiRef } : {})}
+      placeholder="Move to team…"
+      items={[...allTeams(sync.state)]
+        .sort((a, b) => Number(mine(b.id)) - Number(mine(a.id)))
+        .map((t) => ({
+          value: t.id,
+          label: t.name,
+          icon: () => <TeamBadge team={t} size={14} />,
+          keywords: t.key,
+          hint: mine(t.id) ? t.key : `${t.key} · not a member`
+        }))}
+      selected={[props.value]}
+      onPick={props.onChange}
+      trigger={(p) => (
+        <Trigger {...p} variant={props.variant} title={`Team: ${current()?.name ?? ""}`}>
+          <TeamBadge team={current()} size={14} />
+          <Show when={props.variant !== "icon"}>
+            <span {...stylex.attrs(s.text)}>{current()?.name ?? "Team"}</span>
           </Show>
         </Trigger>
       )}

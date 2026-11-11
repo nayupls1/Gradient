@@ -6,7 +6,8 @@ next.
 Gradient is a minimal, agent-first issue tracker. It syncs issues both ways
 with GitHub, as close to realtime as GitHub allows, and exposes everything to
 coding agents over MCP. It runs locally; people sign in with accounts (email
-and password), and agents with agent keys.
+and password), join with invite links, work in teams, and agents use agent
+keys.
 
 ## Principles
 
@@ -54,12 +55,13 @@ installed, so `ui/` and its helpers in `lib/` are app code.
 
 ```
 packages/domain/src
-  models.ts            Team, User, WorkflowState, Label, Project, Issue, IssueRelation, PullRequest, IssueComment, GithubRepo, Entity
+  models.ts            Team, TeamMember, User (with Role), WorkflowState, Label, Project, Issue, IssueRelation, PullRequest,
+                       IssueComment, GithubRepo, Entity
   mutations.ts         Mutation union + applyIssueMutation (shared optimistic logic)
   references.ts        refs in issue text (#12, acme/web#12, TES-12, GitHub URLs)
   relations.ts         pull request refs ("Fixes #12", TES-12), blocking loops, blocked state
   sync.ts              Delta, SyncEvent, Snapshot
-  rpc.ts               GradientRpcs: Bootstrap, Subscribe, Mutate, Github*
+  rpc.ts               GradientRpcs: Bootstrap, Subscribe, Mutate, Invite*, Member*, Github*
   fractional-index.ts  ordering keys
 apps/server/src
   config.ts            env config; borrows `gh auth token` when GITHUB_TOKEN is unset
@@ -71,8 +73,9 @@ apps/server/src
                        project icons (icons.ts picks a favicon; files.ts serves repo images)
   mcp/                 MCP tools (names in, names out), instructions, the gradient skill
   auth/                Better Auth: Auth.ts (instance, sign-up policy, account ↔ user), adapter.ts (its
-                       database adapter over Effect SQL), http.ts (auth routes, session and agent-key guards,
-                       the RPC AuthMiddleware)
+                       database adapter over Effect SQL), http.ts (auth and invite routes, session and agent-key
+                       guards, the RPC AuthMiddleware), Members.ts (invites, roles, removing people)
+  db/defaults.ts       the workflow states and labels every new team starts with
   http/guard.ts        origin guard: refuses foreign browser origins and rebound hosts
   seed.ts, app.ts, main.ts
 apps/web/src
@@ -82,21 +85,31 @@ apps/web/src
   theme/               tokens (StyleX vars), palettes (also feed shadcn's tokens), mode + palette switching
   ui/                  shadcn-solid components (Button, Dialog, Popover, Command, Sidebar…), icons
   lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts), list windowing (window.ts), markdown tree (markdown.ts)
-  app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, Markdown, router
+  app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, Markdown, router,
+                       TeamDialog, InviteDialog, TeamBadge
   app/auth.ts          Better Auth client and the session signal (main.tsx shows AuthPage without one)
   pages/               IssuesPage (keyboard-driven, virtualized list), IssuePage, SettingsPage,
-                       AuthPage (sign in / create account), ProfilePage (name, password, sessions, agent keys)
+                       AuthPage (sign in / create account / accept an invite), ProfilePage (name, password, sessions,
+                       agent keys), TeamsPage, TeamSettingsPage, MembersPage, InvitePage
 ```
 
 ## Data model
 
-`team`, `user`, `workflow_state`, `label`, `project`, `issue` (label ids stored
-as JSON, optional `project_id`), `issue_relation`, `pull_request`, `issue_comment`,
-`sync_log`, the accounts tables (`auth_user`, `auth_session`, `auth_account`,
+`team`, `team_member`, `user` (with its workspace `role`), `workflow_state`,
+`label`, `project`, `issue` (label ids stored as JSON, optional `project_id`),
+`issue_relation`, `pull_request`, `issue_comment`, `sync_log`, `invite` (not
+synced; see Teams and invites), the accounts tables (`auth_user`, `auth_session`, `auth_account`,
 `auth_verification`, `auth_api_key`; see Accounts), plus `github_repo`, `github_issue_link` (with the shadows and the
 issue's GitHub id), `github_outbox`, `github_delivery` and `github_blob`
 (cached repository images, such as project icons). Timestamps are
 epoch milliseconds.
+
+**Teams** each have their own workflow states, labels, projects and issue
+numbers. `team_member` links people to teams; it is synced like any model.
+
+**Keys are unique across the workspace.** A team's key and every project's key
+prefix identifiers, so no two teams, no two projects, and no team and project
+share one; a lookup by any key finds exactly one team.
 
 **Relations** link two issues of a team: `blocks` (directed: the second is
 "blocked by" the first) or `related`. Two issues have at most one relation, and
@@ -257,13 +270,54 @@ the store when rendered:
 The issue page shows the rendered description; a click (not on a link, and not
 ending a selection) or `d` turns it into the textarea, and blur saves.
 
+## Teams and invites
+
+**Teams are open.** Every team is visible to the whole workspace (the sync
+model is not filtered per viewer); membership decides whose sidebar a team is
+in and who manages it. Anyone with an account can create a team (the default
+workflow and labels, from `db/defaults.ts`, with its creator in it) and join or
+leave any team. Renaming a team, changing its key, and adding or removing
+other people take membership of the team or the admin role. Only admins delete
+teams, and only empty ones (no issues, no linked repository), never the last.
+These checks run in `Mutations` for `client` and `mcp` writes; the server's own
+writes (`system`, `github`) skip them.
+
+**Roles.** People with an account are `admin` or `member` (`user.role`);
+people known only from GitHub have none and cannot be in a team. The first
+account is the admin. Admins invite people, change roles (the last admin
+cannot step down) and remove people: removing deletes the account, its
+sessions and agent keys through Better Auth, then drops the role and team
+memberships. The user stays, so issues keep their creator and assignee.
+
+**Invites** are links (`/invite/<token>`) an admin makes for a role and a set
+of teams, optionally bound to one email address. They work once and for 7
+days; only the SHA-256 of the token is stored, so the link is shown once.
+Gradient sends no email: the admin passes the link on.
+
+- Signed out, the link opens the sign-in page in invite mode.
+  `POST /api/invites/<token>/accept` claims the invite (atomically, so it works
+  once), then runs Better Auth's own sign-up, let through while sign-up is
+  closed; `ensureMember` gives the new account the invite's role and teams. A
+  failed sign-up (a short password, a taken email) gives the invite back.
+- Signed in, the link opens `InvitePage`; `InviteAccept` adds the invite's
+  teams to the account (and the admin role, if the invite has it).
+- `GET /api/invites/<token>` previews an invite (teams, role, who invited)
+  before anyone signs in. Invites are managed over RPC (`InviteCreate`,
+  `InviteList`, `InviteRevoke`), admins only.
+
+Accounts made without an invite (the first one, or with
+`GRADIENT_ALLOW_SIGNUP`) join every team.
+
 ## Agents (MCP)
 
 `POST /mcp` speaks MCP over Streamable HTTP (protocol revisions 2025-03-26
 through 2026-07-28). Tools: `describe_workspace`, `list_issues`, `get_issue`,
 `create_issue`, `update_issue`, `link_issues`, `unlink_issues`, `create_project`,
 `update_project` (name, key, color, icon: "auto", "none" or a repo path),
-`github_status`, `github_sign_in`. Issues report `blocked`, and `get_issue`
+`create_team`, `update_team`, `add_team_member`, `remove_team_member`,
+`invite_person` (admins; returns the link), `github_status`, `github_sign_in`.
+Tools work in the caller's first team unless given `team` (a name or key); tools
+that take an identifier find its team from the key. Issues report `blocked`, and `get_issue`
 lists blockers, blocked issues, related issues, pull requests, comments and
 mentions. They take
 and return names (states, labels, people, GRD-12), never ids, and a bad name
@@ -299,8 +353,9 @@ transactions run inside `sql.withTransaction`.
   and GitHub connection. Later accounts get a user of their own. Linking runs
   through `Mutations.transact`, and so does renaming (the account's name is
   copied to the user), so clients see both live.
-- **Sign-up** is open until the first account exists, then only with
-  `GRADIENT_ALLOW_SIGNUP=true` (checked before Better Auth's transaction).
+- **Sign-up** is open until the first account exists, then only with an invite
+  link (see Teams and invites) or `GRADIENT_ALLOW_SIGNUP=true` (checked before
+  Better Auth's transaction).
   `/api/auth-config` tells the sign-in page which form to show.
 - **The sync socket** only opens with a session cookie (`RequireSession`),
   and `AuthMiddleware` resolves the session again on every RPC call and
@@ -345,7 +400,9 @@ localStorage.
 - Markdown preview while editing; toggling task list checkboxes in place.
 - Offline cache of the store in IndexedDB.
 - More sign-in methods (GitHub OAuth, passkeys), password reset by email, and
-  an owner screen to invite or remove people.
+  sending invite links by email.
+- Private teams (needs the sync log filtered per viewer), and moving issues
+  between teams.
 - A hosted relay for app webhooks and installation tokens (the private key
   cannot ship in a local app).
 - Cycles; project descriptions, leads and target dates.

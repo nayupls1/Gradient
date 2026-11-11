@@ -26,6 +26,7 @@ const snapshot = (issues: Array<Issue>, lastSyncId = 10): Snapshot => ({
   lastSyncId,
   viewerId: "me",
   teams: [],
+  teamMembers: [],
   users: [],
   workflowStates: [],
   labels: [],

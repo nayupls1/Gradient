@@ -10,6 +10,7 @@ import {
   Project,
   PullRequest,
   Team,
+  TeamMember,
   User,
   WorkflowState
 } from "./models.ts"
@@ -33,6 +34,7 @@ export const Snapshot = Schema.Struct({
   lastSyncId: Schema.Int,
   viewerId: Schema.String,
   teams: Schema.Array(Team),
+  teamMembers: Schema.Array(TeamMember),
   users: Schema.Array(User),
   workflowStates: Schema.Array(WorkflowState),
   labels: Schema.Array(Label),

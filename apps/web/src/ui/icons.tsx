@@ -25,7 +25,9 @@ import {
   KeyRound,
   Laptop,
   LockKeyhole,
+  LogIn,
   LogOut,
+  Mail,
   Minus,
   Monitor,
   Moon,
@@ -44,7 +46,9 @@ import {
   Tag,
   Trash,
   Unlink,
+  UserPlus,
   UserRound,
+  Users,
   X
 } from "lucide"
 import { Icon } from "./icon.tsx"
@@ -123,6 +127,10 @@ export const KeyIcon = wrap(KeyRound)
 export const LockIcon = wrap(LockKeyhole)
 export const SignOutIcon = wrap(LogOut)
 export const DeviceIcon = wrap(Laptop)
+export const UsersIcon = wrap(Users)
+export const UserPlusIcon = wrap(UserPlus)
+export const MailIcon = wrap(Mail)
+export const SignInIcon = wrap(LogIn)
 /** An issue waiting on another one. Takes the surrounding text color. */
 export const BlockedIcon = wrap(OctagonMinus)
 

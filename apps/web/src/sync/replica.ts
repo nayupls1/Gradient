@@ -3,6 +3,8 @@ import {
   applyLabelMutation,
   applyProjectMutation,
   applyRelationMutation,
+  applyTeamMemberMutation,
+  applyTeamMutation,
   type Delta,
   type GithubRepo,
   type Issue,
@@ -14,9 +16,12 @@ import {
   type PullRequest,
   type Snapshot,
   type Team,
+  type TeamMember,
   touchedIssueId,
   touchedProjectId,
   touchedRelationId,
+  touchedTeamId,
+  touchedTeamMemberId,
   type User,
   type WorkflowState
 } from "@gradient/domain"
@@ -32,6 +37,7 @@ import {
 
 export interface Tables {
   teams: Team
+  teamMembers: TeamMember
   users: User
   workflowStates: WorkflowState
   labels: Label
@@ -54,6 +60,7 @@ export interface PendingTx {
 
 export const TABLES: ReadonlyArray<TableName> = [
   "teams",
+  "teamMembers",
   "users",
   "workflowStates",
   "labels",
@@ -67,6 +74,7 @@ export const TABLES: ReadonlyArray<TableName> = [
 
 const tableOf: Record<string, TableName> = {
   team: "teams",
+  teamMember: "teamMembers",
   user: "users",
   workflowState: "workflowStates",
   label: "labels",
@@ -104,6 +112,10 @@ export const createReplica = (options: { now?: () => number } = {}) => {
         if (projectId) mark(c, "projects", projectId)
         const relationId = touchedRelationId(m)
         if (relationId) mark(c, "issueRelations", relationId)
+        const teamId = touchedTeamId(m)
+        if (teamId) mark(c, "teams", teamId)
+        const memberId = touchedTeamMemberId(m)
+        if (memberId) mark(c, "teamMembers", memberId)
       }
     }
     return c
@@ -133,6 +145,19 @@ export const createReplica = (options: { now?: () => number } = {}) => {
           if (touchedRelationId(m) === id) value = applyRelationMutation(value ?? undefined, m, ctx)
         }
       }
+    } else if (table === "teams") {
+      for (const tx of pending) {
+        for (const m of tx.mutations) {
+          if (touchedTeamId(m) === id) value = applyTeamMutation(value ?? undefined, m)
+        }
+      }
+    } else if (table === "teamMembers") {
+      const ctx = { now: now() }
+      for (const tx of pending) {
+        for (const m of tx.mutations) {
+          if (touchedTeamMemberId(m) === id) value = applyTeamMemberMutation(value ?? undefined, m, ctx)
+        }
+      }
     } else if (table === "labels") {
       for (const tx of pending) {
         for (const m of tx.mutations) if (m._tag === "LabelCreate" && m.id === id) value ??= applyLabelMutation(m)
@@ -147,6 +172,7 @@ export const createReplica = (options: { now?: () => number } = {}) => {
     for (const t of TABLES) for (const id of base[t].keys()) mark(c, t, id)
     base = emptyBase()
     for (const t of snap.teams) base.teams.set(t.id, t)
+    for (const m of snap.teamMembers) base.teamMembers.set(m.id, m)
     for (const u of snap.users) base.users.set(u.id, u)
     for (const w of snap.workflowStates) base.workflowStates.set(w.id, w)
     for (const l of snap.labels) base.labels.set(l.id, l)

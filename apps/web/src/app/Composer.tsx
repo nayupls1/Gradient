@@ -1,7 +1,7 @@
 import { keyBetween, type Priority, uuidv7 } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { createEffect, createSignal, Show, useContext } from "solid-js"
-import { firstTeam, teamStates } from "../lib/select.ts"
+import { allTeams, defaultTeam, teamStates } from "../lib/select.ts"
 import { KeyScope, Shortcut, useCommands } from "../keys/solid.tsx"
 import { a11y } from "../lib/a11y.ts"
 import { colors } from "../lib/tokens.stylex.ts"
@@ -13,7 +13,7 @@ import { Textarea } from "../ui/textarea.tsx"
 import { bareTextarea } from "./styles.ts"
 import type { ComposerDefaults } from "./context.ts"
 import { Sync } from "./context.ts"
-import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker } from "./properties.tsx"
+import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker, TeamPicker } from "./properties.tsx"
 
 const s = stylex.create({
   dialog: { maxWidth: "min(640px, calc(100vw - 32px))", padding: 0, gap: 0, top: "12vh", translate: "-50% 0" },
@@ -36,13 +36,18 @@ const s = stylex.create({
 /** The "New issue" modal. Creating is optimistic: the issue shows in the list before the server answers. */
 export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onClose: () => void }) => {
   const sync = useContext(Sync)
-  const team = () => firstTeam(sync.state)
-  const defaultState = () => {
-    const t = team()
-    if (!t) return ""
-    const states = teamStates(sync.state, t.id)
-    return props.defaults.stateId ?? (states.find((st) => st.type === "unstarted") ?? states[0])?.id ?? ""
+  // Starts as the team (and project) of the page the composer opened from; the user can pick others.
+  const [teamId, setTeamId] = createSignal("")
+  const team = () => sync.state.teams[teamId()] ?? defaultTeam(sync.state)
+  /** The asked-for state when it belongs to the team, else the team's first "unstarted" one. */
+  const defaultStateFor = (id: string | undefined) => {
+    if (!id) return ""
+    const states = teamStates(sync.state, id)
+    const wanted = props.defaults.stateId
+    return (wanted && states.some((st) => st.id === wanted) ? wanted : undefined) ??
+      (states.find((st) => st.type === "unstarted") ?? states[0])?.id ?? ""
   }
+  const defaultState = () => defaultStateFor(team()?.id)
 
   const [title, setTitle] = createSignal("")
   const [description, setDescription] = createSignal("")
@@ -50,14 +55,26 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
   const [priority, setPriority] = createSignal<Priority>(0)
   const [assigneeId, setAssigneeId] = createSignal<string | null>(null)
   const [labelIds, setLabelIds] = createSignal<ReadonlyArray<string>>([])
-  // Starts as the project of the page the composer opened from; the user can pick another.
   const [projectId, setProjectId] = createSignal<string | null>(null)
   createEffect(
     () => props.open,
     (open) => {
-      if (open) setProjectId(props.defaults.projectId ?? null)
+      if (!open) return
+      const project = props.defaults.projectId ? sync.state.projects[props.defaults.projectId] : undefined
+      const id = project?.teamId ?? props.defaults.teamId ?? defaultTeam(sync.state)?.id ?? ""
+      setTeamId(id)
+      setProjectId(project?.id ?? null)
+      setStateId(defaultStateFor(id))
     }
   )
+  /** States, labels and projects belong to a team: switching teams resets them. */
+  const switchTeam = (id: string) => {
+    if (id === team()?.id) return
+    setTeamId(id)
+    setProjectId(null)
+    setLabelIds([])
+    setStateId(defaultStateFor(id))
+  }
 
   const reset = () => {
     setTitle("")
@@ -147,6 +164,9 @@ export const Composer = (props: { open: boolean; defaults: ComposerDefaults; onC
           />
         </div>
         <div {...stylex.attrs(s.chips)}>
+          <Show when={allTeams(sync.state).length > 1}>
+            <TeamPicker value={team()?.id ?? ""} onChange={switchTeam} variant="chip" />
+          </Show>
           <StatePicker teamId={team()?.id ?? ""} value={stateId()} onChange={setStateId} variant="chip" />
           <ProjectPicker teamId={team()?.id ?? ""} value={projectId()} onChange={setProjectId} variant="chip" />
           <PriorityPicker value={priority()} onChange={setPriority} variant="chip" />
