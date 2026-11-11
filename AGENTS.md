@@ -10,8 +10,8 @@ stays out of the way.
 ## Commands
 
 - `bun run dev`: server (4100) and Vite (4200) together
-- `bun run build` / `bun run start`: build both, then run the compiled server,
-  which serves the built UI on 4100
+- `bun run build` / `bun run start`: build both, then run both compiled
+  (server bundle on 4100, `vite preview` on 4200)
 - `bun run typecheck`: `tsc` in every package (TypeScript 7)
 - `bun test`: all tests. Server tests start real servers on random ports and
   use `test/fake-github.ts` instead of GitHub.

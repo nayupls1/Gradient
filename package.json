@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun run --filter '@gradient/server' --filter '@gradient/web' dev",
     "build": "bun run --filter '@gradient/server' --filter '@gradient/web' build",
-    "start": "bun run --filter '@gradient/server' start",
+    "start": "bun run --filter '@gradient/server' --filter '@gradient/web' start",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test"
   },
