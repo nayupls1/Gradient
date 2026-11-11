@@ -159,10 +159,10 @@ const s = stylex.create({
 /**
  * Which status groups are collapsed, remembered per state across reloads. Only
  * explicit choices are stored; a state without one falls back to its type, so
- * Backlog and Done start collapsed.
+ * Backlog, Done and Canceled start collapsed.
  */
 const COLLAPSED_KEY = "gradient.collapsedGroups"
-const collapsedByDefault: ReadonlySet<StateType> = new Set(["backlog", "completed"])
+const collapsedByDefault: ReadonlySet<StateType> = new Set(["backlog", "completed", "canceled"])
 
 const loadCollapsed = (): Readonly<Record<string, boolean>> => {
   try {
