@@ -124,12 +124,14 @@ export const openBlockers = (state: SyncState, issueId: string): Array<Issue> =>
     return blocker && isOpenBlocker(blocker, state.workflowStates[blocker.stateId]?.type) ? [blocker] : []
   })
 
-/** Pull requests that close the issue on GitHub or mention its identifier, newest first. */
+const pullRequestRank: Record<PullRequest["state"], number> = { open: 0, draft: 1, merged: 2, closed: 3 }
+
+/** Pull requests that close the issue on GitHub or mention its identifier: live ones first, then newest. */
 export const pullRequestsFor = (state: SyncState, issue: Issue): Array<PullRequest> => {
   const team = state.teams[issue.teamId]
   if (!team) return []
   const keys = teamKeys(team, Object.values(state.projects).filter((p) => p.teamId === team.id))
   return Object.values(state.pullRequests)
     .filter((pr) => pullRequestRefersTo(pr, issue, keys))
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .sort((a, b) => pullRequestRank[a.state] - pullRequestRank[b.state] || b.updatedAt - a.updatedAt || b.number - a.number)
 }

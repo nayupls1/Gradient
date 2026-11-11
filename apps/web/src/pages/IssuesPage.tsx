@@ -169,7 +169,7 @@ const IssueRow = (props: {
   )
   const labels = () => props.issue.labelIds.map((id) => sync.state.labels[id]).filter((l) => l !== undefined)
   const blockers = () => openBlockers(sync.state, props.issue.id)
-  /** The most recent pull request that refers to the issue. */
+  /** The most relevant pull request that refers to the issue: an open one before a merged or closed one. */
   const pullRequest = () => pullRequestsFor(sync.state, props.issue)[0]
   return (
     <div

@@ -16,7 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.tsx"
 const s = stylex.create({
   content: { width: "auto", minWidth: 220, maxWidth: 320, padding: 0, gap: 0 },
   label: { flexGrow: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  hint: { marginLeft: "auto", color: colors.mutedForeground, fontSize: "0.75rem" }
+  hint: { marginLeft: "auto", color: colors.mutedForeground, fontSize: "0.75rem", whiteSpace: "nowrap", flexShrink: 0 }
 })
 
 export interface PickerItem<V> {
