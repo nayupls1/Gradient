@@ -5,7 +5,16 @@ import { HttpRouter, HttpServerResponse, HttpStaticServer } from "effect/http"
 import { RpcSerialization, RpcServer } from "effect/rpc"
 import { existsSync } from "node:fs"
 import { Auth } from "./auth/Auth.ts"
-import { AuthConfigRoute, AuthMiddlewareLive, AuthRoute, RequireApiKey, RequireSession } from "./auth/http.ts"
+import {
+  AuthConfigRoute,
+  AuthMiddlewareLive,
+  AuthRoute,
+  InviteAcceptRoute,
+  InvitePreviewRoute,
+  RequireApiKey,
+  RequireSession
+} from "./auth/http.ts"
+import { Members } from "./auth/Members.ts"
 import { ServerConfig } from "./config.ts"
 import { DbLive } from "./db/Db.ts"
 import { GithubAuth } from "./github/GithubAuth.ts"
@@ -50,6 +59,7 @@ const Seed = Layer.effectDiscard(seed)
 
 /** Everything except the HTTP listener, so tests can mount it on their own server. */
 export const AppServices = Layer.mergeAll(Seed, Layer.empty).pipe(
+  Layer.provideMerge(Members.layer),
   Layer.provideMerge(Auth.layer),
   Layer.provideMerge(GithubSync.layer),
   Layer.provideMerge(GithubClient.layer),
@@ -62,6 +72,8 @@ export const AppServices = Layer.mergeAll(Seed, Layer.empty).pipe(
 export const Routes = Layer.mergeAll(
   AuthRoute,
   AuthConfigRoute,
+  InvitePreviewRoute,
+  InviteAcceptRoute,
   RpcRoute,
   McpRoute,
   HealthRoute,

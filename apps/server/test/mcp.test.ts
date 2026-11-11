@@ -55,17 +55,22 @@ describe("MCP", () => {
     const { result } = await rpc("tools/list")
     const tools = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
     expect(Object.keys(tools).sort()).toEqual([
+      "add_team_member",
       "create_issue",
       "create_project",
+      "create_team",
       "describe_workspace",
       "get_issue",
       "github_sign_in",
       "github_status",
+      "invite_person",
       "link_issues",
       "list_issues",
+      "remove_team_member",
       "unlink_issues",
       "update_issue",
-      "update_project"
+      "update_project",
+      "update_team"
     ])
     expect(tools.github_status.annotations.readOnlyHint).toBe(true)
     expect(tools.list_issues.annotations.readOnlyHint).toBe(true)

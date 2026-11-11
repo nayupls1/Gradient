@@ -3,19 +3,23 @@ import {
   applyLabelMutation,
   applyProjectMutation,
   applyRelationMutation,
+  applyTeamMutation,
   identifier,
   type Issue,
   isProjectIconPath,
   isValidProjectKey,
+  isValidTeamKey,
   type Delta,
   type ModelName,
   type Mutation,
   MutationRejected,
+  uuidv7,
   wouldCycle
 } from "@gradient/domain"
 import { Context, Effect, Layer, Queue, Semaphore } from "effect"
 import type { SqlError } from "effect/sql"
 import { Db } from "../db/Db.ts"
+import { DEFAULT_LABELS, DEFAULT_STATES } from "../db/defaults.ts"
 import { Hub } from "./Hub.ts"
 
 /**
@@ -162,6 +166,31 @@ export class Mutations extends Context.Service<Mutations, {
             }
           })
 
+          /**
+           * Every key prefixes identifiers (TES-12), so a key is unique across
+           * the workspace: no two teams, no two projects, and no team and
+           * project share one.
+           */
+          const keyTaken = Effect.fnUntraced(function*(key: string, self: { team?: string; project?: string }) {
+            const team = yield* db.getTeamByKey(key)
+            if (team && team.id !== self.team) return `the team "${team.name}"`
+            const project = (yield* db.projects).find((p) => p.key === key && p.id !== self.project)
+            if (project) return `the project "${project.name}"`
+            return null
+          })
+
+          /** Changes by people (the app, agents) are checked against the actor's role; the server's own are not. */
+          const byPerson = tx.origin === "client" || tx.origin === "mcp"
+          const actor = byPerson && tx.actorId ? yield* db.getUser(tx.actorId) : undefined
+          const isAdmin = actor?.role === "admin"
+          /** Admins, and members of the team, manage it. */
+          const checkManages = Effect.fnUntraced(function*(teamId: string, what: string) {
+            if (!byPerson || isAdmin) return
+            if (!tx.actorId || !(yield* db.membership(teamId, tx.actorId))) {
+              return yield* reject(`Only members of the team and admins can ${what}`)
+            }
+          })
+
           const checkProjectName = Effect.fnUntraced(function*(teamId: string, name: string, self?: string) {
             if (name.trim() === "") return yield* reject("A project needs a name")
             const clash = (yield* db.projectsForTeam(teamId)).find(
@@ -176,8 +205,22 @@ export class Mutations extends Context.Service<Mutations, {
             }
             const team = yield* db.getTeam(teamId)
             if (team && team.key.toUpperCase() === key) return yield* reject(`"${key}" is the team's own key`)
-            const clash = (yield* db.projectsForTeam(teamId)).find((p) => p.id !== self && p.key === key)
-            if (clash) return yield* reject(`The key "${key}" is taken by the project "${clash.name}"`)
+            const clash = yield* keyTaken(key, self ? { project: self } : {})
+            if (clash) return yield* reject(`The key "${key}" is taken by ${clash}`)
+          })
+
+          const checkTeamName = Effect.fnUntraced(function*(name: string, self?: string) {
+            if (name.trim() === "") return yield* reject("A team needs a name")
+            const clash = (yield* db.teams).find((t) => t.id !== self && t.name.toLowerCase() === name.trim().toLowerCase())
+            if (clash) return yield* reject(`Team "${clash.name}" already exists`)
+          })
+
+          const checkTeamKey = Effect.fnUntraced(function*(key: string, self?: string) {
+            if (!isValidTeamKey(key)) {
+              return yield* reject(`"${key}" is not a valid key: 2–5 capital letters or digits, starting with a letter`)
+            }
+            const clash = yield* keyTaken(key, self ? { team: self } : {})
+            if (clash) return yield* reject(`The key "${key}" is taken by ${clash}`)
           })
 
           /** "TES-12", for error messages. */
@@ -189,6 +232,88 @@ export class Mutations extends Context.Service<Mutations, {
             })
 
           switch (m._tag) {
+            case "TeamCreate": {
+              if (byPerson && !actor?.role) return yield* reject("Only people with an account can create teams")
+              if (yield* db.getTeam(m.id)) return yield* reject("Team already exists")
+              yield* checkTeamName(m.name)
+              yield* checkTeamKey(m.key)
+              yield* db.putTeam({ ...applyTeamMutation(undefined, m)!, name: m.name.trim() })
+              tx.touch("team", m.id)
+              for (const [position, state] of DEFAULT_STATES.entries()) {
+                const id = uuidv7()
+                yield* db.putState({ id, teamId: m.id, name: state.name, type: state.type, position, color: state.color })
+                tx.touch("workflowState", id)
+              }
+              for (const label of DEFAULT_LABELS) {
+                const id = uuidv7()
+                yield* db.putLabel({ id, teamId: m.id, name: label.name, color: label.color })
+                tx.touch("label", id)
+              }
+              if (actor) {
+                const memberId = uuidv7()
+                yield* db.putTeamMember({ id: memberId, teamId: m.id, userId: actor.id, createdAt: tx.now })
+                tx.touch("teamMember", memberId)
+              }
+              return
+            }
+            case "TeamUpdate": {
+              const current = yield* db.getTeam(m.id)
+              if (!current) return yield* reject("Team not found")
+              yield* checkManages(current.id, "change it")
+              if (m.patch.name !== undefined) yield* checkTeamName(m.patch.name, current.id)
+              if (m.patch.key !== undefined) yield* checkTeamKey(m.patch.key, current.id)
+              const next = applyTeamMutation(current, m)!
+              yield* db.putTeam({ ...next, name: next.name.trim() })
+              tx.touch("team", m.id)
+              return
+            }
+            case "TeamDelete": {
+              const current = yield* db.getTeam(m.id)
+              if (!current) return
+              if (byPerson && !isAdmin) return yield* reject("Only admins can delete a team")
+              if ((yield* db.teams).length === 1) return yield* reject("The last team cannot be deleted")
+              const repo = (yield* db.githubRepos).find((r) => r.teamId === m.id)
+              if (repo) return yield* reject(`Unlink ${repo.owner}/${repo.name} first`)
+              const issues = yield* db.sql`SELECT COUNT(*) AS n FROM issue WHERE team_id = ${m.id}`
+              const count = Number(issues[0]?.n ?? 0)
+              if (count > 0) {
+                return yield* reject(`${current.name} still has ${count} issue${count === 1 ? "" : "s"}. Delete them first`)
+              }
+              for (const member of yield* db.membersOfTeam(m.id)) tx.touch("teamMember", member.id, "delete")
+              for (const project of yield* db.projectsForTeam(m.id)) {
+                yield* db.deleteProject(project.id)
+                tx.touch("project", project.id, "delete")
+              }
+              for (const label of yield* db.labelsForTeam(m.id)) tx.touch("label", label.id, "delete")
+              for (const state of yield* db.statesForTeam(m.id)) tx.touch("workflowState", state.id, "delete")
+              yield* db.sql`DELETE FROM label WHERE team_id = ${m.id}`
+              yield* db.sql`DELETE FROM workflow_state WHERE team_id = ${m.id}`
+              // Memberships go with the team (the foreign key cascades).
+              yield* db.deleteTeam(m.id)
+              tx.touch("team", m.id, "delete")
+              return
+            }
+            case "TeamMemberAdd": {
+              const team = yield* db.getTeam(m.teamId)
+              if (!team) return yield* reject("Unknown team")
+              const user = yield* db.getUser(m.userId)
+              if (!user) return yield* reject("Unknown person")
+              if (!user.role) return yield* reject(`${user.name} has no account. Invite them first`)
+              if (m.userId !== tx.actorId) yield* checkManages(team.id, "add people to it")
+              if (yield* db.membership(team.id, user.id)) return yield* reject(`${user.name} is already in ${team.name}`)
+              if (yield* db.getTeamMember(m.id)) return yield* reject("Membership already exists")
+              yield* db.putTeamMember({ id: m.id, teamId: team.id, userId: user.id, createdAt: tx.now })
+              tx.touch("teamMember", m.id)
+              return
+            }
+            case "TeamMemberRemove": {
+              const current = yield* db.getTeamMember(m.id)
+              if (!current) return
+              if (current.userId !== tx.actorId) yield* checkManages(current.teamId, "remove people from it")
+              yield* db.deleteTeamMember(m.id)
+              tx.touch("teamMember", m.id, "delete")
+              return
+            }
             case "ProjectCreate": {
               if (!(yield* db.getTeam(m.teamId))) return yield* reject("Unknown team")
               if (yield* db.getProject(m.id)) return yield* reject("Project already exists")

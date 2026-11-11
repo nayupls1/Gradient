@@ -9,7 +9,9 @@ import type {
   ModelName,
   Project,
   PullRequest,
+  Role,
   Team,
+  TeamMember,
   User,
   WorkflowState
 } from "@gradient/domain"
@@ -29,7 +31,38 @@ const toUser = (r: Row): User => ({
   id: str(r.id),
   name: str(r.name),
   githubLogin: strOrNull(r.github_login),
-  avatarUrl: strOrNull(r.avatar_url)
+  avatarUrl: strOrNull(r.avatar_url),
+  role: r.role === "admin" || r.role === "member" ? r.role : null
+})
+const toTeamMember = (r: Row): TeamMember => ({
+  id: str(r.id),
+  teamId: str(r.team_id),
+  userId: str(r.user_id),
+  createdAt: num(r.created_at)
+})
+
+/** An invite row. The token itself is never stored, only its hash. */
+export interface InviteRow {
+  readonly id: string
+  readonly email: string | null
+  readonly role: Role
+  readonly teamIds: ReadonlyArray<string>
+  readonly invitedBy: string | null
+  readonly createdAt: number
+  readonly expiresAt: number
+  readonly acceptedAt: number | null
+  readonly acceptedBy: string | null
+}
+const toInvite = (r: Row): InviteRow => ({
+  id: str(r.id),
+  email: strOrNull(r.email),
+  role: r.role === "admin" ? "admin" : "member",
+  teamIds: JSON.parse(str(r.team_ids)) as Array<string>,
+  invitedBy: strOrNull(r.invited_by),
+  createdAt: num(r.created_at),
+  expiresAt: num(r.expires_at),
+  acceptedAt: numOrNull(r.accepted_at),
+  acceptedBy: strOrNull(r.accepted_by)
 })
 const toState = (r: Row): WorkflowState => ({
   id: str(r.id),
@@ -161,6 +194,8 @@ const makeDb = Effect.gen(function*() {
     putTeam: (t: Team) =>
       sql`INSERT INTO team (id, key, name, issue_counter) VALUES (${t.id}, ${t.key}, ${t.name}, ${t.issueCounter})
           ON CONFLICT (id) DO UPDATE SET key = excluded.key, name = excluded.name, issue_counter = excluded.issue_counter`,
+    getTeamByKey: (key: string) => one(sql`SELECT * FROM team WHERE key = ${key} COLLATE NOCASE`, toTeam),
+    deleteTeam: (id: string) => sql`DELETE FROM team WHERE id = ${id}`,
     nextIssueNumber: (teamId: string) =>
       one(
         sql`UPDATE team SET issue_counter = issue_counter + 1 WHERE id = ${teamId} RETURNING issue_counter`,
@@ -175,9 +210,56 @@ const makeDb = Effect.gen(function*() {
       sql`UPDATE user SET account_id = ${accountId} WHERE id = ${userId}`,
     accountCount: one(sql`SELECT COUNT(*) AS n FROM auth_user`, (r) => num(r.n)).pipe(Effect.map((n) => n ?? 0)),
     getUserByLogin: (login: string) => one(sql`SELECT * FROM user WHERE github_login = ${login}`, toUser),
+    /** Insert or update a user. An existing user's role only changes through `setRole`. */
     putUser: (u: User) =>
-      sql`INSERT INTO user (id, name, github_login, avatar_url) VALUES (${u.id}, ${u.name}, ${u.githubLogin}, ${u.avatarUrl})
+      sql`INSERT INTO user (id, name, github_login, avatar_url, role) VALUES (${u.id}, ${u.name}, ${u.githubLogin}, ${u.avatarUrl}, ${u.role})
           ON CONFLICT (id) DO UPDATE SET name = excluded.name, github_login = excluded.github_login, avatar_url = excluded.avatar_url`,
+    setRole: (userId: string, role: Role | null) => sql`UPDATE user SET role = ${role} WHERE id = ${userId}`,
+    adminCount: one(sql`SELECT COUNT(*) AS n FROM user WHERE role = 'admin'`, (r) => num(r.n)).pipe(Effect.map((n) => n ?? 0)),
+    /** The account behind a user, if any. */
+    accountOfUser: (userId: string) =>
+      one(sql`SELECT account_id FROM user WHERE id = ${userId}`, (r) => strOrNull(r.account_id)).pipe(
+        Effect.map((id) => id ?? null)
+      ),
+    /** Emails of the people with an account, by user id. */
+    memberEmails: all(
+      sql`SELECT u.id, a.email FROM user u JOIN auth_user a ON a.id = u.account_id`,
+      (r) => [str(r.id), str(r.email)] as const
+    ),
+
+    teamMembers: all(sql`SELECT * FROM team_member ORDER BY created_at`, toTeamMember),
+    getTeamMember: (id: string) => one(sql`SELECT * FROM team_member WHERE id = ${id}`, toTeamMember),
+    membersOfTeam: (teamId: string) =>
+      all(sql`SELECT * FROM team_member WHERE team_id = ${teamId} ORDER BY created_at`, toTeamMember),
+    teamsOfUser: (userId: string) =>
+      all(sql`SELECT * FROM team_member WHERE user_id = ${userId} ORDER BY created_at`, toTeamMember),
+    membership: (teamId: string, userId: string) =>
+      one(sql`SELECT * FROM team_member WHERE team_id = ${teamId} AND user_id = ${userId}`, toTeamMember),
+    putTeamMember: (m: TeamMember) =>
+      sql`INSERT INTO team_member (id, team_id, user_id, created_at) VALUES (${m.id}, ${m.teamId}, ${m.userId}, ${m.createdAt})`,
+    deleteTeamMember: (id: string) => sql`DELETE FROM team_member WHERE id = ${id}`,
+
+    invites: all(
+      sql`SELECT * FROM invite WHERE accepted_at IS NULL ORDER BY created_at DESC`,
+      toInvite
+    ),
+    getInvite: (id: string) => one(sql`SELECT * FROM invite WHERE id = ${id}`, toInvite),
+    inviteByTokenHash: (hash: string) => one(sql`SELECT * FROM invite WHERE token_hash = ${hash}`, toInvite),
+    putInvite: (i: InviteRow, tokenHash: string) =>
+      sql`INSERT INTO invite (id, token_hash, email, role, team_ids, invited_by, created_at, expires_at)
+          VALUES (${i.id}, ${tokenHash}, ${i.email}, ${i.role}, ${JSON.stringify(i.teamIds)}, ${i.invitedBy},
+                  ${i.createdAt}, ${i.expiresAt})`,
+    /** Mark an open, unexpired invite as used. False when someone else got there first, or it expired. */
+    claimInvite: (id: string, now: number) =>
+      Effect.map(
+        sql`UPDATE invite SET accepted_at = ${now} WHERE id = ${id} AND accepted_at IS NULL AND expires_at > ${now}
+            RETURNING id`,
+        (rows) => rows.length > 0
+      ),
+    /** Give an invite back, when the sign-up it was claimed for failed. */
+    unclaimInvite: (id: string) => sql`UPDATE invite SET accepted_at = NULL WHERE id = ${id} AND accepted_by IS NULL`,
+    inviteAcceptedBy: (id: string, userId: string) => sql`UPDATE invite SET accepted_by = ${userId} WHERE id = ${id}`,
+    deleteInvite: (id: string) => sql`DELETE FROM invite WHERE id = ${id}`,
 
     workflowStates: all(sql`SELECT * FROM workflow_state ORDER BY team_id, position`, toState),
     getState: (id: string) => one(sql`SELECT * FROM workflow_state WHERE id = ${id}`, toState),
@@ -287,6 +369,8 @@ const makeDb = Effect.gen(function*() {
       switch (model) {
         case "team":
           return one(sql`SELECT * FROM team WHERE id = ${id}`, (r) => ({ model, value: toTeam(r) }))
+        case "teamMember":
+          return one(sql`SELECT * FROM team_member WHERE id = ${id}`, (r) => ({ model, value: toTeamMember(r) }))
         case "user":
           return one(sql`SELECT * FROM user WHERE id = ${id}`, (r) => ({ model, value: toUser(r) }))
         case "workflowState":

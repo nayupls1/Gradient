@@ -8,7 +8,7 @@ import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker
 import { IssueMentions, IssuePullRequests, IssueRelations, type RelationApis } from "../app/relations.tsx"
 import { KeyScope, useCommands, useScope } from "../keys/solid.tsx"
 import { Markdown } from "../app/Markdown.tsx"
-import { commentsFor, findIssue, formatRelative, issueKey, issueRepo, projectHref } from "../lib/select.ts"
+import { commentsFor, findIssue, formatRelative, issueKey, issueRepo, projectHref, teamHref } from "../lib/select.ts"
 import { bareTextarea } from "../app/styles.ts"
 import { UserAvatar } from "../app/UserAvatar.tsx"
 import { colors } from "../lib/tokens.stylex.ts"
@@ -92,6 +92,11 @@ export const IssuePage = () => {
   const navigate = useNavigate()
   const actions = useIssueActions()
   const issue = () => findIssue(sync.state, params.ref ?? "")
+  /** The issues of the issue's team. */
+  const backHref = () => {
+    const team = sync.state.teams[issue()?.teamId ?? ""]
+    return team ? teamHref(team) : "/"
+  }
   const comments = () => {
     const current = issue()
     return current ? commentsFor(sync.state, current.id) : []
@@ -104,7 +109,7 @@ export const IssuePage = () => {
   useScope("issue.detail")
   useIssueCommands({ scope: "issue.detail", issue, apis: () => apis })
   useCommands([
-    { id: "issue.back", title: "Back to issues", group: "Navigation", keys: ["escape", "u"], scope: "issue.detail", run: () => navigate("/") },
+    { id: "issue.back", title: "Back to issues", group: "Navigation", keys: ["escape", "u"], scope: "issue.detail", run: () => navigate(backHref()) },
     { id: "issue.editTitle", title: "Edit title", group: "Issue", keys: ["e"], scope: "issue.detail", run: () => titleEl?.focus() },
     { id: "issue.editDescription", title: "Edit description", group: "Issue", keys: ["d"], scope: "issue.detail", run: () => editDescription() },
     { id: "issue.blockedBy", title: "Mark as blocked by…", group: "Issue", keys: ["b"], scope: "issue.detail", run: () => relationApis.blockedBy?.open() },
@@ -173,7 +178,7 @@ export const IssuePage = () => {
               <Breadcrumb>
                 <BreadcrumbList>
                   <BreadcrumbItem>
-                    <BreadcrumbLink href="/">{sync.state.teams[current().teamId]?.name}</BreadcrumbLink>
+                    <BreadcrumbLink href={backHref()}>{sync.state.teams[current().teamId]?.name}</BreadcrumbLink>
                   </BreadcrumbItem>
                   <BreadcrumbSeparator />
                   <Show when={current().projectId ? sync.state.projects[current().projectId!] : undefined}>
@@ -220,8 +225,9 @@ export const IssuePage = () => {
                       variant="destructive"
                       onClick={() => {
                         if (!confirm("Delete this issue? This cannot be undone.")) return
+                        const back = backHref()
                         sync.mutate({ _tag: "IssueDelete", id: current().id })
-                        navigate("/")
+                        navigate(back)
                       }}
                     >
                       <TrashIcon size={14} /> Delete…

@@ -8,13 +8,79 @@ import {
   projectKeyFor,
   type PullRequest,
   pullRequestRefersTo,
+  type Team,
+  teamKeyFor,
   teamKeys,
   type WorkflowState
 } from "@gradient/domain"
 import type { SyncState } from "../sync/engine.ts"
 import { collectReferences, type MdRef, parseMarkdown } from "./markdown.ts"
 
-export const firstTeam = (state: SyncState) => Object.values(state.teams)[0]
+/** Every team, by name. Teams are visible to the whole workspace. */
+export const allTeams = (state: SyncState): Array<Team> =>
+  Object.values(state.teams).sort((a, b) => a.name.localeCompare(b.name))
+
+export const teamMembers = (state: SyncState, teamId: string) =>
+  Object.values(state.teamMembers).filter((m) => m.teamId === teamId)
+
+export const membership = (state: SyncState, teamId: string, userId: string) =>
+  Object.values(state.teamMembers).find((m) => m.teamId === teamId && m.userId === userId)
+
+/** The teams the viewer is in, by name: the ones in the sidebar. */
+export const myTeams = (state: SyncState): Array<Team> => {
+  const mine = new Set(Object.values(state.teamMembers).filter((m) => m.userId === state.viewerId).map((m) => m.teamId))
+  return allTeams(state).filter((t) => mine.has(t.id))
+}
+
+/** Where new things go when the page names no team: the viewer's first team, else the first team. */
+export const defaultTeam = (state: SyncState): Team | undefined => myTeams(state)[0] ?? allTeams(state)[0]
+
+/** A team by key (as in URLs, any case) or id. */
+export const findTeam = (state: SyncState, ref: string): Team | undefined =>
+  state.teams[ref] ?? Object.values(state.teams).find((t) => t.key.toLowerCase() === ref.toLowerCase())
+
+export const teamHref = (team: Pick<Team, "key">) => `/team/${team.key}`
+export const teamSettingsHref = (team: Pick<Team, "key">) => `/team/${team.key}/settings`
+
+/** The team the current URL is about: /team/KEY, a project's or an issue's. */
+export const teamFromPath = (state: SyncState, path: string): Team | undefined => {
+  const key = path.match(/^\/team\/([^/]+)/)?.[1]
+  if (key) return findTeam(state, decodeURIComponent(key))
+  const projectId = projectIdFromPath(path)
+  if (projectId) return state.teams[state.projects[projectId]?.teamId ?? ""]
+  const ref = path.match(/^\/issue\/([^/]+)/)?.[1]
+  const issue = ref ? findIssue(state, decodeURIComponent(ref)) : undefined
+  return issue ? state.teams[issue.teamId] : undefined
+}
+
+/** The team of the current page, else the default one. */
+export const currentTeam = (state: SyncState, path: string) => teamFromPath(state, path) ?? defaultTeam(state)
+
+/** People with an account (members of the workspace), by name. */
+export const workspaceMembers = (state: SyncState) => users(state).filter((u) => u.role !== null)
+
+export const viewerIsAdmin = (state: SyncState) => state.users[state.viewerId]?.role === "admin"
+
+/**
+ * What already uses a key, for form hints: keys prefix identifiers, so no two
+ * teams or projects in the workspace share one.
+ */
+export const keyOwner = (state: SyncState, key: string, except: { team?: string; project?: string } = {}) => {
+  const k = key.toUpperCase()
+  const team = Object.values(state.teams).find((t) => t.id !== except.team && t.key.toUpperCase() === k)
+  if (team) return `the team ${team.name}`
+  const project = Object.values(state.projects).find((p) => p.id !== except.project && p.key === k)
+  return project ? `the project ${project.name}` : null
+}
+
+const takenKeys = (state: SyncState, except: { team?: string; project?: string }) => [
+  ...Object.values(state.teams).filter((t) => t.id !== except.team).map((t) => t.key),
+  ...Object.values(state.projects).filter((p) => p.id !== except.project).map((p) => p.key)
+]
+
+/** A free key for a new team, from its name. */
+export const suggestTeamKey = (state: SyncState, name: string, exceptTeamId?: string) =>
+  teamKeyFor(name, takenKeys(state, exceptTeamId ? { team: exceptTeamId } : {}))
 
 export const teamStates = (state: SyncState, teamId: string): Array<WorkflowState> =>
   Object.values(state.workflowStates)
@@ -68,12 +134,9 @@ export const findIssue = (state: SyncState, ref: string): Issue | undefined => {
   return state.issues[ref]
 }
 
-/** A free key for a new project in this team, from its name. */
-export const suggestProjectKey = (state: SyncState, teamId: string, name: string, exceptProjectId?: string) =>
-  projectKeyFor(name, [
-    state.teams[teamId]?.key ?? "",
-    ...Object.values(state.projects).filter((p) => p.teamId === teamId && p.id !== exceptProjectId).map((p) => p.key)
-  ])
+/** A free key for a new project, from its name. Keys are unique across the workspace. */
+export const suggestProjectKey = (state: SyncState, _teamId: string, name: string, exceptProjectId?: string) =>
+  projectKeyFor(name, takenKeys(state, exceptProjectId ? { project: exceptProjectId } : {}))
 
 export const issueHref = (state: SyncState, issue: Issue) =>
   `/issue/${issue.number > 0 ? issueKey(state, issue) : issue.id}`

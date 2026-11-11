@@ -1,6 +1,6 @@
 import { Context, Schema } from "effect"
 import { Rpc, RpcGroup, RpcMiddleware } from "effect/rpc"
-import { ProjectIconFile } from "./models.ts"
+import { ProjectIconFile, Role } from "./models.ts"
 import { Mutation } from "./mutations.ts"
 import { Snapshot, SyncEvent } from "./sync.ts"
 
@@ -101,6 +101,42 @@ export const ServerInfo = Schema.Struct({
 })
 export type ServerInfo = typeof ServerInfo.Type
 
+/** Something only an admin may do, or an invite that cannot be used. */
+export class MemberError extends Schema.TaggedError<MemberError>()("MemberError", {
+  message: Schema.String
+}) {}
+
+/** How long an invite link works. */
+export const INVITE_TTL_DAYS = 7
+
+/** An invite waiting to be accepted, as admins see it. The token is never stored, only its hash. */
+export const Invite = Schema.Struct({
+  id: Schema.String,
+  /** Only this address may accept it, when set. */
+  email: Schema.NullOr(Schema.String),
+  role: Role,
+  /** The teams the new person joins. */
+  teamIds: Schema.Array(Schema.String),
+  /** The Gradient user who made it. */
+  invitedBy: Schema.NullOr(Schema.String),
+  createdAt: Schema.Int,
+  expiresAt: Schema.Int
+})
+export type Invite = typeof Invite.Type
+
+/** What the invite page shows before anyone signs in (`GET /api/invites/<token>`). */
+export const InvitePreview = Schema.Struct({
+  email: Schema.NullOr(Schema.String),
+  role: Role,
+  teams: Schema.Array(Schema.Struct({ id: Schema.String, key: Schema.String, name: Schema.String })),
+  invitedBy: Schema.NullOr(Schema.String),
+  expiresAt: Schema.Int
+})
+export type InvitePreview = typeof InvitePreview.Type
+
+/** The link of an invite is `<origin>/invite/<token>`. */
+export const invitePath = (token: string) => `/invite/${token}`
+
 export class GradientRpcs extends RpcGroup.make(
   Rpc.make("Bootstrap", { success: Snapshot }),
   Rpc.make("ServerInfo", { success: ServerInfo }),
@@ -114,6 +150,30 @@ export class GradientRpcs extends RpcGroup.make(
     success: Schema.Struct({ syncId: Schema.Int }),
     error: MutationRejected
   }),
+  /** Admins: invite someone. The token is returned once; its link is `invitePath(token)`. */
+  Rpc.make("InviteCreate", {
+    payload: { email: Schema.NullOr(Schema.String), role: Role, teamIds: Schema.Array(Schema.String) },
+    success: Schema.Struct({ invite: Invite, token: Schema.String }),
+    error: MemberError
+  }),
+  /** Admins: invites not accepted yet, newest first (expired ones too, until revoked). */
+  Rpc.make("InviteList", { success: Schema.Array(Invite), error: MemberError }),
+  Rpc.make("InviteRevoke", { payload: { id: Schema.String }, error: MemberError }),
+  /** Accept an invite as the signed-in account: join its teams (and become admin, if it says so). */
+  Rpc.make("InviteAccept", {
+    payload: { token: Schema.String },
+    success: Schema.Struct({ teamIds: Schema.Array(Schema.String) }),
+    error: MemberError
+  }),
+  /** Admins: change someone's role. The last admin cannot step down. */
+  Rpc.make("MemberSetRole", { payload: { userId: Schema.String, role: Role }, error: MemberError }),
+  /**
+   * Admins: remove someone from the workspace. Their account, sessions and
+   * agent keys are deleted; they stay on the issues they touched, without a role.
+   */
+  Rpc.make("MemberRemove", { payload: { userId: Schema.String }, error: MemberError }),
+  /** Admins: the email addresses of the people with an account, by user id. */
+  Rpc.make("MemberEmails", { success: Schema.Record(Schema.String, Schema.String), error: MemberError }),
   Rpc.make("GithubStatus", { success: GithubStatus }),
   /**
    * Link a repository to a project and import its issues. Without a projectId,

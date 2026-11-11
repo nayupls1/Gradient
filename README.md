@@ -43,8 +43,9 @@ on first start.
 
 The first visit asks you to create an account (email and password). The first
 account owns the workspace: it takes over the seeded user, its issues and the
-GitHub connection. After that, sign-up is closed; start the server with
-`GRADIENT_ALLOW_SIGNUP=true` to let more people create accounts.
+GitHub connection, and is its admin. After that, sign-up is closed: invite
+people from Members (`/members`), or start the server with
+`GRADIENT_ALLOW_SIGNUP=true` to let anyone create an account.
 
 ## Accounts
 
@@ -54,6 +55,23 @@ your name, changes your password, lists where you are signed in (sign out any
 session), and manages agent keys. Sessions live in an HttpOnly cookie for 7
 days and renew while you use the app. Sign-in and sign-up are rate limited per
 address. There is no password reset by email yet.
+
+## Teams and people
+
+Each team has its own issues, workflow, labels and projects. Every team is
+visible to everyone in the workspace; the teams you are in show in the
+sidebar, and Teams (`/teams`, `g t`) lists them all to join or leave. Create a
+team from the `+` next to "Your teams"; its settings page renames it, changes
+its key and manages its members.
+
+Admins invite people from Members (`/members`, `g m`) or a team's settings: an
+invite is a link that works once, for 7 days, optionally only for one email
+address, with a role (member or admin) and the teams to join. Gradient sends
+no email; copy the link and pass it on. Opening it lets the person create an
+account even while sign-up is closed. Admins also change roles and remove
+people (their account, sessions and agent keys are deleted; their issues stay).
+Agents can do the same over MCP (`create_team`, `add_team_member`,
+`invite_person`, …).
 
 To run the compiled versions, build both once, then start both:
 

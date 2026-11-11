@@ -7,7 +7,8 @@ import { github } from "../app/github.ts"
 import { agentCommands, useMcpUrl } from "../app/agents.ts"
 import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
 import { ProjectGlyph } from "../app/ProjectGlyph.tsx"
-import { firstTeam, formatRelative, projectHref } from "../lib/select.ts"
+import { allTeams, defaultTeam, formatRelative, projectHref } from "../lib/select.ts"
+import { TeamPicker } from "../app/properties.tsx"
 import type { JSX } from "@solidjs/web"
 import { type ColorTokens, paletteById, palettes } from "../theme/presets.ts"
 import { activeScheme, type Mode, resolveColors, theme, updateTheme } from "../theme/theme.ts"
@@ -425,7 +426,9 @@ const GithubSettings = () => {
   const sync = useContext(Sync)
   const navigate = useNavigate()
   const url = useMcpUrl()
-  const team = () => firstTeam(sync.state)
+  /** The team a newly linked repository's project goes to. */
+  const [teamId, setTeamId] = createSignal("")
+  const team = () => sync.state.teams[teamId()] ?? defaultTeam(sync.state)
   const repos = () => Object.values(sync.state.githubRepos).sort((a, b) => a.createdAt - b.createdAt)
   const status = () => github.status()
   const connected = () => status()?.tokenSource != null
@@ -538,7 +541,12 @@ const GithubSettings = () => {
               </Button>
             )}
           />
-          <span {...stylex.attrs(s.subtle)}>Creates a project named after it and imports its issues.</span>
+          <Show when={allTeams(sync.state).length > 1}>
+            <TeamPicker value={team()?.id ?? ""} onChange={setTeamId} variant="chip" />
+          </Show>
+          <span {...stylex.attrs(s.subtle)}>
+            Creates a project named after it{allTeams(sync.state).length > 1 ? ` in ${team()?.name ?? "the team"}` : ""} and imports its issues.
+          </span>
         </div>
         <Show when={status()?.tokenSource === "app" && status()?.signIn.installUrl}>
           {(href) => (

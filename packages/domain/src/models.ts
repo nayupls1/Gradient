@@ -18,13 +18,34 @@ export const Team = Schema.Struct({
 })
 export type Team = typeof Team.Type
 
+/**
+ * What a person with an account may do in the workspace. Admins invite and
+ * remove people and change roles; members do everything else.
+ */
+export const Role = Schema.Literals(["admin", "member"])
+export type Role = typeof Role.Type
+
 export const User = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   githubLogin: Schema.NullOr(Schema.String),
-  avatarUrl: Schema.NullOr(Schema.String)
+  avatarUrl: Schema.NullOr(Schema.String),
+  /** The workspace role of a person with an account; null for people known only from GitHub. */
+  role: Schema.NullOr(Role)
 })
 export type User = typeof User.Type
+
+/**
+ * A person's membership of a team. Every team is visible to the whole
+ * workspace; membership decides whose sidebar it is in, and who manages it.
+ */
+export const TeamMember = Schema.Struct({
+  id: Schema.String,
+  teamId: Schema.String,
+  userId: Schema.String,
+  createdAt: Millis
+})
+export type TeamMember = typeof TeamMember.Type
 
 export const WorkflowState = Schema.Struct({
   id: Schema.String,
@@ -200,6 +221,7 @@ export type IssueComment = typeof IssueComment.Type
 
 export const ModelName = Schema.Literals([
   "team",
+  "teamMember",
   "user",
   "workflowState",
   "label",
@@ -215,6 +237,7 @@ export type ModelName = typeof ModelName.Type
 /** One synced record, tagged by model, so clients can route it to the right table. */
 export const Entity = Schema.Union([
   Schema.Struct({ model: Schema.Literal("team"), value: Team }),
+  Schema.Struct({ model: Schema.Literal("teamMember"), value: TeamMember }),
   Schema.Struct({ model: Schema.Literal("user"), value: User }),
   Schema.Struct({ model: Schema.Literal("workflowState"), value: WorkflowState }),
   Schema.Struct({ model: Schema.Literal("label"), value: Label }),
@@ -248,6 +271,18 @@ export const parseIdentifier = (ref: string): { key: string; number: number } | 
 }
 
 export const isValidProjectKey = (key: string) => /^[A-Z][A-Z0-9]{1,4}$/.test(key)
+
+/** Team keys follow the same rule as project keys. Every key, of a team or a project, is unique in the workspace. */
+export const isValidTeamKey = isValidProjectKey
+
+/**
+ * A key for a new team, from its name: like `projectKeyFor`, but a name too
+ * short to read falls back to "TM" instead of "PRJ".
+ */
+export const teamKeyFor = (name: string, taken: Iterable<string>): string => {
+  const cleaned = name.normalize("NFKD").replace(/[^A-Za-z0-9]/g, "")
+  return projectKeyFor(cleaned.length >= 2 ? name : "Team", taken)
+}
 
 /**
  * A key for a new project: the first three letters of its name, uppercased

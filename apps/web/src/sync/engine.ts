@@ -10,6 +10,7 @@ import {
   type PullRequest,
   type Snapshot,
   type Team,
+  type TeamMember,
   type User,
   uuidv7,
   type WorkflowState
@@ -27,6 +28,7 @@ export interface SyncState {
   connection: ConnectionState
   viewerId: string
   teams: Record<string, Team>
+  teamMembers: Record<string, TeamMember>
   users: Record<string, User>
   workflowStates: Record<string, WorkflowState>
   labels: Record<string, Label>
@@ -67,6 +69,7 @@ export const createSyncEngine = (options: SyncEngineOptions = {}) => {
     connection: "connecting",
     viewerId: "",
     teams: {},
+    teamMembers: {},
     users: {},
     workflowStates: {},
     labels: {},

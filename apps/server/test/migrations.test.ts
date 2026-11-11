@@ -153,3 +153,41 @@ test("0007 adds issue comments; linked repositories poll comments from the start
   expect(after.repo).toEqual({ comments_since: null, comments_etag: null })
   expect(after.comments).toEqual([])
 })
+
+test("0009 makes the original user the admin and puts everyone who had access in every team", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gradient-migrate-"))
+  dirs.push(dir)
+  const file = join(dir, "teams.db")
+  const before = Object.keys(migrations).filter((k) => k < "0009") as Array<keyof typeof migrations>
+  const now = new Date().toISOString()
+  await withDb(file, before, Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`INSERT INTO meta (key, value) VALUES ('viewer_id', 'owner')`
+    yield* sql`INSERT INTO team (id, key, name, issue_counter) VALUES ('t1', 'GRD', 'Gradient', 0), ('t2', 'WEB', 'Web', 0)`
+    for (const [id, email] of [["a1", "ada@example.com"], ["a2", "grace@example.com"]]) {
+      yield* sql`INSERT INTO auth_user (id, name, email, created_at, updated_at) VALUES (${id!}, ${id!}, ${email!}, ${now}, ${now})`
+    }
+    yield* sql`INSERT INTO user (id, name, account_id) VALUES ('owner', 'Ada', 'a1'), ('grace', 'Grace', 'a2')`
+    yield* sql`INSERT INTO user (id, name, github_login) VALUES ('octo', 'octocat', 'octocat')`
+  }))
+  const after = await withDb(file, Object.keys(migrations) as Array<keyof typeof migrations>, Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    return {
+      roles: yield* sql`SELECT id, role FROM user ORDER BY id`,
+      members: yield* sql`SELECT team_id, user_id FROM team_member ORDER BY team_id, user_id`,
+      invites: yield* sql`SELECT * FROM invite`
+    }
+  }))
+  expect(after.roles).toEqual([
+    { id: "grace", role: "member" },
+    { id: "octo", role: null },
+    { id: "owner", role: "admin" }
+  ])
+  expect(after.members).toEqual([
+    { team_id: "t1", user_id: "grace" },
+    { team_id: "t1", user_id: "owner" },
+    { team_id: "t2", user_id: "grace" },
+    { team_id: "t2", user_id: "owner" }
+  ])
+  expect(after.invites).toEqual([])
+})

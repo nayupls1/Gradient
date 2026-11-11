@@ -148,7 +148,7 @@ export class GithubSync extends Context.Service<GithubSync, {
           const existing = yield* db.getUserByLogin(login)
           if (existing) return existing.id
           const id = Bun.randomUUIDv7()
-          yield* db.putUser({ id, name: login, githubLogin: login, avatarUrl })
+          yield* db.putUser({ id, name: login, githubLogin: login, avatarUrl, role: null })
           tx.touch("user", id)
           return id
         })
@@ -862,13 +862,14 @@ export class GithubSync extends Context.Service<GithubSync, {
             return same.id
           }
           const id = Bun.randomUUIDv7()
-          const team = yield* db.getTeam(input.teamId)
+          // Keys are unique across the workspace.
+          const taken = [...(yield* db.teams).map((t) => t.key), ...(yield* db.projects).map((p) => p.key)]
           yield* mutations.apply({ origin: "system", actorId: null }, [{
             _tag: "ProjectCreate",
             id,
             teamId: input.teamId,
             key: input.projectKey?.trim().toUpperCase() ||
-              projectKeyFor(wanted, [team?.key ?? "", ...projects.map((p) => p.key)]),
+              projectKeyFor(wanted, taken),
             name: wanted,
             color: PROJECT_COLORS[projects.length % PROJECT_COLORS.length]!
           }]).pipe(Effect.mapError((e) => new GithubError({ message: e.message })))

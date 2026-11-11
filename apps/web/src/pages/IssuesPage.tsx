@@ -11,7 +11,8 @@ import { AssigneePicker, PriorityPicker, StatePicker, useIssueActions } from "..
 import { Shortcut, useCommands, useScope } from "../keys/solid.tsx"
 import {
   compareIssues,
-  firstTeam,
+  defaultTeam,
+  findTeam,
   formatDate,
   formatRelative,
   issueHref,
@@ -19,8 +20,11 @@ import {
   openBlockers,
   projectRepo,
   pullRequestsFor,
+  teamHref,
+  teamSettingsHref,
   teamStates
 } from "../lib/select.ts"
+import { TeamBadge } from "../app/TeamBadge.tsx"
 import { KeyScope } from "../keys/solid.tsx"
 import { colors } from "../lib/tokens.stylex.ts"
 import { type RowRange, rowOffsets, sameRange, scrollToReveal, visibleRows } from "../lib/window.ts"
@@ -48,6 +52,7 @@ import {
   PullRequestIcon,
   pullRequestLabel,
   RefreshIcon,
+  SettingsIcon,
   StateIcon,
   TrashIcon,
   UnlinkIcon
@@ -460,8 +465,9 @@ const ProjectMenu = (props: { projectId: string }) => {
               onClick={() => {
                 const project = sync.state.projects[props.projectId]
                 if (project && confirm(`Delete the project "${project.name}"? Its issues stay, without a project.`)) {
+                  const team = sync.state.teams[project.teamId]
                   sync.mutate({ _tag: "ProjectDelete", id: project.id })
-                  navigate("/")
+                  navigate(team ? teamHref(team) : "/")
                 }
               }}
             >
@@ -480,20 +486,25 @@ export const IssuesPage = () => {
   const projectDialogs = useContext(ProjectDialogsContext)
   const navigate = useNavigate()
   const params = useParams()
-  /** The project this page shows, or undefined for all issues. */
+  /** The project this page shows, or undefined for all of a team's issues. */
   const projectId = () => params.id
   const project = () => (projectId() ? sync.state.projects[projectId()!] : undefined)
+  /** The team shown: the project's, the one in the URL (/team/KEY), else the viewer's first. */
+  const team = () =>
+    project() ? sync.state.teams[project()!.teamId] : params.key ? findTeam(sync.state, params.key) : defaultTeam(sync.state)
+  /** A URL that names a project or team that does not exist. */
+  const missing = () => (projectId() ? (project() ? null : "This project does not exist, or was deleted.") : params.key && !team() ? "This team does not exist, or was deleted." : null)
   const [focusTarget, setFocusedId] = createSignal<string | null>(null)
   const apis = new Map<string, PickerApis>()
 
   const groups = createMemo(() => {
-    const team = firstTeam(sync.state)
-    if (!team) return []
+    const t = team()
+    if (!t) return []
     const only = projectId()
     const visible = Object.values(sync.state.issues).filter(
-      (i) => i.teamId === team.id && i.archivedAt === null && (!only || i.projectId === only)
+      (i) => i.teamId === t.id && i.archivedAt === null && (!only || i.projectId === only)
     )
-    return teamStates(sync.state, team.id)
+    return teamStates(sync.state, t.id)
       .map((state) => ({ state, issues: visible.filter((i) => i.stateId === state.id).sort(compareIssues) }))
       .filter((g) => g.issues.length > 0)
   })
@@ -638,7 +649,16 @@ export const IssuesPage = () => {
     <>
       <PageHeader
         title={
-          <Show when={project()} fallback={<>All issues<Badge variant="secondary" xstyle={s.headerCount}>{total()}</Badge></>}>
+          <Show
+            when={project()}
+            fallback={
+              <>
+                <TeamBadge team={team()} />
+                {team()?.name ?? "Issues"}
+                <Badge variant="secondary" xstyle={s.headerCount}>{total()}</Badge>
+              </>
+            }
+          >
             {(p) => (
               <>
                 <ProjectGlyph project={p()} size={15} />
@@ -658,6 +678,13 @@ export const IssuesPage = () => {
                 </>
               )}
             </Show>
+            <Show when={!project() && team()}>
+              {(t) => (
+                <Button variant="ghost" size="icon-xs" title={`${t().name} settings`} onClick={() => navigate(teamSettingsHref(t()))}>
+                  <SettingsIcon size={14} />
+                </Button>
+              )}
+            </Show>
             <Button variant="outline" size="xs" onClick={() => composer.open()}>
               <PlusIcon size={13} />
               New issue
@@ -668,8 +695,8 @@ export const IssuesPage = () => {
       />
       <div ref={listEl} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} {...stylex.attrs(s.list)}>
         <Show
-          when={!projectId() || project()}
-          fallback={<div {...stylex.attrs(s.empty)}>This project does not exist, or was deleted.</div>}
+          when={!missing()}
+          fallback={<div {...stylex.attrs(s.empty)}>{missing()}</div>}
         >
         <Show
           when={groups().length > 0}

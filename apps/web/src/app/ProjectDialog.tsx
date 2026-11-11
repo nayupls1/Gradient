@@ -9,7 +9,7 @@ import * as stylex from "@stylexjs/stylex"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createSignal, createUniqueId, For, Show, useContext } from "solid-js"
 import { KeyScope, useCommands } from "../keys/solid.tsx"
-import { firstTeam, projectHref, projectRepo, suggestProjectKey, teamProjects } from "../lib/select.ts"
+import { defaultTeam, keyOwner, projectHref, projectRepo, suggestProjectKey, teamProjects } from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { font } from "../theme/tokens.stylex.ts"
 import { Button, type ButtonProps } from "../ui/button.tsx"
@@ -56,7 +56,7 @@ type IconPick = { mode: "auto" } | { mode: "none" } | { mode: "repo"; path: stri
 const iconValue = (pick: IconPick) => (pick.mode === "repo" ? `repo:${pick.path}` : pick.mode)
 const fileName = (path: string) => path.split("/").pop() ?? path
 
-export type ProjectDialogMode = { kind: "create" } | { kind: "edit"; projectId: string; focus?: "icon" }
+export type ProjectDialogMode = { kind: "create"; teamId?: string } | { kind: "edit"; projectId: string; focus?: "icon" }
 
 /**
  * Create a project (optionally linked to a GitHub repository, whose issues are
@@ -67,8 +67,13 @@ export type ProjectDialogMode = { kind: "create" } | { kind: "edit"; projectId: 
 export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: () => void }) => {
   const sync = useContext(Sync)
   const navigate = useNavigate()
-  const team = () => firstTeam(sync.state)
   const editing = () => (props.mode?.kind === "edit" ? sync.state.projects[props.mode.projectId] : undefined)
+  /** The project's team, or the team a new one goes to. */
+  const team = () => {
+    const mode = props.mode
+    if (mode?.kind === "edit") return sync.state.teams[editing()?.teamId ?? ""]
+    return (mode?.teamId ? sync.state.teams[mode.teamId] : undefined) ?? defaultTeam(sync.state)
+  }
 
   const [name, setName] = createSignal("")
   const [key, setKey] = createSignal("")
@@ -158,8 +163,8 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
     if (!isValidProjectKey(k)) return "2–5 capital letters or digits, starting with a letter."
     const t = team()
     if (t && t.key.toUpperCase() === k) return `${k} is the team's own key.`
-    const clash = Object.values(sync.state.projects).find((p) => p.teamId === t?.id && p.key === k && p.id !== editing()?.id)
-    return clash ? `${k} is used by ${clash.name}.` : null
+    const owner = keyOwner(sync.state, k, editing() ? { project: editing()!.id } : {})
+    return owner ? `${k} is used by ${owner}.` : null
   }
 
   const submit = async () => {
@@ -237,7 +242,7 @@ export const ProjectDialog = (props: { mode: ProjectDialogMode | null; onClose: 
           <Show when={editing()} fallback={<ProjectIcon size={16} color={colorValue()} />}>
             {iconPreview(icon(), 16)}
           </Show>
-          {editing() ? "Edit project" : "New project"}
+          {editing() ? "Edit project" : Object.keys(sync.state.teams).length > 1 ? `New project in ${team()?.name ?? "team"}` : "New project"}
         </DialogTitle>
       </DialogHeader>
       <form

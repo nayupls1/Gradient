@@ -319,5 +319,49 @@ export const migrations = {
     yield* sql`CREATE INDEX auth_api_key_reference ON auth_api_key (reference_id)`
     yield* sql`ALTER TABLE user ADD COLUMN account_id TEXT REFERENCES auth_user(id) ON DELETE SET NULL`
     yield* sql`CREATE UNIQUE INDEX user_account ON user (account_id)`
+  }),
+  /**
+   * Teams for real: memberships (`team_member`), workspace roles on users
+   * (`admin`, `member`; NULL for people known only from GitHub) and invites.
+   * The workspace's original user is the admin; other users with an account
+   * are members. Everyone who could see the teams before (every account, and
+   * the original user) joins every existing team, so nothing disappears from
+   * anyone's sidebar. An invite keeps only the SHA-256 of its token.
+   */
+  "0009_teams": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE team_member (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL REFERENCES team(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL,
+      UNIQUE (team_id, user_id)
+    )`
+    yield* sql`CREATE INDEX team_member_user ON team_member (user_id)`
+    yield* sql`ALTER TABLE user ADD COLUMN role TEXT`
+    const owner = (yield* sql`SELECT value FROM meta WHERE key = 'viewer_id'`)[0]?.value as string | undefined
+    yield* sql`UPDATE user SET role = 'member' WHERE account_id IS NOT NULL`
+    if (owner) yield* sql`UPDATE user SET role = 'admin' WHERE id = ${owner} AND account_id IS NOT NULL`
+    const now = Date.now()
+    const people = yield* sql`SELECT id FROM user WHERE account_id IS NOT NULL OR id = ${owner ?? ""}`
+    const teams = yield* sql`SELECT id FROM team`
+    for (const team of teams) {
+      for (const person of people) {
+        yield* sql`INSERT INTO team_member (id, team_id, user_id, created_at)
+                   VALUES (${crypto.randomUUID()}, ${team.id as string}, ${person.id as string}, ${now})`
+      }
+    }
+    yield* sql`CREATE TABLE invite (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      email TEXT COLLATE NOCASE,
+      role TEXT NOT NULL,
+      team_ids TEXT NOT NULL,
+      invited_by TEXT REFERENCES user(id) ON DELETE SET NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      accepted_at INTEGER,
+      accepted_by TEXT REFERENCES user(id) ON DELETE SET NULL
+    )`
   })
 }

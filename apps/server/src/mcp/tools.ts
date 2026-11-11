@@ -19,6 +19,9 @@ const PriorityName = Schema.Literals(["none", "urgent", "high", "medium", "low"]
 const ProjectName = Schema.String.annotate({
   description: "Project name from describe_workspace. Use \"none\" for no project."
 })
+const TeamName = Schema.String.annotate({
+  description: "Team name or key from describe_workspace. Defaults to your first team."
+})
 const Person = Schema.String.annotate({
   description: "\"me\", a person's name, or a GitHub login. Use \"none\" to unassign."
 })
@@ -82,13 +85,29 @@ export class ToolError extends Schema.TaggedError<ToolError>()("ToolError", {
 
 export const DescribeWorkspace = Tool.make("describe_workspace", {
   description:
-    "The team, its workflow states in order, labels, people, and projects with the GitHub repo each syncs with. Call this first to learn valid names for other tools.",
+    "A team (yours by default): its workflow states in order, labels, members and projects with the GitHub repo each syncs with; " +
+    "plus every team in the workspace and the people in it. Call this first to learn valid names for other tools.",
+  parameters: Schema.Struct({ team: Schema.optionalKey(TeamName) }),
   success: Schema.Struct({
-    team: Schema.Struct({ key: Schema.String, name: Schema.String }),
+    team: Schema.Struct({ key: Schema.String, name: Schema.String, members: Schema.Array(Schema.String) }),
+    teams: Schema.Array(Schema.Struct({
+      key: Schema.String,
+      name: Schema.String,
+      members: Schema.Int,
+      you_are_member: Schema.Boolean
+    })),
     you: Schema.String,
+    your_role: Schema.String,
     states: Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String })),
     labels: Schema.Array(Schema.String),
-    people: Schema.Array(Schema.Struct({ name: Schema.String, githubLogin: Schema.NullOr(Schema.String) })),
+    people: Schema.Array(Schema.Struct({
+      name: Schema.String,
+      githubLogin: Schema.NullOr(Schema.String),
+      /** "admin" or "member" for people with an account; null for people known only from GitHub. */
+      role: Schema.NullOr(Schema.String),
+      /** Keys of their teams. */
+      teams: Schema.Array(Schema.String)
+    })),
     projects: Schema.Array(Schema.Struct({
       name: Schema.String,
       key: Schema.String,
@@ -110,6 +129,7 @@ export const ListIssues = Tool.make("list_issues", {
   description:
     "List issues, most important first. By default returns open issues (not completed or canceled). Filters combine with AND.",
   parameters: Schema.Struct({
+    team: Schema.optionalKey(TeamName),
     state: Schema.optionalKey(Schema.String.annotate({
       description: "\"open\" (default), \"all\", a state name, or a state type."
     })),
@@ -147,6 +167,7 @@ export const CreateIssue = Tool.make("create_issue", {
   description:
     "Create an issue. It appears live in the app and, when its project has a linked repo, on GitHub. Returns the new issue with its identifier.",
   parameters: Schema.Struct({
+    team: Schema.optionalKey(TeamName),
     title: Schema.String,
     description: Schema.optionalKey(Schema.String.annotate({ description: "Markdown." })),
     state: Schema.optionalKey(StateName),
@@ -253,6 +274,7 @@ export const CreateProject = Tool.make("create_project", {
   description:
     "Create a project to group issues. Pass github_repo (\"owner/name\") to link a repository: its issues are imported into the project and sync both ways.",
   parameters: Schema.Struct({
+    team: Schema.optionalKey(TeamName),
     name: Schema.optionalKey(Schema.String.annotate({ description: "Defaults to the repository name." })),
     key: Schema.optionalKey(Schema.String.annotate({
       description: "Identifier prefix, 2–5 capitals (\"WEB\" → WEB-12). Defaults to the first three letters of the name."
@@ -276,6 +298,7 @@ export const UpdateProject = Tool.make("update_project", {
   description:
     "Change a project: rename it, change its identifier key or color, or set its icon from its GitHub repository. Only the fields you pass change.",
   parameters: Schema.Struct({
+    team: Schema.optionalKey(TeamName),
     project: Schema.String.annotate({ description: "Project name from describe_workspace." }),
     name: Schema.optionalKey(Schema.String),
     key: Schema.optionalKey(Schema.String.annotate({ description: "2–5 capitals. Renames every issue identifier of the project." })),
@@ -297,6 +320,89 @@ export const UpdateProject = Tool.make("update_project", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true)
 
+const TeamResult = Schema.Struct({ name: Schema.String, key: Schema.String, members: Schema.Array(Schema.String) })
+
+export const CreateTeam = Tool.make("create_team", {
+  description:
+    "Create a team, with the default workflow states and labels. You join it. Its key prefixes issues without a project (\"WEB\" → WEB-12).",
+  parameters: Schema.Struct({
+    name: Schema.String,
+    key: Schema.optionalKey(Schema.String.annotate({
+      description: "2–5 capitals, unique in the workspace. Defaults to the first three letters of the name."
+    }))
+  }),
+  success: TeamResult,
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, false)
+
+export const UpdateTeam = Tool.make("update_team", {
+  description: "Rename a team or change its key. Only members of the team and admins can.",
+  parameters: Schema.Struct({
+    team: Schema.String.annotate({ description: "Team name or key." }),
+    name: Schema.optionalKey(Schema.String),
+    key: Schema.optionalKey(Schema.String.annotate({ description: "2–5 capitals. Renames the identifiers of its issues without a project." }))
+  }),
+  success: TeamResult,
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+
+const MembershipParams = Schema.Struct({
+  team: Schema.String.annotate({ description: "Team name or key." }),
+  person: Schema.String.annotate({ description: "\"me\", or the name of someone with an account (see people in describe_workspace)." })
+})
+
+export const AddTeamMember = Tool.make("add_team_member", {
+  description:
+    "Add someone with an account to a team (\"me\" to join it). Adding others needs you to be in the team or an admin. To bring in someone new, use invite_person.",
+  parameters: MembershipParams,
+  success: TeamResult,
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+
+export const RemoveTeamMember = Tool.make("remove_team_member", {
+  description: "Take someone out of a team (\"me\" to leave it). Their issues stay as they are.",
+  parameters: MembershipParams,
+  success: TeamResult,
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false)
+
+export const InvitePerson = Tool.make("invite_person", {
+  description:
+    "Admins only: make an invite link for someone new. It works once, for 7 days; give it to the user to send on. " +
+    "Opening it lets the person create an account (even while sign-up is closed) and puts them in the teams named.",
+  parameters: Schema.Struct({
+    email: Schema.optionalKey(Schema.String.annotate({ description: "Only this address may accept the invite. Omit for a link anyone can use once." })),
+    role: Schema.optionalKey(Schema.Literals(["member", "admin"]).annotate({ description: "Default \"member\"." })),
+    teams: Schema.optionalKey(Schema.Array(Schema.String).annotate({ description: "Team names or keys to join. Defaults to your first team." }))
+  }),
+  success: Schema.Struct({
+    url: Schema.String,
+    email: Schema.NullOr(Schema.String),
+    role: Schema.String,
+    teams: Schema.Array(Schema.String),
+    expires: Schema.String
+  }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, false)
+
 export const GradientToolkit = Toolkit.make(
   DescribeWorkspace,
   ListIssues,
@@ -307,6 +413,11 @@ export const GradientToolkit = Toolkit.make(
   UnlinkIssues,
   CreateProject,
   UpdateProject,
+  CreateTeam,
+  UpdateTeam,
+  AddTeamMember,
+  RemoveTeamMember,
+  InvitePerson,
   GithubConnection,
   GithubSignIn
 )

@@ -1,5 +1,6 @@
 import { CurrentViewer, type Delta, GithubError, GradientRpcs, MutationRejected, type SyncEvent } from "@gradient/domain"
 import { Effect, Layer, Option, PubSub, Stream } from "effect"
+import { Members } from "../auth/Members.ts"
 import { Db, type LogRow } from "../db/Db.ts"
 import { ServerConfig } from "../config.ts"
 import { GithubAuth } from "../github/GithubAuth.ts"
@@ -23,6 +24,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
     const github = yield* GithubSync
     const auth = yield* GithubAuth
     const config = yield* ServerConfig
+    const members = yield* Members
 
     /** The Gradient user of the calling session (see AuthMiddleware). */
     const viewerId = () => Effect.map(Effect.service(CurrentViewer), (v) => v.userId)
@@ -36,6 +38,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
               lastSyncId: db.lastSyncId,
               viewerId: viewerId(),
               teams: db.teams,
+              teamMembers: db.teamMembers,
               users: db.users,
               workflowStates: db.workflowStates,
               labels: db.labels,
@@ -96,6 +99,14 @@ export const RpcHandlers = GradientRpcs.toLayer(
             Effect.fail(new MutationRejected({ message: `Server error: ${String(defect)}` }))
           )
         ),
+
+      InviteCreate: (input) => Effect.flatMap(viewerId(), (id) => members.createInvite(id, input)),
+      InviteList: () => Effect.flatMap(viewerId(), members.listInvites),
+      InviteRevoke: ({ id }) => Effect.flatMap(viewerId(), (actor) => members.revokeInvite(actor, id)),
+      InviteAccept: ({ token }) => Effect.flatMap(Effect.service(CurrentViewer), (viewer) => members.acceptAsViewer(token, viewer)),
+      MemberSetRole: ({ userId, role }) => Effect.flatMap(viewerId(), (actor) => members.setRole(actor, userId, role)),
+      MemberRemove: ({ userId }) => Effect.flatMap(viewerId(), (actor) => members.removeMember(actor, userId)),
+      MemberEmails: () => Effect.flatMap(viewerId(), members.emails),
 
       GithubStatus: () => github.status,
       GithubLinkRepo: (input) => github.linkRepo(input),

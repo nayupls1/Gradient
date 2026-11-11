@@ -1,5 +1,16 @@
 import { Schema } from "effect"
-import { Issue, IssueRelation, Label, Priority, Project, ProjectIconFile, ProjectIconMode, RelationType } from "./models.ts"
+import {
+  Issue,
+  IssueRelation,
+  Label,
+  Priority,
+  Project,
+  ProjectIconFile,
+  ProjectIconMode,
+  RelationType,
+  Team,
+  TeamMember
+} from "./models.ts"
 
 export const IssuePatch = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
@@ -18,6 +29,19 @@ export type IssuePatch = typeof IssuePatch.Type
  * seed script all go through the same union, so there is one write path.
  */
 export const Mutation = Schema.TaggedUnion({
+  /** A new team, with the default workflow states and labels. Whoever creates it joins it. */
+  TeamCreate: { id: Schema.String, key: Schema.String, name: Schema.String },
+  /** Rename a team or change its key (which renames the identifiers of its issues without a project). */
+  TeamUpdate: {
+    id: Schema.String,
+    patch: Schema.Struct({ name: Schema.optionalKey(Schema.String), key: Schema.optionalKey(Schema.String) })
+  },
+  /** Admins only, and only for a team without issues or linked repositories. */
+  TeamDelete: { id: Schema.String },
+  /** Join a team, or add someone with an account to one. */
+  TeamMemberAdd: { id: Schema.String, teamId: Schema.String, userId: Schema.String },
+  /** Leave a team, or remove someone from it. */
+  TeamMemberRemove: { id: Schema.String },
   IssueCreate: {
     id: Schema.String,
     teamId: Schema.String,
@@ -68,6 +92,14 @@ export const touchedIssueId = (m: Mutation): string | undefined =>
 /** Id of the project a mutation creates, changes or deletes. */
 export const touchedProjectId = (m: Mutation): string | undefined =>
   m._tag === "ProjectCreate" || m._tag === "ProjectUpdate" || m._tag === "ProjectDelete" ? m.id : undefined
+
+/** Id of the team a mutation creates, changes or deletes. */
+export const touchedTeamId = (m: Mutation): string | undefined =>
+  m._tag === "TeamCreate" || m._tag === "TeamUpdate" || m._tag === "TeamDelete" ? m.id : undefined
+
+/** Id of the team membership a mutation adds or removes. */
+export const touchedTeamMemberId = (m: Mutation): string | undefined =>
+  m._tag === "TeamMemberAdd" || m._tag === "TeamMemberRemove" ? m.id : undefined
 
 /** Id of the relation a mutation creates or deletes. */
 export const touchedRelationId = (m: Mutation): string | undefined =>
@@ -187,6 +219,40 @@ export const applyRelationMutation = (
         createdAt: ctx.now
       }
     case "RelationDelete":
+      return null
+    default:
+      return current
+  }
+}
+
+/** Applies a team mutation, like applyIssueMutation. `null` means deleted. */
+export const applyTeamMutation = (current: Team | undefined, m: Mutation): Team | null | undefined => {
+  switch (m._tag) {
+    case "TeamCreate":
+      return { id: m.id, key: m.key, name: m.name, issueCounter: 0 }
+    case "TeamUpdate":
+      return current && {
+        ...current,
+        ...(m.patch.name !== undefined ? { name: m.patch.name } : {}),
+        ...(m.patch.key !== undefined ? { key: m.patch.key } : {})
+      }
+    case "TeamDelete":
+      return null
+    default:
+      return current
+  }
+}
+
+/** Applies a team membership mutation, like applyIssueMutation. `null` means removed. */
+export const applyTeamMemberMutation = (
+  current: TeamMember | undefined,
+  m: Mutation,
+  ctx: { readonly now: number }
+): TeamMember | null | undefined => {
+  switch (m._tag) {
+    case "TeamMemberAdd":
+      return { id: m.id, teamId: m.teamId, userId: m.userId, createdAt: ctx.now }
+    case "TeamMemberRemove":
       return null
     default:
       return current
