@@ -203,6 +203,18 @@ export interface IssuePullRequest {
   readonly updatedAt: number
 }
 
+/** The in-app page of a pull request (any repository; read from GitHub when it opens). */
+export const pullRequestHref = (pr: { owner: string; repo: string; number: number }) =>
+  `/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${pr.number}`
+
+const PULL_URL = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:\/[\w-]*)?\/?(?:[?#].*)?$/i
+
+/** The in-app page for a GitHub pull request URL (its files or commits tab too), or null for any other URL. */
+export const pullRequestHrefFromUrl = (url: string): string | null => {
+  const m = url.match(PULL_URL)
+  return m ? pullRequestHref({ owner: m[1]!, repo: m[2]!, number: Number(m[3]) }) : null
+}
+
 /** "acme/web#12", lower case: one pull request however it was found. */
 const pullRequestKey = (pr: { owner: string; repo: string; number: number }) => `${pr.owner}/${pr.repo}#${pr.number}`.toLowerCase()
 
@@ -336,7 +348,7 @@ export const resolveMentions = (
     const label = pullRequestLabelFor(state, issue, ref)
     if (target && "issue" in target) add(`issue:${target.issue.id}`, { kind: "issue", issue: target.issue })
     else if (target) add(key, { kind: "pullRequest", pullRequest: target.pullRequest, label })
-    else add(key, { kind: "github", label, url: `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.number}` })
+    else add(key, { kind: "github", label, url: `https://github.com/${ref.owner}/${ref.repo}/${ref.pull ? "pull" : "issues"}/${ref.number}` })
   }
   return out
 }

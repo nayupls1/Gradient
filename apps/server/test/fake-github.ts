@@ -17,6 +17,21 @@ export interface FakeIssue {
   blocked_by?: Array<number>
   /** Pull requests on its "Development" list, in any repository the fake knows. */
   linked?: Array<{ owner: string; name: string; number: number }>
+  /** What the pulls endpoints add for a pull request. */
+  pr?: FakePull
+}
+
+/** The parts of a pull request the issues endpoint does not show. */
+export interface FakePull {
+  head?: string
+  base?: string
+  mergeable?: boolean | null
+  commits?: number
+  files?: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string; previous_filename?: string }>
+  reviews?: Array<{ login: string; state: string; body: string; submitted_at?: string }>
+  checks?: Array<{ name: string; status: string; conclusion: string | null }>
+  statuses?: Array<{ context: string; state: string }>
+  requested_reviewers?: Array<string>
 }
 
 export interface FakeComment {
@@ -80,7 +95,7 @@ export const makeFakeGithub = (
     return undefined
   }
   const toJson = (r: { owner: string; name: string }, i: FakeIssue) => {
-    const { blocked_by, linked: _linked, ...rest } = i
+    const { blocked_by, linked: _linked, pr: _pr, ...rest } = i
     const open = (blocked_by ?? []).filter((id) => byId(id)?.issue.state === "open").length
     return {
       ...rest,
@@ -272,6 +287,64 @@ export const makeFakeGithub = (
         const etag = `"${Bun.hash(text + page)}"`
         if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304 })
         return new Response(text, { headers: { "content-type": "application/json", etag } })
+      }
+      const pulls = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)(?:\/(files|reviews))?$/)
+      if (pulls && req.method === "GET") {
+        const r = repos.get(`${pulls[1]}/${pulls[2]}`.toLowerCase())
+        const pr = r?.issues.find((i) => i.number === Number(pulls[3]) && i.pull_request)
+        if (!r || !pr) return new Response("not found", { status: 404 })
+        const extra = pr.pr ?? {}
+        const files = extra.files ?? []
+        if (pulls[4] === "files") return Response.json(files)
+        if (pulls[4] === "reviews") {
+          return Response.json((extra.reviews ?? []).map((rv, i) => ({
+            user: { login: rv.login, avatar_url: `https://avatars/${rv.login}` },
+            state: rv.state,
+            body: rv.body,
+            html_url: `https://github.com/${r.owner}/${r.name}/pull/${pr.number}#review-${i}`,
+            submitted_at: rv.submitted_at ?? "2026-01-01T00:00:00Z"
+          })))
+        }
+        const merged = pr.pull_request?.merged_at ?? null
+        return Response.json({
+          ...toJson(r, pr),
+          body: pr.body,
+          merged: merged !== null,
+          merged_at: merged,
+          closed_at: pr.state === "closed" ? pr.updated_at : null,
+          created_at: pr.updated_at,
+          head: { ref: extra.head ?? `feature-${pr.number}`, sha: `sha${pr.number}` },
+          base: { ref: extra.base ?? "main" },
+          mergeable: extra.mergeable === undefined ? true : extra.mergeable,
+          additions: files.reduce((n, f) => n + f.additions, 0),
+          deletions: files.reduce((n, f) => n + f.deletions, 0),
+          changed_files: files.length,
+          commits: extra.commits ?? 1,
+          requested_reviewers: (extra.requested_reviewers ?? []).map((login) => ({ login, avatar_url: `https://avatars/${login}` })),
+          requested_teams: []
+        })
+      }
+      const commit = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/commits\/sha(\d+)\/(check-runs|status)$/)
+      if (commit && req.method === "GET") {
+        const r = repos.get(`${commit[1]}/${commit[2]}`.toLowerCase())
+        const pr = r?.issues.find((i) => i.number === Number(commit[3]))
+        if (!r || !pr) return new Response("not found", { status: 404 })
+        if (commit[4] === "status") {
+          return Response.json({ statuses: (pr.pr?.statuses ?? []).map((st) => ({ ...st, target_url: null })) })
+        }
+        return Response.json({
+          check_runs: (pr.pr?.checks ?? []).map((c, i) => ({ ...c, html_url: `https://github.com/${r.owner}/${r.name}/runs/${i}` }))
+        })
+      }
+      const issueComments = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comments$/)
+      if (issueComments && req.method === "GET") {
+        const r = repos.get(`${issueComments[1]}/${issueComments[2]}`.toLowerCase())
+        if (!r) return new Response("not found", { status: 404 })
+        return Response.json(r.comments.filter((c) => c.issue === Number(issueComments[3])).map((c) => ({
+          ...c,
+          html_url: `https://github.com/${r.owner}/${r.name}/issues/${c.issue}#issuecomment-${c.id}`,
+          issue_url: `https://api.github.com/repos/${r.owner}/${r.name}/issues/${c.issue}`
+        })))
       }
       const route = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/issues(?:\/(\d+))?)?$/)
       const target = route ? repos.get(`${route[1]}/${route[2]}`.toLowerCase()) : undefined

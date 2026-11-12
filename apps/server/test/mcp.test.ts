@@ -61,6 +61,7 @@ describe("MCP", () => {
       "create_team",
       "describe_workspace",
       "get_issue",
+      "get_pull_request",
       "github_sign_in",
       "github_status",
       "invite_person",

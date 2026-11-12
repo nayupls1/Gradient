@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import type { GithubRepo, Issue, IssueComment, LinkedPullRequest, PullRequest, WorkflowState } from "@gradient/domain"
 import { collectReferences, parseMarkdown } from "../src/lib/markdown.ts"
-import { commentsFor, issueReferences, pullRequestLabelFor, pullRequestsFor, resolveMentions } from "../src/lib/select.ts"
+import {
+  commentsFor,
+  issueReferences,
+  pullRequestHref,
+  pullRequestHrefFromUrl,
+  pullRequestLabelFor,
+  pullRequestsFor,
+  resolveMentions
+} from "../src/lib/select.ts"
 import type { SyncState } from "../src/sync/engine.ts"
 
 const issue = (number: number, github: number | null, title = `Issue ${number}`): Issue => ({
@@ -91,7 +99,7 @@ describe("collectReferences", () => {
     expect(collectReferences(tree).map((r) => r.ref.kind === "github" && `${r.ref.repo}#${r.ref.number}`)).toEqual(["api#7", "api#8"])
     // Written as its own reference, it shows as one (with its written text); other text stays a link.
     const paragraph = tree[0] as { children: Array<unknown> }
-    expect(paragraph.children[0]).toEqual({ ref: { kind: "github", owner: "acme", repo: "api", number: 7 }, text: "acme/api#7" })
+    expect(paragraph.children[0]).toEqual({ ref: { kind: "github", owner: "acme", repo: "api", number: 7, pull: true }, text: "acme/api#7" })
     expect(paragraph.children[2]).toMatchObject({ tag: "a", attrs: { href: "https://github.com/acme/api/pull/8#issuecomment-1" } })
   })
 
@@ -154,5 +162,17 @@ describe("pull requests of an issue", () => {
     } as unknown as SyncState
     const prs = pullRequestsFor(state, self)
     expect(prs.map((p) => `${pullRequestLabelFor(state, self, p)} ${p.state}`)).toEqual(["acme/api#738 open", "#9 open"])
+  })
+})
+
+describe("pull request pages", () => {
+  test("a pull request, or a link to one (its tabs and comments too), opens its page in the app", () => {
+    expect(pullRequestHref({ owner: "acme", repo: "web.js", number: 12 })).toBe("/pr/acme/web.js/12")
+    expect(pullRequestHrefFromUrl("https://github.com/acme/web/pull/12")).toBe("/pr/acme/web/12")
+    expect(pullRequestHrefFromUrl("https://github.com/acme/web/pull/12/files")).toBe("/pr/acme/web/12")
+    expect(pullRequestHrefFromUrl("https://github.com/acme/web/pull/12#issuecomment-3")).toBe("/pr/acme/web/12")
+    // Issues and everything else still open on GitHub.
+    expect(pullRequestHrefFromUrl("https://github.com/acme/web/issues/12")).toBeNull()
+    expect(pullRequestHrefFromUrl("https://example.com/acme/web/pull/12")).toBeNull()
   })
 })

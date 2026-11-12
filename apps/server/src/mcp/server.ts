@@ -25,6 +25,7 @@ import { Members } from "../auth/Members.ts"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
 import { GithubAuth } from "../github/GithubAuth.ts"
+import { GithubClient } from "../github/GithubClient.ts"
 import { GithubSync } from "../github/GithubSync.ts"
 import { Mutations } from "../sync/Mutations.ts"
 import { GradientToolkit, type IssueDetail, type IssueSummary, ToolError } from "./tools.ts"
@@ -41,7 +42,7 @@ const INSTRUCTIONS = `Gradient is the user's issue tracker. Issues have identifi
 The workspace has teams; each has its own workflow states, labels and projects. Tools work in your first team unless you pass \`team\`; tools that take an identifier find its team themselves.
 Call describe_workspace once to learn teams, workflow states, labels, people and projects, then use those names.
 Put issues in the project they belong to; a project with a linked repo syncs its issues to GitHub.
-Record dependencies with link_issues ("blocked_by"); get_issue shows blockers, the pull requests that refer to an issue, its comments and what it mentions.
+Record dependencies with link_issues ("blocked_by"); get_issue shows blockers, the pull requests that refer to an issue, its comments and what it mentions; get_pull_request reads one of those pull requests (files, checks, reviews).
 Writes show up live in the user's app and sync to GitHub when a repo is linked, so keep titles short and specific, and put detail in the description (markdown).`
 
 const SKILL = `---
@@ -79,6 +80,7 @@ const ToolHandlers = GradientToolkit.toLayer(
     const config = yield* ServerConfig
     const auth = yield* GithubAuth
     const github = yield* GithubSync
+    const githubClient = yield* GithubClient
     const members = yield* Members
 
     /** The user behind the agent key of this request (resolved by RequireApiKey). */
@@ -553,6 +555,52 @@ const ToolHandlers = GradientToolkit.toLayer(
         if (!existing) return yield* fail(`${keyOf(ws, issue)} and ${keyOf(ws, other)} are not related.`)
         yield* apply(ws, [{ _tag: "RelationDelete", id: existing.id }])
         return yield* reload(issue.id)
+      }),
+
+      get_pull_request: Effect.fn("mcp.get_pull_request")(function*({ pull_request, diff }) {
+        yield* viewerId
+        const text = pull_request.trim()
+        const m = text.match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/) ??
+          text.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/i)
+        if (!m) return yield* fail(`"${pull_request}" is not a pull request. Write it as "owner/repo#12" or paste its GitHub URL.`)
+        const pr = yield* githubClient.getPullRequest(m[1]!, m[2]!, Number(m[3])).pipe(
+          Effect.mapError((e) => new ToolError({ message: e.message }))
+        )
+        return {
+          ref: `${pr.owner}/${pr.repo}#${pr.number}`,
+          title: pr.title,
+          state: pr.state,
+          url: pr.url,
+          author: pr.author,
+          base: pr.baseBranch,
+          head: pr.headBranch,
+          mergeable: pr.mergeable,
+          additions: pr.additions,
+          deletions: pr.deletions,
+          changed_files: pr.changedFiles,
+          commits: pr.commits,
+          labels: pr.labels.map((l) => l.name),
+          requested_reviewers: [...pr.requestedReviewers],
+          description: pr.body,
+          files: pr.files.map((f) => ({
+            path: f.path,
+            status: f.status,
+            additions: f.additions,
+            deletions: f.deletions,
+            ...(diff ? { patch: f.patch } : {})
+          })),
+          checks: pr.checks.map((c) => ({ ...c })),
+          activity: pr.activity.map((a) => ({
+            kind: a.kind,
+            author: a.author,
+            review: a.reviewState,
+            body: a.body,
+            created: iso(a.createdAt),
+            url: a.url
+          })),
+          created: iso(pr.createdAt),
+          updated: iso(pr.updatedAt)
+        }
       }),
 
       github_status: Effect.fn("mcp.github_status")(function*() {

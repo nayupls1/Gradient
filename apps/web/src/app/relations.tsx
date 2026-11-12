@@ -8,6 +8,8 @@ import {
   issueReferences,
   issueRepo,
   openBlockers,
+  pullRequestHref,
+  pullRequestHrefFromUrl,
   pullRequestLabelFor,
   pullRequestsFor,
   relationsOf,
@@ -195,9 +197,7 @@ export const IssuePullRequests = (props: { issue: Issue }) => {
         <For each={pullRequests()}>
           {(pr) => (
             <a
-              href={pr.url}
-              target="_blank"
-              rel="noreferrer"
+              href={pullRequestHref(pr)}
               {...stylex.attrs(s.item)}
               title={`${pullRequestLabel[pr.state]} · ${pr.owner}/${pr.repo}#${pr.number}${pr.author ? ` by @${pr.author}` : ""}`}
             >
@@ -254,9 +254,7 @@ export const IssueMentions = (props: { issue: Issue }) => {
               <Match when={m.kind === "pullRequest" && m}>
                 {(entry) => (
                   <a
-                    href={entry().pullRequest.url}
-                    target="_blank"
-                    rel="noreferrer"
+                    href={pullRequestHref(entry().pullRequest)}
                     {...stylex.attrs(s.item)}
                     title={`${pullRequestLabel[entry().pullRequest.state]} pull request${entry().pullRequest.author ? ` by @${entry().pullRequest.author}` : ""}`}
                   >
@@ -268,7 +266,13 @@ export const IssueMentions = (props: { issue: Issue }) => {
               </Match>
               <Match when={m.kind === "github" && m}>
                 {(entry) => (
-                  <a href={entry().url} target="_blank" rel="noreferrer" {...stylex.attrs(s.item)} title="Open on GitHub">
+                  // A pull request URL opens its page here; anything else opens on GitHub.
+                  <a
+                    href={pullRequestHrefFromUrl(entry().url) ?? entry().url}
+                    {...(pullRequestHrefFromUrl(entry().url) ? {} : { target: "_blank", rel: "noreferrer" })}
+                    {...stylex.attrs(s.item)}
+                    title={pullRequestHrefFromUrl(entry().url) ? "Pull request" : "Open on GitHub"}
+                  >
                     <span {...stylex.attrs(s.glyph)}>
                       <GithubIcon size={13} />
                     </span>

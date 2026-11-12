@@ -8,7 +8,14 @@
 
 /** A reference written in text. */
 export type Reference =
-  | { readonly kind: "github"; readonly owner: string; readonly repo: string; readonly number: number }
+  | {
+    readonly kind: "github"
+    readonly owner: string
+    readonly repo: string
+    readonly number: number
+    /** Written as a pull request URL (`/pull/12`), so it is known to be one. */
+    readonly pull?: true
+  }
   | { readonly kind: "identifier"; readonly key: string; readonly number: number }
 
 /** A reference and the text it was written as. */
@@ -44,16 +51,19 @@ export const splitReferences = (text: string, context: RefContext | null): Array
   return out
 }
 
-const GITHUB_URL = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/i
+const GITHUB_URL = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(issues|pull)\/(\d+)\/?$/i
 
 /** A bare GitHub issue or pull request URL, shown the way GitHub shows it. */
 export const githubUrlReference = (url: string, context: RefContext | null): TextRef | null => {
   const m = url.match(GITHUB_URL)
   if (!m) return null
-  const [, owner, repo, n] = m
+  const [, owner, repo, kind, n] = m
   const same = context && context.owner.toLowerCase() === owner!.toLowerCase() &&
     context.repo.toLowerCase() === repo!.toLowerCase()
-  return { ref: { kind: "github", owner: owner!, repo: repo!, number: Number(n) }, text: same ? `#${n}` : `${owner}/${repo}#${n}` }
+  return {
+    ref: { kind: "github", owner: owner!, repo: repo!, number: Number(n), ...(kind!.toLowerCase() === "pull" ? { pull: true } as const : {}) },
+    text: same ? `#${n}` : `${owner}/${repo}#${n}`
+  }
 }
 
 /** Identifies a reference regardless of how it was written (`#12` and its URL are the same). */

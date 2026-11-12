@@ -34,6 +34,7 @@ keys.
 | Components | shadcn-solid's StyleX components (copied into `ui/`), on `base-ui-solidjs` |
 | Icons | `lucide` icon data, drawn by shadcn-solid's `Icon` |
 | Markdown | `marked`'s lexer only; our own tree builder and Solid renderer (no HTML strings) |
+| Diffs | `@pierre/diffs` (t3code's viewer): virtualized, highlighted in a worker pool, through its framework-free `CodeView` |
 | Agents | MCP over Streamable HTTP with `effect/ai`'s `McpServer` (no extra package) |
 | Accounts | Better Auth (email and password, sessions) and its API key plugin (agent keys), on our SQLite connection |
 | Font | Inter, bundled (`@fontsource-variable/inter`) |
@@ -41,10 +42,10 @@ keys.
 | Tests | `bun test`, with a fake GitHub server |
 
 Runtime dependencies: server 5 (`effect`, `@effect/platform-bun`,
-`@effect/sql-sqlite-bun`, `better-auth`, `@better-auth/api-key`); web 11
+`@effect/sql-sqlite-bun`, `better-auth`, `@better-auth/api-key`); web 12
 (`effect`, `solid-js`, `@solidjs/web`, `@solidjs/router`, `@stylexjs/stylex`,
-`base-ui-solidjs`, `lucide`, `marked`, the font, and Better Auth's client with
-its API key plugin).
+`base-ui-solidjs`, `lucide`, `marked`, `@pierre/diffs`, the font, and Better
+Auth's client with its API key plugin).
 
 The components come from shadcn-solid (a Solid 2 port of shadcn/ui) and run on
 base-ui-solidjs (a Solid 2 port of Base UI). Like shadcn/ui, they are copied
@@ -88,7 +89,8 @@ apps/web/src
   app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, Markdown, router,
                        TeamDialog, InviteDialog, TeamBadge
   app/auth.ts          Better Auth client and the session signal (main.tsx shows AuthPage without one)
-  pages/               IssuesPage (keyboard-driven, virtualized list), IssuePage, SettingsPage,
+  app/DiffView.tsx     Pierre's CodeView in Solid: a pull request's files, virtualized, highlighted off the main thread
+  pages/               IssuesPage (keyboard-driven, virtualized list), IssuePage, PullRequestPage, SettingsPage,
                        AuthPage (sign in / create account / accept an invite), ProfilePage (name, password, sessions,
                        agent keys), TeamsPage, TeamSettingsPage, MembersPage, InvitePage
 ```
@@ -130,6 +132,22 @@ per issue and pull request: repo, number, title, state, author). The issue
 shows them with the pull requests above, each once (a linked repository's copy
 wins, being fresher). Only GraphQL has this list
 (`closedByPullRequestsReferences`), read 50 issues per request.
+
+**Pull request pages** (`/pr/<owner>/<repo>/<number>`) open when a pull
+request is clicked anywhere on an issue: its pull requests, its mentions, a
+`#12` or a link to `…/pull/12` (its files tab or a comment too) in the text.
+There is no list of pull requests and no sidebar entry: the page is reached
+from what refers to it, and `o` still opens GitHub. It is read from GitHub
+when it opens (`GithubPullRequest`), not synced, so it works for any
+repository the connection can see: the pull request, its first 1,000 changed
+files with their patches, checks (check runs and commit statuses on the head),
+reviews and comments. Checks, reviews and comments are best effort (a token may
+not read them). Laid out after t3code's pull request panel: repository and
+number, title, state and author, base ← head with the size of the change, then
+Summary (reviewers, labels, description, checks, conversation) and Files
+(Pierre's diffs, unified or split with `v`). A reference written as a
+`/pull/` URL keeps `pull: true`, so even a pull request Gradient does not know
+opens its page.
 
 **Comments** are read-only copies of the comments on an issue's GitHub copy
 (author login and avatar, markdown body, link). The issue page shows them under
@@ -340,6 +358,8 @@ Accounts made without an invite (the first one, or with
 through 2026-07-28). Tools: `describe_workspace`, `list_issues`, `get_issue`,
 `create_issue`, `update_issue`, `link_issues`, `unlink_issues`, `create_project`,
 `update_project` (name, key, color, icon: "auto", "none" or a repo path),
+`get_pull_request` (any pull request the connection can see: files, checks,
+reviews, comments; patches with `diff: true`),
 `create_team`, `update_team`, `add_team_member`, `remove_team_member`,
 `invite_person` (admins; returns the link), `github_status`, `github_sign_in`.
 Tools work in the caller's first team unless given `team` (a name or key); tools

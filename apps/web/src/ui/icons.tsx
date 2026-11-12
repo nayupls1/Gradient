@@ -1,7 +1,8 @@
-import type { Priority, PullRequestState, StateType } from "@gradient/domain"
+import type { Priority, PullRequestCheckStatus, PullRequestReviewState, PullRequestState, StateType } from "@gradient/domain"
 import {
   Archive,
   ArchiveArrowUp,
+  ArrowLeft,
   ArrowUpRight,
   Bot,
   Box,
@@ -12,10 +13,13 @@ import {
   CircleCheck,
   CircleDashed,
   CircleDot,
+  CircleSlash,
   CircleX,
   Command,
   Copy,
   Ellipsis,
+  FileDiff,
+  GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
@@ -24,10 +28,12 @@ import {
   Keyboard,
   KeyRound,
   Laptop,
+  LoaderCircle,
   LockKeyhole,
   LogIn,
   LogOut,
   Mail,
+  MessageSquare,
   Minus,
   Monitor,
   Moon,
@@ -151,6 +157,57 @@ const pullRequestColors: Record<PullRequestState, string> = {
 export const PullRequestIcon = (props: { state: PullRequestState; size?: number }) => (
   <Icon icon={pullRequestIcons[props.state]} size={props.size ?? 14} stroke={pullRequestColors[props.state]} stroke-width={1.9} />
 )
+
+export const ArrowLeftIcon = wrap(ArrowLeft)
+export const FileDiffIcon = wrap(FileDiff)
+export const CommitIcon = wrap(GitCommitHorizontal)
+export const MessageIcon = wrap(MessageSquare)
+
+// Check and review tones, like GitHub's: green passes, red fails, amber waits; the rest take the text color.
+const checkIcons: Record<PullRequestCheckStatus, { icon: IconNode; color: string }> = {
+  pending: { icon: LoaderCircle, color: "#e2a336" },
+  success: { icon: CircleCheck, color: "#46a758" },
+  failure: { icon: CircleX, color: "#e5484d" },
+  cancelled: { icon: CircleSlash, color: "currentColor" },
+  skipped: { icon: CircleSlash, color: "currentColor" },
+  neutral: { icon: CircleDashed, color: "currentColor" }
+}
+
+export const CheckStatusIcon = (props: { status: PullRequestCheckStatus; size?: number }) => (
+  <Icon icon={checkIcons[props.status].icon} size={props.size ?? 14} stroke={checkIcons[props.status].color} stroke-width={1.9} />
+)
+
+export const checkStatusLabel: Record<PullRequestCheckStatus, string> = {
+  pending: "Running",
+  success: "Passed",
+  failure: "Failed",
+  cancelled: "Cancelled",
+  skipped: "Skipped",
+  neutral: "Neutral"
+}
+
+const reviewIcons: Record<PullRequestReviewState, { icon: IconNode; color: string }> = {
+  approved: { icon: CircleCheck, color: "#46a758" },
+  changes_requested: { icon: CircleX, color: "#e5484d" },
+  commented: { icon: MessageSquare, color: "currentColor" },
+  dismissed: { icon: CircleSlash, color: "currentColor" },
+  pending: { icon: CircleDashed, color: "currentColor" }
+}
+
+export const ReviewStateIcon = (props: { state: PullRequestReviewState; size?: number }) => (
+  <Icon icon={reviewIcons[props.state].icon} size={props.size ?? 14} stroke={reviewIcons[props.state].color} stroke-width={1.9} />
+)
+
+export const reviewStateLabel: Record<PullRequestReviewState, string> = {
+  approved: "approved",
+  changes_requested: "requested changes",
+  commented: "reviewed",
+  dismissed: "review dismissed",
+  pending: "review pending"
+}
+
+/** The color of a pull request state, for text beside its icon. */
+export const pullRequestColor = (state: PullRequestState) => pullRequestColors[state]
 
 export const pullRequestLabel: Record<PullRequestState, string> = {
   open: "Open",

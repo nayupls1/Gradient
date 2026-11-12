@@ -4,6 +4,7 @@ import { Effect, Layer, ManagedRuntime, Option } from "effect"
 import { AppServices, HttpLive } from "../src/app.ts"
 import { ServerConfig } from "../src/config.ts"
 import { Db } from "../src/db/Db.ts"
+import { GithubClient } from "../src/github/GithubClient.ts"
 import { GithubSync } from "../src/github/GithubSync.ts"
 import { verifySignature } from "../src/github/webhook.ts"
 import { Mutations } from "../src/sync/Mutations.ts"
@@ -35,7 +36,7 @@ const setup = () => {
   })
   const layer = Layer.merge(AppServices, HttpLive.pipe(Layer.provide(AppServices))).pipe(Layer.provideMerge(config))
   const runtime = ManagedRuntime.make(layer)
-  const run = <A, E>(effect: Effect.Effect<A, E, Db | GithubSync | Mutations>) => runtime.runPromise(effect)
+  const run = <A, E>(effect: Effect.Effect<A, E, Db | GithubSync | GithubClient | Mutations>) => runtime.runPromise(effect)
   return { fake, runtime, run, port }
 }
 
@@ -898,5 +899,84 @@ describe("comments", () => {
     await ctx.run(Effect.flatMap(Effect.service(GithubSync), (s) => s.unlinkRepo(id)))
     expect(await comments()).toEqual([])
     expect(await loggedSince(before)).toContain("delete:issueComment")
+  })
+})
+
+describe("pull request page", () => {
+  const read = (owner: string, repo: string, number: number) =>
+    ctx.run(Effect.flatMap(Effect.service(GithubClient), (c) => c.getPullRequest(owner, repo, number)))
+
+  test("reads a pull request with its files, checks, reviews and comments", async () => {
+    ctx.fake.seed({ title: "Crash on save" })
+    const pr = ctx.fake.seed({
+      title: "Keep drafts offline",
+      body: "Fixes #1",
+      pull_request: { url: "x", merged_at: null },
+      labels: [{ name: "bug", color: "d73a4a" }],
+      pr: {
+        head: "drafts-offline",
+        mergeable: false,
+        commits: 3,
+        files: [
+          { filename: "src/drafts.ts", status: "modified", additions: 4, deletions: 1, patch: "@@ -1,2 +1,5 @@\n-old\n+new" },
+          { filename: "logo.png", status: "added", additions: 0, deletions: 0 }
+        ],
+        reviews: [
+          { login: "lead", state: "APPROVED", body: "" },
+          { login: "bot", state: "COMMENTED", body: "" }
+        ],
+        checks: [
+          { name: "test", status: "completed", conclusion: "success" },
+          { name: "lint", status: "in_progress", conclusion: null }
+        ],
+        statuses: [{ context: "deploy", state: "error" }],
+        requested_reviewers: ["octo"]
+      }
+    })
+    ctx.fake.comment(pr.number, "Looks good", { login: "dev" })
+
+    const got = await read("acme", "widgets", pr.number)
+    expect(got).toMatchObject({
+      owner: "acme",
+      repo: "widgets",
+      number: 2,
+      url: "https://github.com/acme/widgets/pull/2",
+      title: "Keep drafts offline",
+      body: "Fixes #1",
+      state: "open",
+      baseBranch: "main",
+      headBranch: "drafts-offline",
+      mergeable: false,
+      additions: 4,
+      deletions: 1,
+      changedFiles: 2,
+      commits: 3,
+      labels: [{ name: "bug", color: "d73a4a" }],
+      requestedReviewers: ["octo"]
+    })
+    expect(got.files.map((f) => [f.path, f.patch])).toEqual([
+      ["src/drafts.ts", "@@ -1,2 +1,5 @@\n-old\n+new"],
+      ["logo.png", null]
+    ])
+    expect(got.checks).toEqual([
+      { name: "test", status: "success", url: "https://github.com/acme/widgets/runs/0" },
+      { name: "lint", status: "pending", url: "https://github.com/acme/widgets/runs/1" },
+      { name: "deploy", status: "failure", url: null }
+    ])
+    // The empty "commented" review is the wrapper of inline comments: left out.
+    expect(got.activity.map((a) => [a.kind, a.author, a.reviewState])).toEqual([
+      ["review", "lead", "approved"],
+      ["comment", "dev", null]
+    ])
+  })
+
+  test("a merged pull request reads as merged; an issue number is an error that says so", async () => {
+    ctx.fake.seed({ title: "Crash on save" })
+    ctx.fake.seed({ title: "Shipped", state: "closed", pull_request: { url: "x", merged_at: "2026-01-02T00:00:00Z" } })
+    expect((await read("acme", "widgets", 2)).state).toBe("merged")
+    const error = await ctx.runtime.runPromise(
+      Effect.flatMap(Effect.service(GithubClient), (c) => c.getPullRequest("acme", "widgets", 1)).pipe(Effect.flip)
+    )
+    expect(error.message).toContain("is not a pull request")
   })
 })
