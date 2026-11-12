@@ -1,6 +1,6 @@
 import { Context, Schema } from "effect"
 import { Rpc, RpcGroup, RpcMiddleware } from "effect/rpc"
-import { ProjectIconFile, Role } from "./models.ts"
+import { ProjectIconFile, PullRequestState, Role } from "./models.ts"
 import { Mutation } from "./mutations.ts"
 import { Snapshot, SyncEvent } from "./sync.ts"
 
@@ -93,6 +93,82 @@ export const ProjectIconChoices = Schema.Struct({
   images: Schema.Array(GithubRepoImage)
 })
 export type ProjectIconChoices = typeof ProjectIconChoices.Type
+
+/** A check on a pull request's head commit: a check run (Actions and apps) or a commit status. */
+export const PullRequestCheckStatus = Schema.Literals(["pending", "success", "failure", "cancelled", "skipped", "neutral"])
+export type PullRequestCheckStatus = typeof PullRequestCheckStatus.Type
+
+export const PullRequestCheck = Schema.Struct({
+  name: Schema.String,
+  status: PullRequestCheckStatus,
+  url: Schema.NullOr(Schema.String)
+})
+export type PullRequestCheck = typeof PullRequestCheck.Type
+
+/** One changed file. `patch` is GitHub's unified diff, null for binary or very large files. */
+export const PullRequestFile = Schema.Struct({
+  path: Schema.String,
+  /** The old path of a renamed file. */
+  previousPath: Schema.NullOr(Schema.String),
+  status: Schema.Literals(["added", "removed", "modified", "renamed", "copied", "changed", "unchanged"]),
+  additions: Schema.Int,
+  deletions: Schema.Int,
+  patch: Schema.NullOr(Schema.String)
+})
+export type PullRequestFile = typeof PullRequestFile.Type
+
+export const PullRequestReviewState = Schema.Literals(["approved", "changes_requested", "commented", "dismissed", "pending"])
+export type PullRequestReviewState = typeof PullRequestReviewState.Type
+
+/** A review or a conversation comment on a pull request. */
+export const PullRequestActivity = Schema.Struct({
+  kind: Schema.Literals(["comment", "review"]),
+  author: Schema.NullOr(Schema.String),
+  authorAvatarUrl: Schema.NullOr(Schema.String),
+  /** Reviews only. */
+  reviewState: Schema.NullOr(PullRequestReviewState),
+  body: Schema.String,
+  url: Schema.String,
+  createdAt: Schema.Number
+})
+export type PullRequestActivity = typeof PullRequestActivity.Type
+
+/**
+ * A pull request as its page shows it, read from GitHub when the page opens
+ * (not synced): any pull request the connected account can see.
+ */
+export const PullRequestDetail = Schema.Struct({
+  owner: Schema.String,
+  repo: Schema.String,
+  number: Schema.Int,
+  url: Schema.String,
+  title: Schema.String,
+  body: Schema.String,
+  state: PullRequestState,
+  author: Schema.NullOr(Schema.String),
+  authorAvatarUrl: Schema.NullOr(Schema.String),
+  baseBranch: Schema.String,
+  headBranch: Schema.String,
+  /** False when GitHub found merge conflicts with the base branch; null while it is still computing. */
+  mergeable: Schema.NullOr(Schema.Boolean),
+  additions: Schema.Int,
+  deletions: Schema.Int,
+  changedFiles: Schema.Int,
+  commits: Schema.Int,
+  labels: Schema.Array(Schema.Struct({ name: Schema.String, color: Schema.NullOr(Schema.String) })),
+  /** Logins (or team slugs) asked to review who have not yet. */
+  requestedReviewers: Schema.Array(Schema.String),
+  createdAt: Schema.Number,
+  updatedAt: Schema.Number,
+  mergedAt: Schema.NullOr(Schema.Number),
+  closedAt: Schema.NullOr(Schema.Number),
+  /** At most the first 1,000 files; `changedFiles` counts them all. */
+  files: Schema.Array(PullRequestFile),
+  checks: Schema.Array(PullRequestCheck),
+  /** Reviews and comments, oldest first. */
+  activity: Schema.Array(PullRequestActivity)
+})
+export type PullRequestDetail = typeof PullRequestDetail.Type
 
 export const ServerInfo = Schema.Struct({
   version: Schema.String,
@@ -198,6 +274,12 @@ export class GradientRpcs extends RpcGroup.make(
     error: GithubError
   }),
   Rpc.make("GithubSyncNow", { payload: { repoId: Schema.String }, error: GithubError }),
+  /** A pull request with its files, checks, reviews and comments, read from GitHub. */
+  Rpc.make("GithubPullRequest", {
+    payload: { owner: Schema.String, repo: Schema.String, number: Schema.Int },
+    success: PullRequestDetail,
+    error: GithubError
+  }),
   /** Start a device-flow sign-in. Replaces one that is already waiting. */
   Rpc.make("GithubSignInStart", { success: GithubDeviceCode, error: GithubError }),
   /** Wait until the pending sign-in finishes. */

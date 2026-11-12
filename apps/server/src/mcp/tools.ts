@@ -236,6 +236,60 @@ export const UnlinkIssues = Tool.make("unlink_issues", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false)
 
+export const GetPullRequest = Tool.make("get_pull_request", {
+  description:
+    "Read a pull request from GitHub (any repository the connection can see): its description, branches, state, " +
+    "changed files, checks, reviews and comments. Use it on the pull requests get_issue lists. Pass diff: true for each file's patch.",
+  parameters: Schema.Struct({
+    pull_request: Schema.String.annotate({
+      description: "\"owner/repo#12\" or a GitHub pull request URL."
+    }),
+    diff: Schema.optionalKey(Schema.Boolean.annotate({ description: "Include each file's unified diff. Default false." }))
+  }),
+  success: Schema.Struct({
+    ref: Schema.String,
+    title: Schema.String,
+    state: Schema.String,
+    url: Schema.String,
+    author: Schema.NullOr(Schema.String),
+    base: Schema.String,
+    head: Schema.String,
+    /** False when it has merge conflicts; null while GitHub is still checking. */
+    mergeable: Schema.NullOr(Schema.Boolean),
+    additions: Schema.Int,
+    deletions: Schema.Int,
+    changed_files: Schema.Int,
+    commits: Schema.Int,
+    labels: Schema.Array(Schema.String),
+    requested_reviewers: Schema.Array(Schema.String),
+    description: Schema.String,
+    files: Schema.Array(Schema.Struct({
+      path: Schema.String,
+      status: Schema.String,
+      additions: Schema.Int,
+      deletions: Schema.Int,
+      patch: Schema.optionalKey(Schema.NullOr(Schema.String))
+    })),
+    checks: Schema.Array(Schema.Struct({ name: Schema.String, status: Schema.String, url: Schema.NullOr(Schema.String) })),
+    /** Reviews and comments, oldest first. */
+    activity: Schema.Array(Schema.Struct({
+      kind: Schema.String,
+      author: Schema.NullOr(Schema.String),
+      review: Schema.NullOr(Schema.String),
+      body: Schema.String,
+      created: Schema.String,
+      url: Schema.String
+    })),
+    created: Schema.String,
+    updated: Schema.String
+  }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+
 export const GithubConnection = Tool.make("github_status", {
   description:
     "Whether Gradient is connected to GitHub, as whom, and which repo each project syncs with. Check this before relying on GitHub sync.",
@@ -419,6 +473,7 @@ export const GradientToolkit = Toolkit.make(
   AddTeamMember,
   RemoveTeamMember,
   InvitePerson,
+  GetPullRequest,
   GithubConnection,
   GithubSignIn
 )

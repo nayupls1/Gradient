@@ -90,7 +90,8 @@ describe("parseMarkdown", () => {
   test("a bare GitHub issue or pull request URL becomes a reference", () => {
     expect(parseMarkdown("https://github.com/acme/web/pull/7 https://github.com/o/r/issues/2", repo)).toEqual([
       el("p", [
-        { ref: { kind: "github", owner: "acme", repo: "web", number: 7 }, text: "#7" },
+        // Written as a pull request URL, it is known to be one.
+        { ref: { kind: "github", owner: "acme", repo: "web", number: 7, pull: true }, text: "#7" },
         " ",
         { ref: { kind: "github", owner: "o", repo: "r", number: 2 }, text: "o/r#2" }
       ])

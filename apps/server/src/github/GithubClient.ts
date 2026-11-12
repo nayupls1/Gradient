@@ -1,4 +1,4 @@
-import { GithubError } from "@gradient/domain"
+import { GithubError, type PullRequestCheckStatus, type PullRequestDetail, type PullRequestReviewState } from "@gradient/domain"
 import { Context, Effect, Layer, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ServerConfig } from "../config.ts"
@@ -114,6 +114,104 @@ const GhLinkedResponse = Schema.Struct({
   errors: Schema.optionalKey(Schema.Array(Schema.Struct({ message: Schema.String })))
 })
 
+const GhPull = Schema.Struct({
+  number: Schema.Int,
+  html_url: Schema.String,
+  title: Schema.String,
+  body: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  state: Schema.Literals(["open", "closed"]),
+  draft: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  merged: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  merged_at: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  closed_at: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  created_at: Schema.String,
+  updated_at: Schema.String,
+  user: Schema.NullOr(GhUser),
+  head: Schema.Struct({ ref: Schema.String, sha: Schema.String }),
+  base: Schema.Struct({ ref: Schema.String }),
+  mergeable: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  additions: Schema.optionalKey(Schema.Int),
+  deletions: Schema.optionalKey(Schema.Int),
+  changed_files: Schema.optionalKey(Schema.Int),
+  commits: Schema.optionalKey(Schema.Int),
+  labels: Schema.optionalKey(Schema.Array(GhLabel)),
+  requested_reviewers: Schema.optionalKey(Schema.NullOr(Schema.Array(GhUser))),
+  requested_teams: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Struct({ slug: Schema.String }))))
+})
+const GhPullFile = Schema.Struct({
+  filename: Schema.String,
+  previous_filename: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  status: Schema.Literals(["added", "removed", "modified", "renamed", "copied", "changed", "unchanged"]),
+  additions: Schema.Int,
+  deletions: Schema.Int,
+  patch: Schema.optionalKey(Schema.NullOr(Schema.String))
+})
+const GhReview = Schema.Struct({
+  user: Schema.NullOr(GhUser),
+  state: Schema.String,
+  body: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  html_url: Schema.String,
+  submitted_at: Schema.optionalKey(Schema.NullOr(Schema.String))
+})
+const GhCheckRuns = Schema.Struct({
+  check_runs: Schema.Array(Schema.Struct({
+    name: Schema.String,
+    status: Schema.String,
+    conclusion: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    html_url: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    details_url: Schema.optionalKey(Schema.NullOr(Schema.String))
+  }))
+})
+const GhCombinedStatus = Schema.Struct({
+  statuses: Schema.Array(Schema.Struct({
+    context: Schema.String,
+    state: Schema.String,
+    target_url: Schema.optionalKey(Schema.NullOr(Schema.String))
+  }))
+})
+
+/** A check run's status and conclusion, as one word. */
+export const checkRunStatus = (status: string, conclusion: string | null): PullRequestCheckStatus => {
+  if (status !== "completed") return "pending"
+  switch (conclusion) {
+    case "success":
+      return "success"
+    case "failure":
+    case "timed_out":
+    case "startup_failure":
+      return "failure"
+    case "action_required":
+      return "pending"
+    case "cancelled":
+      return "cancelled"
+    case "skipped":
+      return "skipped"
+    default:
+      return "neutral"
+  }
+}
+
+const commitStatus = (state: string): PullRequestCheckStatus =>
+  state === "success" ? "success" : state === "pending" ? "pending" : "failure"
+
+const reviewState = (state: string): PullRequestReviewState => {
+  switch (state) {
+    case "APPROVED":
+      return "approved"
+    case "CHANGES_REQUESTED":
+      return "changes_requested"
+    case "DISMISSED":
+      return "dismissed"
+    case "PENDING":
+      return "pending"
+    default:
+      return "commented"
+  }
+}
+
+/** How many pages of changed files a pull request page reads (100 each). */
+const FILE_PAGES = 10
+
 /** How many issues one GraphQL request asks about. */
 export const LINKED_BATCH = 50
 
@@ -191,6 +289,12 @@ export class GithubClient extends Context.Service<GithubClient, {
     repo: string,
     numbers: ReadonlyArray<number>
   ): Effect.Effect<ReadonlyMap<number, ReadonlyArray<GhLinkedPullRequest>>, GithubError>
+  /**
+   * One pull request with its changed files, checks, reviews and comments, in
+   * any repository the token can see. Checks, reviews and comments are left
+   * empty when the token may not read them; the pull request itself must load.
+   */
+  getPullRequest(owner: string, repo: string, number: number): Effect.Effect<PullRequestDetail, GithubError>
 }>()("gradient/GithubClient") {
   static readonly layer = Layer.effect(
     GithubClient,
@@ -235,11 +339,12 @@ export class GithubClient extends Context.Service<GithubClient, {
       const pages = <A>(
         path: string,
         decode: (res: HttpClientResponse.HttpClientResponse) => Effect.Effect<ReadonlyArray<A>, unknown>,
-        params: Record<string, string> = {}
+        params: Record<string, string> = {},
+        maxPages = 20
       ) =>
         Effect.gen(function*() {
           const all: Array<A> = []
-          for (let page = 1; page <= 20; page++) {
+          for (let page = 1; page <= maxPages; page++) {
             const res = yield* ok.execute(
               HttpClientRequest.get(path).pipe(
                 HttpClientRequest.setUrlParams({ ...params, per_page: "100", page: String(page) })
@@ -287,8 +392,115 @@ export class GithubClient extends Context.Service<GithubClient, {
           return out
         })
 
+      const millis = (iso: string) => Date.parse(iso)
+      const optionalMillis = (iso: string | null | undefined) => (iso ? Date.parse(iso) : null)
+
+      const pullRequest = (owner: string, repo: string, number: number) =>
+        Effect.gen(function*() {
+          const base = `/repos/${owner}/${repo}`
+          const res = yield* client.get(`${base}/pulls/${number}`)
+          if (res.status === 404) {
+            return yield* new GithubError({
+              message: `${owner}/${repo}#${number} is not a pull request, or GitHub does not let Gradient see it.`
+            })
+          }
+          if (res.status !== 200) {
+            return yield* new GithubError({ message: `GitHub answered ${res.status} for ${owner}/${repo}#${number}.` })
+          }
+          const pr = yield* HttpClientResponse.schemaBodyJson(GhPull)(res)
+          // Everything past the pull request itself is best effort: a token may lack checks or reviews.
+          const optional = <A>(effect: Effect.Effect<ReadonlyArray<A>, unknown>) =>
+            effect.pipe(Effect.orElseSucceed((): ReadonlyArray<A> => []))
+          const [files, checkRuns, statuses, reviews, comments] = yield* Effect.all([
+            pages(`${base}/pulls/${number}/files`, HttpClientResponse.schemaBodyJson(Schema.Array(GhPullFile)), {}, FILE_PAGES),
+            optional(
+              ok.get(`${base}/commits/${pr.head.sha}/check-runs`, { urlParams: { per_page: "100" } }).pipe(
+                Effect.flatMap(HttpClientResponse.schemaBodyJson(GhCheckRuns)),
+                Effect.map((b) => b.check_runs)
+              )
+            ),
+            optional(
+              ok.get(`${base}/commits/${pr.head.sha}/status`).pipe(
+                Effect.flatMap(HttpClientResponse.schemaBodyJson(GhCombinedStatus)),
+                Effect.map((b) => b.statuses)
+              )
+            ),
+            optional(pages(`${base}/pulls/${number}/reviews`, HttpClientResponse.schemaBodyJson(Schema.Array(GhReview)))),
+            optional(pages(`${base}/issues/${number}/comments`, HttpClientResponse.schemaBodyJson(Schema.Array(GhComment))))
+          ], { concurrency: "unbounded" })
+          const activity: Array<PullRequestDetail["activity"][number]> = [
+            ...reviews
+              // A bare "commented" review is the wrapper of inline comments: nothing to show on its own.
+              .filter((r) => r.submitted_at && (r.state !== "COMMENTED" || (r.body ?? "").trim() !== ""))
+              .map((r) => ({
+                kind: "review" as const,
+                author: r.user?.login ?? null,
+                authorAvatarUrl: r.user?.avatar_url ?? null,
+                reviewState: reviewState(r.state),
+                body: r.body ?? "",
+                url: r.html_url,
+                createdAt: millis(r.submitted_at!)
+              })),
+            ...comments.map((c) => ({
+              kind: "comment" as const,
+              author: c.user?.login ?? null,
+              authorAvatarUrl: c.user?.avatar_url ?? null,
+              reviewState: null,
+              body: c.body ?? "",
+              url: c.html_url,
+              createdAt: millis(c.created_at)
+            }))
+          ].sort((a, b) => a.createdAt - b.createdAt)
+          const merged = pr.merged === true || (pr.merged_at ?? null) !== null
+          return {
+            owner,
+            repo,
+            number: pr.number,
+            url: pr.html_url,
+            title: pr.title,
+            body: pr.body ?? "",
+            state: merged ? "merged" : pr.state === "closed" ? "closed" : pr.draft ? "draft" : "open",
+            author: pr.user?.login ?? null,
+            authorAvatarUrl: pr.user?.avatar_url ?? null,
+            baseBranch: pr.base.ref,
+            headBranch: pr.head.ref,
+            mergeable: pr.mergeable ?? null,
+            additions: pr.additions ?? files.reduce((n, f) => n + f.additions, 0),
+            deletions: pr.deletions ?? files.reduce((n, f) => n + f.deletions, 0),
+            changedFiles: pr.changed_files ?? files.length,
+            commits: pr.commits ?? 0,
+            labels: (pr.labels ?? []).map((l) => ({ name: labelName(l), color: labelColor(l) })),
+            requestedReviewers: [
+              ...(pr.requested_reviewers ?? []).map((u) => u.login),
+              ...(pr.requested_teams ?? []).map((t) => t.slug)
+            ],
+            createdAt: millis(pr.created_at),
+            updatedAt: millis(pr.updated_at),
+            mergedAt: optionalMillis(pr.merged_at),
+            closedAt: optionalMillis(pr.closed_at),
+            files: files.map((f) => ({
+              path: f.filename,
+              previousPath: f.previous_filename ?? null,
+              status: f.status,
+              additions: f.additions,
+              deletions: f.deletions,
+              patch: f.patch ?? null
+            })),
+            checks: [
+              ...checkRuns.map((c) => ({
+                name: c.name,
+                status: checkRunStatus(c.status, c.conclusion ?? null),
+                url: c.html_url ?? c.details_url ?? null
+              })),
+              ...statuses.map((st) => ({ name: st.context, status: commitStatus(st.state), url: st.target_url ?? null }))
+            ],
+            activity
+          } satisfies PullRequestDetail
+        }).pipe(Effect.mapError((e) => (e instanceof GithubError ? e : toError(`Reading ${owner}/${repo}#${number} failed`)(e))))
+
       return GithubClient.of({
         ready,
+        getPullRequest: (owner, repo, number) => guard(pullRequest(owner, repo, number)),
         availableRepos: guard(
           Effect.gen(function*() {
             if ((yield* auth.source) !== "app") {

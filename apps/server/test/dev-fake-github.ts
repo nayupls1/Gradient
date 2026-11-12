@@ -26,7 +26,103 @@ fake.seed({ title: "Crash when saving a draft offline", labels: [{ name: "bug", 
 fake.seed({ title: "Support SSO for enterprise workspaces", labels: [{ name: "enhancement", color: "a2eeef" }] })
 fake.seed({ title: "Docs: explain webhook forwarding", state: "closed", state_reason: "completed", labels: [{ name: "documentation", color: "0075ca" }] })
 fake.block(2, 1) // SSO waits on the crash fix
-fake.seed({ title: "Keep drafts when offline", body: "Fixes #1", draft: false, pull_request: { url: "x", merged_at: null } })
+const patch = (lines: Array<string>) => lines.join("\n")
+fake.seed({
+  title: "Keep drafts when offline",
+  body: "Fixes #1\n\nDrafts were written straight to the server, so going offline mid-edit lost them. They now land in IndexedDB first and sync when the connection comes back.\n\n- [x] Queue writes while offline\n- [x] Replay in order on reconnect\n- [ ] Show a badge on unsynced drafts",
+  draft: false,
+  labels: [{ name: "bug", color: "d73a4a" }],
+  pull_request: { url: "x", merged_at: null },
+  user: { login: "dev", avatar_url: "https://avatars/dev" },
+  pr: {
+    head: "fix/offline-drafts",
+    commits: 4,
+    requested_reviewers: ["octo"],
+    files: [
+      {
+        filename: "src/drafts/store.ts",
+        status: "modified",
+        additions: 17,
+        deletions: 4,
+        patch: patch([
+          "@@ -1,11 +1,24 @@",
+          " import { openDB } from \"./db\"",
+          "+import { onReconnect } from \"../net/status\"",
+          " ",
+          " export interface Draft {",
+          "   id: string",
+          "   body: string",
+          "+  syncedAt: number | null",
+          " }",
+          " ",
+          "-export async function saveDraft(draft: Draft) {",
+          "-  await fetch(`/api/drafts/${draft.id}`, { method: \"PUT\", body: JSON.stringify(draft) })",
+          "-  return draft",
+          "-}",
+          "+export async function saveDraft(draft: Draft) {",
+          "+  const db = await openDB()",
+          "+  await db.put(\"drafts\", { ...draft, syncedAt: null })",
+          "+  if (navigator.onLine) await flush()",
+          "+  return draft",
+          "+}",
+          "+",
+          "+export async function flush() {",
+          "+  const db = await openDB()",
+          "+  for (const draft of await db.getAll(\"drafts\")) {",
+          "+    if (draft.syncedAt === null) await push(draft)",
+          "+  }",
+          "+}",
+          "+",
+          "+onReconnect(flush)"
+        ])
+      },
+      {
+        filename: "src/net/status.ts",
+        status: "added",
+        additions: 9,
+        deletions: 0,
+        patch: patch([
+          "@@ -0,0 +1,9 @@",
+          "+type Listener = () => void",
+          "+const listeners = new Set<Listener>()",
+          "+",
+          "+window.addEventListener(\"online\", () => listeners.forEach((l) => l()))",
+          "+",
+          "+export function onReconnect(listener: Listener) {",
+          "+  listeners.add(listener)",
+          "+  return () => listeners.delete(listener)",
+          "+}"
+        ])
+      },
+      {
+        filename: "src/drafts/store.test.ts",
+        status: "modified",
+        additions: 6,
+        deletions: 1,
+        patch: patch([
+          "@@ -20,5 +20,10 @@ describe(\"drafts\", () => {",
+          "   it(\"saves a draft\", async () => {",
+          "     expect(await saveDraft(draft)).toEqual(draft)",
+          "   })",
+          "+",
+          "+  it(\"keeps a draft while offline\", async () => {",
+          "+    goOffline()",
+          "+    await saveDraft(draft)",
+          "+    expect(await pending()).toHaveLength(1)",
+          "+  })",
+          "-  it.todo(\"offline\")",
+          " })"
+        ])
+      }
+    ],
+    reviews: [{ login: "lead", state: "APPROVED", body: "Nice, the replay order is exactly what we need." }],
+    checks: [
+      { name: "test", status: "completed", conclusion: "success" },
+      { name: "typecheck", status: "completed", conclusion: "success" },
+      { name: "e2e (chromium)", status: "in_progress", conclusion: null }
+    ]
+  }
+})
 fake.comment(1, "Reproduced on macOS too. The fix in #4 should cover it; acme/gadgets#1 has the same symptom.", { login: "dev" })
 fake.comment(1, "Confirmed, see https://github.com/acme/widgets/issues/2 for the SSO side.")
 const svg = (fill: string, shape: string) =>
@@ -36,3 +132,4 @@ fake.putFile("web/public/favicon.svg", svg("#f76b15", `<circle cx="16" cy="16" r
 fake.putFile("docs/logo.svg", svg("#0090ff", `<path d="M9 22 16 8l7 14z" fill="#fff"/>`))
 fake.putFile("assets/logo.svg", svg("#8e4ec6", `<rect x="9" y="9" width="14" height="14" rx="2" fill="#fff"/>`), { owner: "acme", name: "gadgets" })
 console.log(`Fake GitHub on ${fake.url} with ${fake.issues.length} issues and pull requests in acme/widgets`)
+fake.comment(4, "Tried it on a train with spotty Wi-Fi: drafts survived every tunnel.", { login: "octo" })

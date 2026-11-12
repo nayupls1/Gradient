@@ -4,6 +4,7 @@ import { Members } from "../auth/Members.ts"
 import { Db, type LogRow } from "../db/Db.ts"
 import { ServerConfig } from "../config.ts"
 import { GithubAuth } from "../github/GithubAuth.ts"
+import { GithubClient } from "../github/GithubClient.ts"
 import { GithubSync } from "../github/GithubSync.ts"
 import { mcpUrl } from "../mcp/server.ts"
 import { Hub } from "./Hub.ts"
@@ -23,6 +24,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
     const mutations = yield* Mutations
     const github = yield* GithubSync
     const auth = yield* GithubAuth
+    const githubClient = yield* GithubClient
     const config = yield* ServerConfig
     const members = yield* Members
 
@@ -118,6 +120,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
       GithubSignInCancel: () => auth.cancelSignIn,
       GithubSignOut: () => auth.signOut.pipe(Effect.andThen(github.status)),
       GithubRepos: () => github.availableRepos,
+      GithubPullRequest: ({ owner, repo, number }) => githubClient.getPullRequest(owner, repo, number),
       GithubProjectIcons: ({ projectId }) => github.projectIcons(projectId),
       GithubSetProjectIcon: ({ projectId, mode, path }) =>
         Effect.gen(function*() {

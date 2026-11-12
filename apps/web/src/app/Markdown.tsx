@@ -3,7 +3,7 @@ import * as stylex from "@stylexjs/stylex"
 import { Dynamic, type JSX } from "@solidjs/web"
 import { createMemo, For, Match, Show, Switch, useContext } from "solid-js"
 import { isElement, isRef, type MdElement, type MdNode, type MdRef, parseMarkdown, type RefContext } from "../lib/markdown.ts"
-import { findIssue, issueHref, issueKey, type IssuePullRequest, resolveGithubRef } from "../lib/select.ts"
+import { findIssue, issueHref, issueKey, type IssuePullRequest, pullRequestHref, pullRequestHrefFromUrl, resolveGithubRef } from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { color, font } from "../theme/tokens.stylex.ts"
 import { GithubIcon, PullRequestIcon, pullRequestLabel, StateIcon } from "../ui/icons.tsx"
@@ -151,7 +151,10 @@ const Element = (props: { el: MdElement; parent: string }) => {
   // `task` marks a list item for styling; it is not a DOM attribute.
   const attrs = () => {
     const { task: _, ...rest } = props.el.attrs
-    return props.el.tag === "a" ? { ...rest, ...External } : rest
+    if (props.el.tag !== "a") return rest
+    // Links to a pull request open its page in Gradient; everything else opens in a new tab.
+    const pull = typeof rest.href === "string" ? pullRequestHrefFromUrl(rest.href) : null
+    return pull ? { ...rest, href: pull } : { ...rest, ...External }
   }
   const style = () => {
     const xstyle = styleFor(props.el, props.parent)
@@ -177,7 +180,8 @@ const Reference = (props: { node: MdRef }) => {
       const issue = findIssue(sync.state, `${ref.key}-${ref.number}`)
       return issue ? { issue } : null
     }
-    return resolveGithubRef(sync.state, ref) ?? { url: `https://github.com/${ref.owner}/${ref.repo}/issues/${ref.number}` }
+    return resolveGithubRef(sync.state, ref) ??
+      { url: `https://github.com/${ref.owner}/${ref.repo}/${ref.pull ? "pull" : "issues"}/${ref.number}` }
   })
   return (
     <Switch fallback={props.node.text}>
@@ -197,7 +201,7 @@ const Reference = (props: { node: MdRef }) => {
       </Match>
       <Match when={target()?.pullRequest}>
         {(pr) => (
-          <a href={pr().url} title={`${pr().title} · ${pullRequestLabel[pr().state]}`} {...External} {...stylex.attrs(s.ref)}>
+          <a href={pullRequestHref(pr())} title={`${pr().title} · ${pullRequestLabel[pr().state]}`} {...stylex.attrs(s.ref)}>
             <RefIcon>
               <PullRequestIcon state={pr().state} size={14} />
             </RefIcon>
@@ -207,7 +211,12 @@ const Reference = (props: { node: MdRef }) => {
       </Match>
       <Match when={target()?.url}>
         {(url) => (
-          <a href={url()} title="Open on GitHub" {...External} {...stylex.attrs(s.ref)}>
+          <a
+            href={pullRequestHrefFromUrl(url()) ?? url()}
+            title={pullRequestHrefFromUrl(url()) ? "Pull request" : "Open on GitHub"}
+            {...(pullRequestHrefFromUrl(url()) ? {} : External)}
+            {...stylex.attrs(s.ref)}
+          >
             <RefIcon>
               <GithubIcon size={13} />
             </RefIcon>
