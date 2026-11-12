@@ -4,7 +4,7 @@ import type { JSX } from "@solidjs/web"
 import { createSignal, For, merge, omit, Show, untrack } from "solid-js"
 import { KeyScope } from "../keys/solid.tsx"
 import { colors } from "../lib/tokens.stylex.ts"
-import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "../ui/command.tsx"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "../ui/command.tsx"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.tsx"
 
 /*
@@ -75,28 +75,31 @@ export const PickerList = <V,>(props: PickerListProps<V>) => {
       />
       <CommandList>
         <CommandEmpty>{props.emptyText ?? "No results"}</CommandEmpty>
-        <For each={props.items}>
-          {(item, index) => (
-            <CommandItem
-              value={`${index()}:${item.label}`}
-              keywords={[item.label, item.keywords ?? ""]}
-              data-checked={String(props.selected.includes(item.value))}
-              onSelect={() => pick(item)}
-            >
-              {item.icon?.()}
-              <span {...stylex.attrs(s.label)}>{item.label}</span>
-              <Show when={item.hint}>
-                <span {...stylex.attrs(s.hint)}>{item.hint}</span>
-              </Show>
-              {item.trailing?.()}
+        {/* The group pads the items, so they line up with the search field (shadcn's combobox does the same). */}
+        <CommandGroup>
+          <For each={props.items}>
+            {(item, index) => (
+              <CommandItem
+                value={`${index()}:${item.label}`}
+                keywords={[item.label, item.keywords ?? ""]}
+                data-checked={String(props.selected.includes(item.value))}
+                onSelect={() => pick(item)}
+              >
+                {item.icon?.()}
+                <span {...stylex.attrs(s.label)}>{item.label}</span>
+                <Show when={item.hint}>
+                  <span {...stylex.attrs(s.hint)}>{item.hint}</span>
+                </Show>
+                {item.trailing?.()}
+              </CommandItem>
+            )}
+          </For>
+          <Show when={canCreate()}>
+            <CommandItem forceMount value={`create:${query()}`} onSelect={() => props.onCreate!(query().trim())}>
+              <span {...stylex.attrs(s.label)}>Create “{query().trim()}”</span>
             </CommandItem>
-          )}
-        </For>
-        <Show when={canCreate()}>
-          <CommandItem forceMount value={`create:${query()}`} onSelect={() => props.onCreate!(query().trim())}>
-            <span {...stylex.attrs(s.label)}>Create “{query().trim()}”</span>
-          </CommandItem>
-        </Show>
+          </Show>
+        </CommandGroup>
       </CommandList>
     </Command>
   )
