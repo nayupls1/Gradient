@@ -87,8 +87,10 @@ for a single process. Ctrl+C stops both, on Windows too.
 
 ### The `gradient` command
 
-`bun link` in the repository root puts `gradient` on your PATH. It always
-works on the checkout it was linked from, wherever you run it.
+`bun run register` in the repository root installs dependencies and puts
+`gradient` on your PATH (`bun link`; it tells you if Bun's bin folder is not
+on PATH yet). It always works on the checkout it was registered from,
+wherever you run it; `gradient register` re-registers after you move it.
 
 ```bash
 gradient run         # pull the latest master, install, build, start the server (http://localhost:4100)

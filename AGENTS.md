@@ -12,7 +12,7 @@ stays out of the way.
 - `bun run dev`: server (4100) and Vite (4200) together
 - `bun run build` / `bun run start`: build both, then run both compiled
   (server bundle on 4100, `vite preview` on 4200)
-- `gradient run [--web]` (`apps/cli`, on PATH after `bun link`): pull master,
+- `gradient run [--web]` (`apps/cli`, on PATH after `bun run register`): pull master,
   build, start. `dev` and `start` go through its supervisor too, because
   `bun run --filter` does not stop on Ctrl+C on Windows; long-running
   processes belong there, not in `--filter` scripts.

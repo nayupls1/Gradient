@@ -20,6 +20,7 @@ Usage:
   gradient run [--web] [--no-pull]   pull the latest ${branch}, install, build and start
   gradient start [--web]             start the last build
   gradient dev                       server and Vite with live reload
+  gradient register                  install and put \`gradient\` on your PATH (bun link)
   gradient help
 
 Options:
@@ -56,6 +57,25 @@ const pull = () => {
     fail(`${root} is on ${current}, not ${branch}. Switch to it (git switch ${branch}) or pass --no-pull.`)
   }
   step(`Pulling the latest ${branch}`, ["git", "pull", "--ff-only", "origin", branch])
+}
+
+/**
+ * Installs and links the CLI. Before it is on PATH, run it as `bun run register`
+ * from the checkout; afterwards `gradient register` re-links a moved checkout.
+ */
+const register = () => {
+  step("Installing dependencies", [bun, "install"])
+  // Quiet: bun link's own hint ("bun link gradient" in a project) is not for this.
+  console.log("\n» Linking the gradient command")
+  const linked = Bun.spawnSync([bun, "link"], { cwd: root, stdout: "pipe", stderr: "pipe" })
+  if (!linked.success) fail(`bun link failed:\n${linked.stdout}${linked.stderr}`)
+  const found = Bun.which("gradient")
+  const bin = Bun.spawnSync([bun, "pm", "bin", "-g"]).stdout.toString().trim()
+  if (found === null) {
+    console.log(`\ngradient is linked into ${bin}, which is not on your PATH yet. Add it, then run \`gradient run\`.`)
+  } else {
+    console.log(`\ngradient is ready (${found}). Try \`gradient run\`.`)
+  }
 }
 
 const build = () => {
@@ -123,6 +143,9 @@ switch (values.help ? "help" : command) {
     break
   case "start":
     await start(values.web)
+    break
+  case "register":
+    register()
     break
   case "dev":
     await dev()
