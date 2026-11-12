@@ -601,6 +601,12 @@ const ToolHandlers = GradientToolkit.toLayer(
           merge_state: pr.mergeableState,
           merge_methods: [...pr.mergeMethods],
           review_comments: pr.reviewComments.map((c) => ({ path: c.path, line: c.line, author: c.author, body: c.body, url: c.url })),
+          timeline: pr.timeline.map((i) => ({
+            kind: i.kind === "review" ? `review:${i.reviewState}` : i.kind,
+            actor: i.actor,
+            at: iso(i.at),
+            summary: i.label?.name ?? (i.subject && i.body ? `${i.subject}: ${i.body}` : i.subject ?? i.body)
+          })),
           activity: pr.activity.map((a) => ({
             kind: a.kind,
             author: a.author,

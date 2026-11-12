@@ -291,6 +291,14 @@ export const GetPullRequest = Tool.make("get_pull_request", {
       created: Schema.String,
       url: Schema.String
     })),
+    /** What happened on it, oldest first: commits, comments, reviews, labels, merges… */
+    timeline: Schema.Array(Schema.Struct({
+      kind: Schema.String,
+      actor: Schema.NullOr(Schema.String),
+      at: Schema.String,
+      /** A commit's message, a comment or review's text, a label, who was asked to review, a new title. */
+      summary: Schema.NullOr(Schema.String)
+    })),
     created: Schema.String,
     updated: Schema.String
   }),

@@ -153,6 +153,59 @@ export const PullRequestReviewComment = Schema.Struct({
 })
 export type PullRequestReviewComment = typeof PullRequestReviewComment.Type
 
+export const PullRequestTimelineKind = Schema.Literals([
+  "opened",
+  "commit",
+  "comment",
+  "review",
+  "inline",
+  "merged",
+  "closed",
+  "reopened",
+  "ready",
+  "draft",
+  "labeled",
+  "unlabeled",
+  "review_requested",
+  "review_request_removed",
+  "assigned",
+  "unassigned",
+  "force_pushed",
+  "branch_deleted",
+  "renamed",
+  "referenced"
+])
+export type PullRequestTimelineKind = typeof PullRequestTimelineKind.Type
+
+/**
+ * One thing that happened on a pull request, as GitHub's timeline lists it:
+ * its commits, comments, reviews and what people did to it. Fields beyond
+ * kind, who and when are set only for the kinds that have them.
+ */
+export const PullRequestTimelineItem = Schema.Struct({
+  kind: PullRequestTimelineKind,
+  /** GitHub login, or a commit's author name when it has no account. */
+  actor: Schema.NullOr(Schema.String),
+  actorAvatarUrl: Schema.NullOr(Schema.String),
+  at: Schema.Number,
+  /** A comment's or review's markdown, or a commit's message. */
+  body: Schema.NullOr(Schema.String),
+  url: Schema.NullOr(Schema.String),
+  /** A commit's sha. */
+  sha: Schema.NullOr(Schema.String),
+  reviewState: Schema.NullOr(PullRequestReviewState),
+  label: Schema.NullOr(Schema.Struct({ name: Schema.String, color: Schema.NullOr(Schema.String) })),
+  /**
+   * What it was about: the person or team asked to review, the assignee, the
+   * new title, the file and line of an inline comment, or the referencing
+   * issue's title.
+   */
+  subject: Schema.NullOr(Schema.String),
+  /** More about it: the old title, or the referencing issue as "owner/repo#12". */
+  detail: Schema.NullOr(Schema.String)
+})
+export type PullRequestTimelineItem = typeof PullRequestTimelineItem.Type
+
 export const MergeMethod = Schema.Literals(["merge", "squash", "rebase"])
 export type MergeMethod = typeof MergeMethod.Type
 
@@ -201,7 +254,9 @@ export const PullRequestDetail = Schema.Struct({
   /** Reviews and comments, oldest first. */
   activity: Schema.Array(PullRequestActivity),
   /** Inline comments on the diff, oldest first. */
-  reviewComments: Schema.Array(PullRequestReviewComment)
+  reviewComments: Schema.Array(PullRequestReviewComment),
+  /** Everything that happened on it, oldest first (at most the first 1,000 events). */
+  timeline: Schema.Array(PullRequestTimelineItem)
 })
 export type PullRequestDetail = typeof PullRequestDetail.Type
 

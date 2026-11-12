@@ -19,6 +19,7 @@ import { type DiffLineRange, type DiffThreadAnchor, DiffView, type DiffViewApi }
 import { GithubConnect } from "../app/GithubConnect.tsx"
 import { githubAccount } from "../app/githubAccount.ts"
 import { Markdown } from "../app/Markdown.tsx"
+import { PullRequestTimeline } from "../app/PullRequestTimeline.tsx"
 import { UserAvatar } from "../app/UserAvatar.tsx"
 import { KeyScope, useCommands, useScope } from "../keys/solid.tsx"
 import { formatRelative } from "../lib/select.ts"
@@ -48,6 +49,7 @@ import {
   pullRequestColor,
   pullRequestLabel,
   RefreshIcon,
+  SortIcon,
   ReviewStateIcon,
   reviewStateLabel,
   TagIcon,
@@ -69,7 +71,7 @@ import { PageHeader } from "./Header.tsx"
  * Files (Pierre's diff viewer).
  */
 
-type Tab = "summary" | "files"
+type Tab = "summary" | "timeline" | "files"
 
 const ADD = "#46a758"
 const DEL = "#e5484d"
@@ -287,6 +289,7 @@ const s = stylex.create({
 
 const TABS: ReadonlyArray<{ value: Tab; label: string }> = [
   { value: "summary", label: "Summary" },
+  { value: "timeline", label: "Timeline" },
   { value: "files", label: "Files" }
 ]
 
@@ -593,6 +596,7 @@ export const PullRequestPage = () => {
   const [loading, setLoading] = createSignal(false)
   const [tab, setTab] = createSignal<Tab>("summary")
   const [layout, setLayout] = createSignal<"unified" | "split">("unified")
+  const [order, setOrder] = createSignal<"oldest" | "newest">("oldest")
   const [copied, setCopied] = createSignal(false)
   const [drafts, setDrafts] = createSignal<ReadonlyArray<Draft>>([])
   const [composing, setComposing] = createSignal<Composing | null>(null)
@@ -730,7 +734,16 @@ export const PullRequestPage = () => {
     { id: "pr.back", title: "Back", group: "Navigation", keys: ["escape", "u"], scope: "pr.detail", run: back },
     { id: "pr.openGithub", title: "Open pull request on GitHub", group: "Pull request", keys: ["o"], scope: "pr.detail", run: openOnGithub },
     { id: "pr.summary", title: "Show summary", group: "Pull request", keys: ["1"], scope: "pr.detail", run: () => setTab("summary") },
-    { id: "pr.files", title: "Show changed files", group: "Pull request", keys: ["2"], scope: "pr.detail", run: () => setTab("files") },
+    { id: "pr.timeline", title: "Show timeline", group: "Pull request", keys: ["2"], scope: "pr.detail", run: () => setTab("timeline") },
+    { id: "pr.files", title: "Show changed files", group: "Pull request", keys: ["3"], scope: "pr.detail", run: () => setTab("files") },
+    {
+      id: "pr.timelineOrder",
+      title: "Flip timeline order",
+      group: "Pull request",
+      scope: "pr.detail",
+      when: () => tab() === "timeline",
+      run: () => setOrder((o) => (o === "oldest" ? "newest" : "oldest"))
+    },
     {
       id: "pr.layout",
       title: "Toggle split diff",
@@ -982,9 +995,25 @@ export const PullRequestPage = () => {
                   </For>
                 </ToggleGroup>
                 <div {...stylex.attrs(s.tabsEnd)}>
+                  <Show when={tab() === "timeline"}>
+                    <span {...stylex.attrs(s.stat)} title="Comments">
+                      <MessageIcon size={13} /> {pr().timeline.filter((i) => i.kind === "comment" || i.kind === "inline").length}
+                    </span>
+                    <span {...stylex.attrs(s.stat)} title="Commits">
+                      <CommitIcon size={13} /> {pr().timeline.filter((i) => i.kind === "commit").length}
+                    </span>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      title={order() === "oldest" ? "Show newest first" : "Show oldest first"}
+                      onClick={() => setOrder((o) => (o === "oldest" ? "newest" : "oldest"))}
+                    >
+                      <SortIcon size={12} /> {order() === "oldest" ? "Oldest first" : "Newest first"}
+                    </Button>
+                  </Show>
                   <Show
                     when={tab() === "summary"}
-                    fallback={
+                    fallback={tab() === "timeline" ? null : (
                       <ToggleGroup
                         variant="outline"
                         size="sm"
@@ -998,7 +1027,7 @@ export const PullRequestPage = () => {
                         <ToggleGroupItem value="unified">Unified</ToggleGroupItem>
                         <ToggleGroupItem value="split">Split</ToggleGroupItem>
                       </ToggleGroup>
-                    }
+                    )}
                   >
                     <Show when={checksSummary(pr().checks)} fallback={<span>No checks</span>}>
                       {(summary) => (
@@ -1012,9 +1041,12 @@ export const PullRequestPage = () => {
                 </div>
               </nav>
               <div {...stylex.attrs(s.body)}>
+                <Show when={tab() === "timeline"}>
+                  <PullRequestTimeline pr={pr()} order={order()} />
+                </Show>
                 <Show
                   when={tab() === "summary"}
-                  fallback={
+                  fallback={tab() === "timeline" ? null : (
                     <Files
                       pr={pr()}
                       layout={layout()}
@@ -1026,7 +1058,7 @@ export const PullRequestPage = () => {
                       onCancel={() => setComposing(null)}
                       onDiscard={(id) => setDrafts((list) => list.filter((d) => d.id !== id))}
                     />
-                  }
+                  )}
                 >
                   <Summary pr={pr()} onComment={comment} commentRef={(el) => (commentEl = el)} />
                 </Show>

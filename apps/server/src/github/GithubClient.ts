@@ -12,6 +12,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 import { ServerConfig } from "../config.ts"
 import { GithubAuth } from "./GithubAuth.ts"
 import type { RepoFile } from "./icons.ts"
+import { buildTimeline } from "./timeline.ts"
 
 const GhLabel = Schema.Union([
   Schema.String,
@@ -487,7 +488,7 @@ export class GithubClient extends Context.Service<GithubClient, {
           // Everything past the pull request itself is best effort: a token may lack checks or reviews.
           const optional = <A>(effect: Effect.Effect<ReadonlyArray<A>, unknown>) =>
             effect.pipe(Effect.orElseSucceed((): ReadonlyArray<A> => []))
-          const [files, checkRuns, statuses, reviews, comments, reviewComments, repoSettings] = yield* Effect.all([
+          const [files, checkRuns, statuses, reviews, comments, reviewComments, repoSettings, timeline] = yield* Effect.all([
             pages(`${base}/pulls/${number}/files`, HttpClientResponse.schemaBodyJson(Schema.Array(GhPullFile)), {}, FILE_PAGES, token),
             optional(
               ok.execute(as(token)(HttpClientRequest.get(`${base}/commits/${pr.head.sha}/check-runs`, { urlParams: { per_page: "100" } }))).pipe(
@@ -507,7 +508,9 @@ export class GithubClient extends Context.Service<GithubClient, {
             ok.execute(as(token)(HttpClientRequest.get(base))).pipe(
               Effect.flatMap(HttpClientResponse.schemaBodyJson(GhRepoMerge)),
               Effect.orElseSucceed((): typeof GhRepoMerge.Type => ({}))
-            )
+            ),
+            // Events come in many shapes; timeline.ts reads the ones it shows.
+            optional(pages(`${base}/issues/${number}/timeline`, HttpClientResponse.schemaBodyJson(Schema.Array(Schema.Unknown)), {}, 10, token))
           ], { concurrency: "unbounded" })
           const activity: Array<PullRequestDetail["activity"][number]> = [
             ...reviews
@@ -596,7 +599,11 @@ export class GithubClient extends Context.Service<GithubClient, {
               body: c.body,
               url: c.html_url,
               createdAt: millis(c.created_at)
-            }))
+            })),
+            timeline: buildTimeline(
+              { author: pr.user?.login ?? null, authorAvatarUrl: pr.user?.avatar_url ?? null, at: millis(pr.created_at) },
+              timeline
+            )
           } satisfies PullRequestDetail
         }).pipe(Effect.mapError((e) => (e instanceof GithubError ? e : toError(`Reading ${owner}/${repo}#${number} failed`)(e))))
 

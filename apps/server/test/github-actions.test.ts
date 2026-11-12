@@ -207,7 +207,10 @@ describe("merging", () => {
     expect(before).toMatchObject({ mergeableState: "clean", headSha: "sha1", mergeMethods: ["merge", "squash", "rebase"] })
     const merged = await ctx.run(Effect.flatMap(actions, (a) => a.merge(owner, ref(1), { method: "squash", sha: before.headSha })))
     expect(merged).toEqual({ sha: "merged1", method: "squash" })
-    expect((await ctx.run(Effect.flatMap(actions, (a) => a.readPullRequest(owner, ref(1))))).state).toBe("merged")
+    const after = await ctx.run(Effect.flatMap(actions, (a) => a.readPullRequest(owner, ref(1))))
+    expect(after.state).toBe("merged")
+    // The timeline opens with the pull request and ends with the merge, by whoever merged it.
+    expect(after.timeline.map((i) => [i.kind, i.actor])).toEqual([["opened", "someone"], ["merged", "octo"]])
     const again = await ctx.fail(Effect.flatMap(actions, (a) => a.merge(owner, ref(1), {})))
     expect(again.message).toContain("already merged")
   })

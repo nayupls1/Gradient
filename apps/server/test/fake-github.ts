@@ -37,6 +37,8 @@ export interface FakePull {
   mergeable_state?: string
   /** Who merged it, when it was merged here. */
   merged_by?: string
+  /** Raw timeline events served before the ones derived from comments, reviews and the merge. */
+  timeline?: Array<Record<string, unknown>>
 }
 
 export interface FakeComment {
@@ -381,7 +383,7 @@ export const makeFakeGithub = (
           merged: merged !== null,
           merged_at: merged,
           closed_at: pr.state === "closed" ? pr.updated_at : null,
-          created_at: pr.updated_at,
+          created_at: "2026-01-01T00:00:00Z",
           head: { ref: extra.head ?? `feature-${pr.number}`, sha: `sha${pr.number}` },
           base: { ref: extra.base ?? "main" },
           mergeable: extra.mergeable === undefined ? true : extra.mergeable,
@@ -407,6 +409,39 @@ export const makeFakeGithub = (
         return Response.json({
           check_runs: (pr.pr?.checks ?? []).map((c, i) => ({ ...c, html_url: `https://github.com/${r.owner}/${r.name}/runs/${i}` }))
         })
+      }
+      const timelineRoute = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/timeline$/)
+      if (timelineRoute && req.method === "GET") {
+        const r = repos.get(`${timelineRoute[1]}/${timelineRoute[2]}`.toLowerCase())
+        const target = r?.issues.find((i) => i.number === Number(timelineRoute[3]))
+        if (!r || !target) return new Response("not found", { status: 404 })
+        const avatar = (login: string) => ({ login, avatar_url: `https://avatars/${login}` })
+        const extra = target.pr ?? {}
+        return Response.json([
+          ...(extra.timeline ?? []),
+          ...r.comments.filter((c) => c.issue === target.number).map((c) => ({
+            event: "commented",
+            user: c.user,
+            body: c.body,
+            created_at: c.created_at,
+            html_url: `https://github.com/${r.owner}/${r.name}/issues/${c.issue}#issuecomment-${c.id}`
+          })),
+          ...(extra.reviews ?? []).map((rv) => ({
+            event: "reviewed",
+            user: avatar(rv.login),
+            state: rv.state.toLowerCase(),
+            body: rv.body,
+            submitted_at: rv.submitted_at ?? "2026-01-01T00:00:00Z",
+            html_url: `https://github.com/${r.owner}/${r.name}/pull/${target.number}`
+          })),
+          ...(extra.review_comments ?? []).map((c) => ({
+            event: "line-commented",
+            comments: [{ user: avatar(c.login), body: c.body, path: c.path, line: c.line, created_at: target.updated_at }]
+          })),
+          ...(target.pull_request?.merged_at
+            ? [{ event: "merged", actor: avatar(extra.merged_by ?? "octo"), created_at: target.pull_request.merged_at, commit_id: `merged${target.number}` }]
+            : [])
+        ])
       }
       const issueComments = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comments$/)
       if (issueComments && req.method === "GET") {

@@ -145,8 +145,13 @@ files with their patches, checks (check runs and commit statuses on the head),
 reviews and comments. Checks, reviews and comments are best effort (a token may
 not read them). Laid out after t3code's pull request panel: repository and
 number, title, state and author, base ← head with the size of the change, then
-Summary (reviewers, labels, description, checks, conversation) and Files
-(Pierre's diffs, unified or split with `v`). A reference written as a
+Summary (reviewers, labels, description, checks, conversation), Timeline and
+Files (Pierre's diffs, unified or split with `v`); `1`, `2`, `3` switch.
+The Timeline is GitHub's issue timeline (`/issues/{n}/timeline`, read with the
+page), normalized by `github/timeline.ts` (pure, unit tested): the opening,
+commits, comments, reviews, inline comments, labels, review requests,
+assignments, renames, force-pushes, references and merges, on one rail,
+oldest or newest first. Rows off screen skip rendering (`content-visibility`). A reference written as a
 `/pull/` URL keeps `pull: true`, so even a pull request Gradient does not know
 opens its page.
 
