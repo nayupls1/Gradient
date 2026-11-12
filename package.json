@@ -2,11 +2,13 @@
   "name": "gradient",
   "private": true,
   "type": "module",
+  "bin": { "gradient": "apps/cli/src/main.ts" },
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
-    "dev": "bun run --filter '@gradient/server' --filter '@gradient/web' dev",
+    "dev": "bun apps/cli/src/main.ts dev",
     "build": "bun run --filter '@gradient/server' --filter '@gradient/web' build",
-    "start": "bun run --filter '@gradient/server' --filter '@gradient/web' start",
+    "start": "bun apps/cli/src/main.ts start --web",
+    "register": "bun apps/cli/src/main.ts register",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test"
   },
