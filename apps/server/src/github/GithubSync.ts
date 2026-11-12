@@ -876,15 +876,33 @@ export class GithubSync extends Context.Service<GithubSync, {
         }
       })
 
-      /** Link the local user to the GitHub account in use, so assignees map both ways. */
+      /**
+       * Link the local user to the GitHub account in use, so assignees map both
+       * ways. A user imported earlier for that login (an assignee or author
+       * known only from GitHub) is the same person: their issues move to the
+       * local user and the duplicate goes. A login that belongs to another
+       * account is left alone.
+       */
       const adoptViewer = (viewer: Viewer) =>
         mutations.transact({ origin: "system", actorId: null }, (tx) =>
           Effect.gen(function*() {
             const viewerId = yield* db.getMeta("viewer_id")
             const me = viewerId ? yield* db.getUser(viewerId) : undefined
             if (!me || me.githubLogin?.toLowerCase() === viewer.login.toLowerCase()) return
-            // Someone else already has this login (an assignee imported earlier): leave both alone.
-            if (yield* db.getUserByLogin(viewer.login)) return
+            const twin = yield* db.getUserByLogin(viewer.login)
+            if (twin) {
+              const owner = (yield* sql`SELECT account_id FROM user WHERE id = ${twin.id}`)[0]?.account_id
+              if (owner != null) return
+              const moved = yield* sql`SELECT id FROM issue WHERE assignee_id = ${twin.id} OR creator_id = ${twin.id}`
+              yield* sql`UPDATE issue SET assignee_id = ${me.id} WHERE assignee_id = ${twin.id}`
+              yield* sql`UPDATE issue SET creator_id = ${me.id} WHERE creator_id = ${twin.id}`
+              for (const row of moved) tx.touch("issue", row.id as string)
+              for (const m of yield* sql`SELECT id FROM team_member WHERE user_id = ${twin.id}`) {
+                tx.touch("teamMember", m.id as string, "delete")
+              }
+              yield* sql`DELETE FROM user WHERE id = ${twin.id}`
+              tx.touch("user", twin.id, "delete")
+            }
             yield* db.putUser({ ...me, githubLogin: viewer.login, avatarUrl: viewer.avatarUrl ?? me.avatarUrl })
             tx.touch("user", me.id)
           })).pipe(Effect.asVoid, Effect.orDie)
