@@ -5,7 +5,7 @@ import { createMemo, For, Match, Show, Switch, useContext } from "solid-js"
 import { isElement, isRef, type MdElement, type MdNode, type MdRef, parseMarkdown, type RefContext } from "../lib/markdown.ts"
 import { findIssue, issueHref, issueKey, type IssuePullRequest, resolveGithubRef } from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
-import { font } from "../theme/tokens.stylex.ts"
+import { color, font } from "../theme/tokens.stylex.ts"
 import { GithubIcon, PullRequestIcon, pullRequestLabel, StateIcon } from "../ui/icons.tsx"
 import { Sync } from "./context.ts"
 
@@ -77,10 +77,11 @@ const s = stylex.create({
     fontSize: "0.8em"
   },
   hr: { ...block, marginTop: { default: 16, ":first-child": 0 }, borderWidth: 0, borderTopWidth: 1, borderTopStyle: "solid", borderTopColor: colors.border },
+  // Links take the palette's link color so they stand apart from the text around them.
   a: {
-    color: colors.foreground,
+    color: color.link,
     textDecorationLine: "underline",
-    textDecorationColor: { default: colors.border, ":hover": colors.mutedForeground },
+    textDecorationColor: { default: "color-mix(in srgb, currentColor 35%, transparent)", ":hover": "currentColor" },
     textUnderlineOffset: 3
   },
   img: { maxWidth: "100%", height: "auto", borderRadius: 4, verticalAlign: "middle" },
@@ -97,7 +98,7 @@ const s = stylex.create({
   details: { ...block },
   summary: { cursor: "pointer", fontWeight: 500 },
   ref: {
-    color: colors.foreground,
+    color: color.link,
     fontWeight: 500,
     textDecorationLine: { default: "none", ":hover": "underline" },
     textUnderlineOffset: 3,

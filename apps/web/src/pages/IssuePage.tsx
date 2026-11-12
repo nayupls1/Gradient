@@ -1,7 +1,7 @@
 import * as stylex from "@stylexjs/stylex"
 import { Archive } from "lucide"
 import { useNavigate, useParams } from "@solidjs/router"
-import { createSignal, For, Show, useContext } from "solid-js"
+import { createMemo, createSignal, For, Show, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
@@ -23,7 +23,7 @@ import {
   DropdownMenuTrigger
 } from "../ui/dropdown-menu.tsx"
 import { Icon } from "../ui/icon.tsx"
-import { ArchiveIcon, GithubIcon, MoreIcon, RestoreIcon, TrashIcon } from "../ui/icons.tsx"
+import { ArchiveIcon, CheckIcon, GithubIcon, MoreIcon, PencilIcon, RestoreIcon, TrashIcon } from "../ui/icons.tsx"
 import { Separator } from "../ui/separator.tsx"
 import { Textarea } from "../ui/textarea.tsx"
 import { PageHeader } from "./Header.tsx"
@@ -33,8 +33,10 @@ const s = stylex.create({
   main: { overflowY: "auto", paddingTop: 36, paddingBottom: 80 },
   column: { display: "flex", flexDirection: "column", maxWidth: 720, marginInline: "auto", paddingInline: 32 },
   title: { fontSize: 22, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3 },
-  description: { marginTop: 14, minHeight: 120, fontSize: 14, lineHeight: 1.65 },
-  rendered: { cursor: "text", paddingBottom: 24 },
+  descriptionBar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 14, minHeight: 26 },
+  descriptionLabel: { color: colors.mutedForeground, fontSize: "0.75rem", fontWeight: 500 },
+  description: { marginTop: 4, minHeight: 120, fontSize: 14, lineHeight: 1.65 },
+  rendered: { paddingBottom: 24 },
   placeholder: { color: colors.mutedForeground },
   archived: { marginBottom: 16 },
   side: {
@@ -112,6 +114,16 @@ export const IssuePage = () => {
     { id: "issue.back", title: "Back to issues", group: "Navigation", keys: ["escape", "u"], scope: "issue.detail", run: () => navigate(backHref()) },
     { id: "issue.editTitle", title: "Edit title", group: "Issue", keys: ["e"], scope: "issue.detail", run: () => titleEl?.focus() },
     { id: "issue.editDescription", title: "Edit description", group: "Issue", keys: ["d"], scope: "issue.detail", run: () => editDescription() },
+    {
+      id: "issue.finishDescription",
+      title: "Finish editing description",
+      group: "Issue",
+      keys: ["mod+enter", "escape"],
+      scope: "issue.detail",
+      allowInInput: true,
+      when: () => editingDescription(),
+      run: () => finishDescription()
+    },
     { id: "issue.blockedBy", title: "Mark as blocked by…", group: "Issue", keys: ["b"], scope: "issue.detail", run: () => relationApis.blockedBy?.open() },
     { id: "issue.blocks", title: "Mark as blocking…", group: "Issue", keys: ["shift+b"], scope: "issue.detail", run: () => relationApis.blocks?.open() },
     { id: "issue.related", title: "Relate to…", group: "Issue", keys: ["shift+r"], scope: "issue.detail", run: () => relationApis.related?.open() },
@@ -135,7 +147,7 @@ export const IssuePage = () => {
       scope: "issue.detail",
       allowInInput: true,
       hidden: true,
-      when: () => document.activeElement === titleEl || document.activeElement === descriptionEl,
+      when: () => document.activeElement === titleEl,
       run: () => (document.activeElement as HTMLElement | null)?.blur()
     }
   ])
@@ -156,17 +168,22 @@ export const IssuePage = () => {
     if (current && description() !== current.description) actions.update(current, { description: description() })
   }
 
-  // The description shows as markdown and turns into a textarea while edited.
-  const [editingDescription, setEditingDescription] = createSignal(false)
+  // The description shows as markdown; the Edit button (or `d`) toggles the textarea.
+  // Clicking the rendered text never edits it, so links and selections behave normally.
+  // Edit mode ends only when asked (Done, ⌘↵, Escape) or on moving to another issue.
+  const issueId = createMemo(() => issue()?.id)
+  const [editingDescription, setEditingDescription] = createSignal(() => (issueId(), false))
   const editDescription = () => {
     if (editingDescription()) descriptionEl?.focus()
     else setEditingDescription(true)
   }
-  /** Clicks on the rendered description edit it, unless they hit a link or control, or end a text selection. */
-  const onDescriptionClick = (e: MouseEvent) => {
-    if ((e.target as Element).closest("a, summary, input, button")) return
-    if (window.getSelection()?.isCollapsed === false) return
-    setEditingDescription(true)
+  const finishDescription = () => {
+    commitDescription()
+    setEditingDescription(false)
+  }
+  const toggleDescription = () => {
+    if (editingDescription()) finishDescription()
+    else setEditingDescription(true)
   }
 
   return (
@@ -266,11 +283,25 @@ export const IssuePage = () => {
                   }}
                   xstyle={[bareTextarea, s.title]}
                 />
+                <div {...stylex.attrs(s.descriptionBar)}>
+                  <span {...stylex.attrs(s.descriptionLabel)}>Description</span>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    aria-pressed={editingDescription() ? "true" : "false"}
+                    title={editingDescription() ? "Finish editing description" : "Edit description"}
+                    onClick={toggleDescription}
+                  >
+                    <Show when={editingDescription()} fallback={<><PencilIcon size={13} /> Edit</>}>
+                      <CheckIcon size={13} /> Done
+                    </Show>
+                  </Button>
+                </div>
                 <Show
                   when={editingDescription()}
                   fallback={
-                    <div {...stylex.attrs(s.description, s.rendered)} onClick={onDescriptionClick}>
-                      <Show when={description().trim() !== ""} fallback={<span {...stylex.attrs(s.placeholder)}>Add a description…</span>}>
+                    <div {...stylex.attrs(s.description, s.rendered)}>
+                      <Show when={description().trim() !== ""} fallback={<span {...stylex.attrs(s.placeholder)}>No description.</span>}>
                         <Markdown source={description()} repo={issueRepo(sync.state, current())} />
                       </Show>
                     </div>
@@ -289,10 +320,7 @@ export const IssuePage = () => {
                     placeholder="Add a description…"
                     value={description()}
                     onInput={(e) => setDescription(e.currentTarget.value)}
-                    onBlur={() => {
-                      commitDescription()
-                      setEditingDescription(false)
-                    }}
+                    onBlur={commitDescription}
                     xstyle={[bareTextarea, s.description]}
                   />
                 </Show>
