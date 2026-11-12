@@ -563,10 +563,7 @@ export const PullRequestPage = () => {
                 >
                   <For each={TABS}>
                     {(t) => (
-                      <ToggleGroupItem value={t.value}>
-                        {t.label}
-                        {t.value === "files" ? ` ${pr().changedFiles}` : ""}
-                      </ToggleGroupItem>
+                      <ToggleGroupItem value={t.value}>{t.label}</ToggleGroupItem>
                     )}
                   </For>
                 </ToggleGroup>
