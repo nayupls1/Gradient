@@ -25,7 +25,7 @@ import { Members } from "../auth/Members.ts"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
 import { GithubAuth } from "../github/GithubAuth.ts"
-import { GithubClient } from "../github/GithubClient.ts"
+import { GithubActions } from "../github/GithubActions.ts"
 import { GithubSync } from "../github/GithubSync.ts"
 import { Mutations } from "../sync/Mutations.ts"
 import { GradientToolkit, type IssueDetail, type IssueSummary, ToolError } from "./tools.ts"
@@ -35,6 +35,17 @@ const PRIORITY_VALUES: Record<string, Priority> = { none: 0, urgent: 1, high: 2,
 const fail = (message: string) => Effect.fail(new ToolError({ message }))
 const iso = (ms: number) => new Date(ms).toISOString()
 
+/** "owner/repo#12" or a pull request URL, as owner, repo and number. */
+const parsePullRequestRef = (text: string) => {
+  const t = text.trim()
+  const m = t.match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/) ??
+    t.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/i)
+  return m ? { owner: m[1]!, repo: m[2]!, number: Number(m[3]) } : null
+}
+const badPullRequestRef = (text: string) =>
+  fail(`"${text}" is not a pull request. Write it as "owner/repo#12" or paste its GitHub URL.`)
+const toToolError = (e: { message: string }) => new ToolError({ message: e.message })
+
 export const mcpUrl = (config: { host: string; port: number }) =>
   `http://${config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host}:${config.port}/mcp`
 
@@ -43,6 +54,7 @@ The workspace has teams; each has its own workflow states, labels and projects. 
 Call describe_workspace once to learn teams, workflow states, labels, people and projects, then use those names.
 Put issues in the project they belong to; a project with a linked repo syncs its issues to GitHub.
 Record dependencies with link_issues ("blocked_by"); get_issue shows blockers, the pull requests that refer to an issue, its comments and what it mentions; get_pull_request reads one of those pull requests (files, checks, reviews).
+Comments, reviews and merges (comment_on_issue, comment_on_pull_request, review_pull_request, merge_pull_request) go out as the user's own GitHub account; merge only when the user asked.
 Writes show up live in the user's app and sync to GitHub when a repo is linked, so keep titles short and specific, and put detail in the description (markdown).`
 
 const SKILL = `---
@@ -80,7 +92,7 @@ const ToolHandlers = GradientToolkit.toLayer(
     const config = yield* ServerConfig
     const auth = yield* GithubAuth
     const github = yield* GithubSync
-    const githubClient = yield* GithubClient
+    const actions = yield* GithubActions
     const members = yield* Members
 
     /** The user behind the agent key of this request (resolved by RequireApiKey). */
@@ -558,14 +570,10 @@ const ToolHandlers = GradientToolkit.toLayer(
       }),
 
       get_pull_request: Effect.fn("mcp.get_pull_request")(function*({ pull_request, diff }) {
-        yield* viewerId
-        const text = pull_request.trim()
-        const m = text.match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/) ??
-          text.match(/^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/i)
-        if (!m) return yield* fail(`"${pull_request}" is not a pull request. Write it as "owner/repo#12" or paste its GitHub URL.`)
-        const pr = yield* githubClient.getPullRequest(m[1]!, m[2]!, Number(m[3])).pipe(
-          Effect.mapError((e) => new ToolError({ message: e.message }))
-        )
+        const actor = yield* viewerId
+        const ref = parsePullRequestRef(pull_request)
+        if (!ref) return yield* badPullRequestRef(pull_request)
+        const pr = yield* actions.readPullRequest(actor, ref).pipe(Effect.mapError(toToolError))
         return {
           ref: `${pr.owner}/${pr.repo}#${pr.number}`,
           title: pr.title,
@@ -590,6 +598,15 @@ const ToolHandlers = GradientToolkit.toLayer(
             ...(diff ? { patch: f.patch } : {})
           })),
           checks: pr.checks.map((c) => ({ ...c })),
+          merge_state: pr.mergeableState,
+          merge_methods: [...pr.mergeMethods],
+          review_comments: pr.reviewComments.map((c) => ({ path: c.path, line: c.line, author: c.author, body: c.body, url: c.url })),
+          timeline: pr.timeline.map((i) => ({
+            kind: i.kind === "review" ? `review:${i.reviewState}` : i.kind,
+            actor: i.actor,
+            at: iso(i.at),
+            summary: i.label?.name ?? (i.subject && i.body ? `${i.subject}: ${i.body}` : i.subject ?? i.body)
+          })),
           activity: pr.activity.map((a) => ({
             kind: a.kind,
             author: a.author,
@@ -601,6 +618,48 @@ const ToolHandlers = GradientToolkit.toLayer(
           created: iso(pr.createdAt),
           updated: iso(pr.updatedAt)
         }
+      }),
+
+      comment_on_issue: Effect.fn("mcp.comment_on_issue")(function*({ id, body }) {
+        const actor = yield* viewerId
+        const ws = yield* workspaceForIssue(id)
+        const issue = yield* findIssue(ws, id)
+        yield* actions.commentOnIssue(actor, issue.id, body).pipe(Effect.mapError(toToolError))
+        return { ok: true }
+      }),
+
+      comment_on_pull_request: Effect.fn("mcp.comment_on_pull_request")(function*({ pull_request, body }) {
+        const actor = yield* viewerId
+        const ref = parsePullRequestRef(pull_request)
+        if (!ref) return yield* badPullRequestRef(pull_request)
+        const comment = yield* actions.commentOnPullRequest(actor, ref, body).pipe(Effect.mapError(toToolError))
+        return { url: comment.url }
+      }),
+
+      review_pull_request: Effect.fn("mcp.review_pull_request")(function*({ pull_request, event, body, comments }) {
+        const actor = yield* viewerId
+        const ref = parsePullRequestRef(pull_request)
+        if (!ref) return yield* badPullRequestRef(pull_request)
+        yield* actions.review(actor, ref, {
+          event,
+          body: body ?? "",
+          comments: (comments ?? []).map((c) => ({
+            path: c.path,
+            line: c.line,
+            side: c.side ?? "RIGHT",
+            startLine: c.start_line ?? null,
+            body: c.body
+          }))
+        }).pipe(Effect.mapError(toToolError))
+        return { ok: true }
+      }),
+
+      merge_pull_request: Effect.fn("mcp.merge_pull_request")(function*({ pull_request, method, sha }) {
+        const actor = yield* viewerId
+        const ref = parsePullRequestRef(pull_request)
+        if (!ref) return yield* badPullRequestRef(pull_request)
+        const merged = yield* actions.merge(actor, ref, { method, sha }).pipe(Effect.mapError(toToolError))
+        return { merged: true, sha: merged.sha, method: merged.method }
       }),
 
       github_status: Effect.fn("mcp.github_status")(function*() {

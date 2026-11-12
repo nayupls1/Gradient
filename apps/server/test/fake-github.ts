@@ -32,6 +32,13 @@ export interface FakePull {
   checks?: Array<{ name: string; status: string; conclusion: string | null }>
   statuses?: Array<{ context: string; state: string }>
   requested_reviewers?: Array<string>
+  /** Inline comments on the diff. */
+  review_comments?: Array<{ id: number; path: string; line: number | null; side: "LEFT" | "RIGHT"; login: string; body: string; in_reply_to_id?: number }>
+  mergeable_state?: string
+  /** Who merged it, when it was merged here. */
+  merged_by?: string
+  /** Raw timeline events served before the ones derived from comments, reviews and the merge. */
+  timeline?: Array<Record<string, unknown>>
 }
 
 export interface FakeComment {
@@ -76,7 +83,9 @@ export const makeFakeGithub = (
   let failWrites = 0
   let graphqlEnabled = true
   // Device-flow sign-in: one outstanding code at a time is enough for tests.
-  let device: { code: string; userCode: string; state: "pending" | "approved" | "denied"; issuedAt: number } | null = null
+  let device: { code: string; userCode: string; state: "pending" | "approved" | "denied"; issuedAt: number; login?: string } | null = null
+  /** The login the next device-flow approval signs in as. */
+  let deviceLogin = "octo"
   let tokenCounter = 0
   const appTokens = new Map<string, string>() // token -> login
   const revoked = new Set<string>()
@@ -154,7 +163,7 @@ export const makeFakeGithub = (
         if (device.state === "pending") return Response.json({ error: "authorization_pending" })
         if (device.state === "denied") return Response.json({ error: "access_denied" })
         const token = `ghu_fake_${++tokenCounter}`
-        appTokens.set(token, "octo")
+        appTokens.set(token, device.login ?? deviceLogin)
         device = null
         return Response.json({
           access_token: token,
@@ -204,7 +213,10 @@ export const makeFakeGithub = (
         failWrites--
         return new Response("upstream error", { status: 502 })
       }
-      if (url.pathname === "/user") return Response.json({ login: "octo", avatar_url: "https://avatars/octo" })
+      /** Who a token acts as: a device-flow token's login, else the account behind GITHUB_TOKEN. */
+      const loginOf = (t: string) => appTokens.get(t) ?? "octo"
+      const me = { login: loginOf(token), avatar_url: `https://avatars/${loginOf(token)}` }
+      if (url.pathname === "/user") return Response.json(me)
       if (url.pathname === "/user/installations") {
         // Only user tokens from the app can list its installations.
         if (!appTokens.has(token)) return new Response("forbidden", { status: 403 })
@@ -288,7 +300,53 @@ export const makeFakeGithub = (
         if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304 })
         return new Response(text, { headers: { "content-type": "application/json", etag } })
       }
-      const pulls = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)(?:\/(files|reviews))?$/)
+      // Writes a person makes from Gradient: comments, reviews, merges.
+      const write = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/(issues|pulls)\/(\d+)\/(comments|reviews|merge)$/)
+      if (write && req.method !== "GET") {
+        const r = repos.get(`${write[1]}/${write[2]}`.toLowerCase())
+        const target = r?.issues.find((i) => i.number === Number(write[4]))
+        if (!r || !target) return Response.json({ message: "Not Found" }, { status: 404 })
+        if (write[3] === "issues" && write[5] === "comments" && req.method === "POST") {
+          const at = tick()
+          const comment: FakeComment = { id: nextId++, issue: target.number, body: body.body, user: me, created_at: at, updated_at: at }
+          r.comments.push(comment)
+          target.updated_at = tick()
+          return Response.json({
+            ...comment,
+            html_url: `https://github.com/${r.owner}/${r.name}/issues/${target.number}#issuecomment-${comment.id}`,
+            issue_url: `https://api.github.com/repos/${r.owner}/${r.name}/issues/${target.number}`
+          }, { status: 201 })
+        }
+        if (!target.pull_request) return Response.json({ message: "Not Found" }, { status: 404 })
+        target.pr ??= {}
+        if (write[5] === "reviews" && req.method === "POST") {
+          if (body.event === "APPROVE" && me.login === target.user.login) {
+            return Response.json({ message: "Unprocessable Entity", errors: ["Can not approve your own pull request"] }, { status: 422 })
+          }
+          if (body.event === "REQUEST_CHANGES" && !body.body) {
+            return Response.json({ message: "Unprocessable Entity", errors: ["Review body is required"] }, { status: 422 })
+          }
+          const state = body.event === "APPROVE" ? "APPROVED" : body.event === "REQUEST_CHANGES" ? "CHANGES_REQUESTED" : "COMMENTED"
+          ;(target.pr.reviews ??= []).push({ login: me.login, state, body: body.body ?? "", submitted_at: tick() })
+          for (const c of body.comments ?? []) {
+            ;(target.pr.review_comments ??= []).push({ id: nextId++, path: c.path, line: c.line, side: c.side ?? "RIGHT", login: me.login, body: c.body })
+          }
+          return Response.json({ id: nextId++, state }, { status: 200 })
+        }
+        if (write[5] === "merge" && req.method === "PUT") {
+          if (target.state === "closed") return Response.json({ message: "Pull Request is not mergeable" }, { status: 405 })
+          if (target.pr.mergeable === false) return Response.json({ message: "Pull Request is not mergeable" }, { status: 405 })
+          if (body.sha && body.sha !== `sha${target.number}`) {
+            return Response.json({ message: "Head branch was modified. Review and try the merge again." }, { status: 409 })
+          }
+          target.state = "closed"
+          target.pull_request = { ...target.pull_request, merged_at: tick() }
+          target.pr.merged_by = me.login
+          target.updated_at = tick()
+          return Response.json({ sha: `merged${target.number}`, merged: true, message: "Pull Request successfully merged" })
+        }
+      }
+      const pulls = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)(?:\/(files|reviews|comments))?$/)
       if (pulls && req.method === "GET") {
         const r = repos.get(`${pulls[1]}/${pulls[2]}`.toLowerCase())
         const pr = r?.issues.find((i) => i.number === Number(pulls[3]) && i.pull_request)
@@ -296,6 +354,19 @@ export const makeFakeGithub = (
         const extra = pr.pr ?? {}
         const files = extra.files ?? []
         if (pulls[4] === "files") return Response.json(files)
+        if (pulls[4] === "comments") {
+          return Response.json((extra.review_comments ?? []).map((c) => ({
+            id: c.id,
+            path: c.path,
+            line: c.line,
+            side: c.side,
+            in_reply_to_id: c.in_reply_to_id ?? null,
+            user: { login: c.login, avatar_url: `https://avatars/${c.login}` },
+            body: c.body,
+            html_url: `https://github.com/${r.owner}/${r.name}/pull/${pr.number}#discussion_r${c.id}`,
+            created_at: pr.updated_at
+          })))
+        }
         if (pulls[4] === "reviews") {
           return Response.json((extra.reviews ?? []).map((rv, i) => ({
             user: { login: rv.login, avatar_url: `https://avatars/${rv.login}` },
@@ -312,10 +383,13 @@ export const makeFakeGithub = (
           merged: merged !== null,
           merged_at: merged,
           closed_at: pr.state === "closed" ? pr.updated_at : null,
-          created_at: pr.updated_at,
+          created_at: "2026-01-01T00:00:00Z",
           head: { ref: extra.head ?? `feature-${pr.number}`, sha: `sha${pr.number}` },
           base: { ref: extra.base ?? "main" },
           mergeable: extra.mergeable === undefined ? true : extra.mergeable,
+          mergeable_state: extra.mergeable_state ??
+            (pr.state === "closed" ? "unknown" : extra.mergeable === false ? "dirty"
+              : (extra.checks ?? []).some((c) => c.conclusion === "failure") ? "unstable" : "clean"),
           additions: files.reduce((n, f) => n + f.additions, 0),
           deletions: files.reduce((n, f) => n + f.deletions, 0),
           changed_files: files.length,
@@ -335,6 +409,39 @@ export const makeFakeGithub = (
         return Response.json({
           check_runs: (pr.pr?.checks ?? []).map((c, i) => ({ ...c, html_url: `https://github.com/${r.owner}/${r.name}/runs/${i}` }))
         })
+      }
+      const timelineRoute = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/timeline$/)
+      if (timelineRoute && req.method === "GET") {
+        const r = repos.get(`${timelineRoute[1]}/${timelineRoute[2]}`.toLowerCase())
+        const target = r?.issues.find((i) => i.number === Number(timelineRoute[3]))
+        if (!r || !target) return new Response("not found", { status: 404 })
+        const avatar = (login: string) => ({ login, avatar_url: `https://avatars/${login}` })
+        const extra = target.pr ?? {}
+        return Response.json([
+          ...(extra.timeline ?? []),
+          ...r.comments.filter((c) => c.issue === target.number).map((c) => ({
+            event: "commented",
+            user: c.user,
+            body: c.body,
+            created_at: c.created_at,
+            html_url: `https://github.com/${r.owner}/${r.name}/issues/${c.issue}#issuecomment-${c.id}`
+          })),
+          ...(extra.reviews ?? []).map((rv) => ({
+            event: "reviewed",
+            user: avatar(rv.login),
+            state: rv.state.toLowerCase(),
+            body: rv.body,
+            submitted_at: rv.submitted_at ?? "2026-01-01T00:00:00Z",
+            html_url: `https://github.com/${r.owner}/${r.name}/pull/${target.number}`
+          })),
+          ...(extra.review_comments ?? []).map((c) => ({
+            event: "line-commented",
+            comments: [{ user: avatar(c.login), body: c.body, path: c.path, line: c.line, created_at: target.updated_at }]
+          })),
+          ...(target.pull_request?.merged_at
+            ? [{ event: "merged", actor: avatar(extra.merged_by ?? "octo"), created_at: target.pull_request.merged_at, commit_id: `merged${target.number}` }]
+            : [])
+        ])
       }
       const issueComments = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/issues\/(\d+)\/comments$/)
       if (issueComments && req.method === "GET") {
@@ -503,8 +610,14 @@ export const makeFakeGithub = (
     /** Calls that change something (GraphQL only reads here). */
     writes: () => requests.filter((r) => r.method !== "GET" && r.path !== "/graphql"),
     /** The user approves the pending device-flow code on github.com. */
-    approveDevice() {
-      if (device) device.state = "approved"
+    approveDevice(login?: string) {
+      if (!device) return
+      device.state = "approved"
+      if (login) device.login = login
+    },
+    /** Device-flow approvals from now on sign in as this login (the default is "octo"). */
+    signInAs(login: string) {
+      deviceLogin = login
     },
     denyDevice() {
       if (device) device.state = "denied"

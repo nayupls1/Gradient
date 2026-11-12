@@ -3,8 +3,8 @@ import { Effect, Layer, Option, PubSub, Stream } from "effect"
 import { Members } from "../auth/Members.ts"
 import { Db, type LogRow } from "../db/Db.ts"
 import { ServerConfig } from "../config.ts"
+import { GithubActions } from "../github/GithubActions.ts"
 import { GithubAuth } from "../github/GithubAuth.ts"
-import { GithubClient } from "../github/GithubClient.ts"
 import { GithubSync } from "../github/GithubSync.ts"
 import { mcpUrl } from "../mcp/server.ts"
 import { Hub } from "./Hub.ts"
@@ -24,7 +24,7 @@ export const RpcHandlers = GradientRpcs.toLayer(
     const mutations = yield* Mutations
     const github = yield* GithubSync
     const auth = yield* GithubAuth
-    const githubClient = yield* GithubClient
+    const actions = yield* GithubActions
     const config = yield* ServerConfig
     const members = yield* Members
 
@@ -120,7 +120,19 @@ export const RpcHandlers = GradientRpcs.toLayer(
       GithubSignInCancel: () => auth.cancelSignIn,
       GithubSignOut: () => auth.signOut.pipe(Effect.andThen(github.status)),
       GithubRepos: () => github.availableRepos,
-      GithubPullRequest: ({ owner, repo, number }) => githubClient.getPullRequest(owner, repo, number),
+      GithubPullRequest: (ref) => Effect.flatMap(viewerId(), (id) => actions.readPullRequest(id, ref)),
+      GithubPullRequestComment: ({ body, ...ref }) => Effect.flatMap(viewerId(), (id) => actions.commentOnPullRequest(id, ref, body)),
+      GithubPullRequestReview: ({ event, body, commitSha, comments, ...ref }) =>
+        Effect.flatMap(viewerId(), (id) => actions.review(id, ref, { event, body, commitSha, comments })),
+      GithubPullRequestMerge: ({ method, sha, ...ref }) =>
+        Effect.flatMap(viewerId(), (id) => actions.merge(id, ref, { method, sha })).pipe(Effect.map(({ sha }) => ({ sha }))),
+      GithubIssueComment: ({ issueId, body }) => Effect.flatMap(viewerId(), (id) => actions.commentOnIssue(id, issueId, body)),
+      GithubAccountStatus: () => Effect.flatMap(viewerId(), actions.account),
+      GithubAccountSignInStart: () => Effect.flatMap(viewerId(), auth.personal.start),
+      GithubAccountSignInWait: () =>
+        Effect.flatMap(viewerId(), (id) => auth.personal.wait(id).pipe(Effect.andThen(actions.account(id)))),
+      GithubAccountSignInCancel: () => Effect.flatMap(viewerId(), auth.personal.cancel),
+      GithubAccountSignOut: () => Effect.flatMap(viewerId(), (id) => auth.personal.signOut(id).pipe(Effect.andThen(actions.account(id)))),
       GithubProjectIcons: ({ projectId }) => github.projectIcons(projectId),
       GithubSetProjectIcon: ({ projectId, mode, path }) =>
         Effect.gen(function*() {

@@ -1,5 +1,5 @@
 import { type GithubDeviceCode, GithubError, type GithubTokenSource } from "@gradient/domain"
-import { Context, Deferred, Duration, Effect, FiberHandle, Layer, Option, PubSub, Schema } from "effect"
+import { Context, Deferred, Duration, Effect, FiberHandle, FiberMap, Layer, Option, PubSub, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ServerConfig } from "../config.ts"
 import { Db } from "../db/Db.ts"
@@ -15,11 +15,24 @@ import { Db } from "../db/Db.ts"
  *
  * The token is read on every request, so signing in or out applies at once.
  * Precedence: app sign-in, then GITHUB_TOKEN, then the gh CLI.
+ *
+ * That workspace connection syncs issues. What a person does on GitHub from
+ * Gradient (comments, reviews, merges) goes out as them: with their own
+ * account, connected through the same device flow (`personal`), or with the
+ * workspace connection when it is theirs (they set it up as the workspace's
+ * original user, or its login is their GitHub login).
  */
 
 export interface Viewer {
   readonly login: string
   readonly avatarUrl: string | null
+}
+
+/** Who a person acts as on GitHub, and the token to send. */
+export interface Acting extends Viewer {
+  readonly token: string
+  /** Their own connected account, or the workspace connection (which is theirs). */
+  readonly via: "personal" | "workspace"
 }
 
 interface Stored {
@@ -69,8 +82,24 @@ export class GithubAuth extends Context.Service<GithubAuth, {
   readonly awaitSignIn: Effect.Effect<Viewer, GithubError>
   readonly cancelSignIn: Effect.Effect<void>
   readonly signOut: Effect.Effect<void>
-  /** GitHub answered 401 for this token. Drops it when it is the app sign-in (expired or revoked). */
+  /** GitHub answered 401 for this token. Drops it when it is a sign-in (expired or revoked). */
   rejected(token: string): Effect.Effect<void>
+  /** Each person's own GitHub account. */
+  readonly personal: {
+    /** Who the user acts as on GitHub: their own account, else the workspace connection when its login is theirs. */
+    actingAs(userId: string): Effect.Effect<Acting | null>
+    /** The user's own connected account, if any. */
+    account(userId: string): Effect.Effect<Viewer | null>
+    pending(userId: string): Effect.Effect<GithubDeviceCode | null>
+    /** Ask GitHub for a code for this user and start polling for their approval. Replaces their waiting one. */
+    start(userId: string): Effect.Effect<GithubDeviceCode, GithubError>
+    /** Wait for the user's pending sign-in to finish. */
+    wait(userId: string): Effect.Effect<Viewer, GithubError>
+    cancel(userId: string): Effect.Effect<void>
+    signOut(userId: string): Effect.Effect<void>
+    /** Publishes the user id after each personal sign-in (with the account) and sign-out (null). */
+    readonly changes: PubSub.PubSub<{ readonly userId: string; readonly viewer: Viewer | null }>
+  }
 }>()("gradient/GithubAuth") {
   static readonly layer = Layer.effect(
     GithubAuth,
@@ -191,7 +220,8 @@ export class GithubAuth extends Context.Service<GithubAuth, {
           }
         })
 
-      const startSignIn = Effect.gen(function*() {
+      /** Ask github.com for a device code. */
+      const requestCode = Effect.gen(function*() {
         if (!config.enabled) return yield* fail("GitHub is disabled (GRADIENT_GITHUB_DISABLED).")
         if (!clientId) {
           return yield* fail("Sign-in with GitHub needs the Gradient GitHub App. Set GITHUB_APP_CLIENT_ID and restart.")
@@ -213,7 +243,11 @@ export class GithubAuth extends Context.Service<GithubAuth, {
               : `GitHub refused to start a sign-in: ${body.error_description ?? body.error}`
           )
         }
+        return body
+      })
 
+      const startSignIn = Effect.gen(function*() {
+        const body = yield* requestCode
         const code: GithubDeviceCode = {
           userCode: body.user_code,
           verificationUri: body.verification_uri,
@@ -260,7 +294,124 @@ export class GithubAuth extends Context.Service<GithubAuth, {
         pending ? Deferred.await(pending.result) : fail("No sign-in is in progress.")
       )
 
+      // Personal accounts, by Gradient user id.
+      const personalChanges = yield* PubSub.unbounded<{ readonly userId: string; readonly viewer: Viewer | null }>()
+      const personalFlows = yield* FiberMap.make<string, void, never>()
+      const personalPending = new Map<string, { code: GithubDeviceCode; result: Deferred.Deferred<Viewer, GithubError> }>()
+      const personalStored = new Map<string, Stored>()
+      if (config.enabled) {
+        for (const r of yield* sql`SELECT * FROM github_user_auth`.pipe(Effect.orDie)) {
+          personalStored.set(r.user_id as string, {
+            token: r.token as string,
+            login: r.login as string,
+            avatarUrl: (r.avatar_url as string | null) ?? null,
+            expiresAt: r.expires_at === null ? null : Number(r.expires_at)
+          })
+        }
+      }
+      const livePersonal = (userId: string) => {
+        const s = personalStored.get(userId)
+        return s && (s.expiresAt === null || s.expiresAt > Date.now()) ? s : null
+      }
+      const forgetPersonal = (userId: string) =>
+        Effect.gen(function*() {
+          yield* sql`DELETE FROM github_user_auth WHERE user_id = ${userId}`.pipe(Effect.orDie)
+          personalStored.delete(userId)
+          yield* PubSub.publish(personalChanges, { userId, viewer: null })
+        })
+
+      const startPersonal = (userId: string) =>
+        Effect.gen(function*() {
+          const body = yield* requestCode
+          const code: GithubDeviceCode = {
+            userCode: body.user_code,
+            verificationUri: body.verification_uri,
+            expiresAt: Date.now() + body.expires_in * 1000
+          }
+          const result = yield* Deferred.make<Viewer, GithubError>()
+          const flow = { code, result }
+          const clearPending = Effect.sync(() => {
+            if (personalPending.get(userId) === flow) personalPending.delete(userId)
+          })
+          yield* FiberMap.run(
+            personalFlows,
+            userId,
+            poll(body.device_code, body.interval, code.expiresAt).pipe(
+              Effect.flatMap(({ token, expiresIn }) =>
+                Effect.gen(function*() {
+                  const viewer = yield* userFor(token)
+                  // One GitHub account per person: refuse a login another person (not a GitHub-only user) has.
+                  const taken = yield* sql`SELECT name FROM user
+                    WHERE lower(github_login) = lower(${viewer.login}) AND role IS NOT NULL AND id != ${userId}`
+                    .pipe(Effect.orDie)
+                  if (taken[0]) {
+                    return yield* fail(`@${viewer.login} is already connected to ${taken[0].name as string} in Gradient.`)
+                  }
+                  const expiresAt = expiresIn ? Date.now() + expiresIn * 1000 : null
+                  yield* sql`INSERT INTO github_user_auth (user_id, token, login, avatar_url, expires_at, created_at)
+                             VALUES (${userId}, ${token}, ${viewer.login}, ${viewer.avatarUrl}, ${expiresAt}, ${Date.now()})
+                             ON CONFLICT (user_id) DO UPDATE SET token = excluded.token, login = excluded.login,
+                               avatar_url = excluded.avatar_url, expires_at = excluded.expires_at,
+                               created_at = excluded.created_at`.pipe(Effect.orDie)
+                  personalStored.set(userId, { token, login: viewer.login, avatarUrl: viewer.avatarUrl, expiresAt })
+                  yield* PubSub.publish(personalChanges, { userId, viewer })
+                  return viewer
+                })
+              ),
+              Effect.exit,
+              Effect.flatMap((exit) => Effect.andThen(clearPending, Deferred.done(result, exit))),
+              Effect.onInterrupt(() =>
+                Effect.andThen(clearPending, Deferred.fail(result, new GithubError({ message: "Sign-in was cancelled." })))
+              ),
+              Effect.asVoid
+            )
+          )
+          personalPending.set(userId, flow)
+          return code
+        })
+
+      const actingAs = (userId: string) =>
+        Effect.gen(function*() {
+          const own = livePersonal(userId)
+          if (own) return { token: own.token, login: own.login, avatarUrl: own.avatarUrl, via: "personal" } satisfies Acting
+          // The workspace connection, when it is this person's own GitHub account.
+          const token = tokenUnsafe()
+          const s = liveStored()
+          const workspace = s ? { login: s.login, avatarUrl: s.avatarUrl } : fallback ? fallbackViewer : null
+          if (!token || !workspace) return null
+          // It belongs to the workspace's original user (who set it up), and to whoever has its login.
+          const rows = yield* sql`SELECT github_login, id = (SELECT value FROM meta WHERE key = 'viewer_id') AS original
+                                  FROM user WHERE id = ${userId}`.pipe(Effect.orDie)
+          const row = rows[0]
+          const mine = Number(row?.original ?? 0) === 1 ||
+            (row?.github_login as string | null | undefined)?.toLowerCase() === workspace.login.toLowerCase()
+          return mine ? ({ token, ...workspace, via: "workspace" } satisfies Acting) : null
+        })
+
       return GithubAuth.of({
+        personal: {
+          actingAs,
+          account: (userId) => Effect.sync(() => {
+            const s = livePersonal(userId)
+            return s ? { login: s.login, avatarUrl: s.avatarUrl } : null
+          }),
+          pending: (userId) => Effect.sync(() => {
+            const p = personalPending.get(userId)
+            return p && p.code.expiresAt > Date.now() ? p.code : null
+          }),
+          start: startPersonal,
+          wait: (userId) => Effect.suspend(() => {
+            const p = personalPending.get(userId)
+            return p ? Deferred.await(p.result) : fail("No sign-in is in progress.")
+          }),
+          cancel: (userId) => FiberMap.remove(personalFlows, userId),
+          signOut: (userId) =>
+            Effect.gen(function*() {
+              yield* FiberMap.remove(personalFlows, userId)
+              if (personalStored.has(userId)) yield* forgetPersonal(userId)
+            }),
+          changes: personalChanges
+        },
         tokenUnsafe,
         source: Effect.sync(() => (liveStored() ? "app" : fallback ? config.tokenSource : null)),
         viewer: Effect.sync(() => {
@@ -279,7 +430,11 @@ export class GithubAuth extends Context.Service<GithubAuth, {
           yield* FiberHandle.clear(flows)
           if (stored) yield* forget(null)
         }),
-        rejected: (token) => (stored && stored.token === token ? forget(EXPIRED) : Effect.void)
+        rejected: (token) =>
+          Effect.gen(function*() {
+            if (stored && stored.token === token) yield* forget(EXPIRED)
+            for (const [userId, s] of personalStored) if (s.token === token) yield* forgetPersonal(userId)
+          })
       })
     })
   ).pipe(Layer.provide(FetchHttpClient.layer))

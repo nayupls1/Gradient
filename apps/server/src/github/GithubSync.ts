@@ -883,10 +883,11 @@ export class GithubSync extends Context.Service<GithubSync, {
        * local user and the duplicate goes. A login that belongs to another
        * account is left alone.
        */
-      const adoptViewer = (viewer: Viewer) =>
+      const adoptViewer = (viewer: Viewer, userId?: string) =>
         mutations.transact({ origin: "system", actorId: null }, (tx) =>
           Effect.gen(function*() {
-            const viewerId = yield* db.getMeta("viewer_id")
+            // The workspace connection belongs to the workspace's original user; a personal one to its person.
+            const viewerId = userId ?? (yield* db.getMeta("viewer_id"))
             const me = viewerId ? yield* db.getUser(viewerId) : undefined
             if (!me || me.githubLogin?.toLowerCase() === viewer.login.toLowerCase()) return
             const twin = yield* db.getUserByLogin(viewer.login)
@@ -930,6 +931,12 @@ export class GithubSync extends Context.Service<GithubSync, {
         yield* Effect.forkScoped(
           Effect.suspend(() => (gh.ready() ? pollAll : Effect.void)).pipe(
             Effect.repeat(Schedule.spaced(`${config.github.pollIntervalSeconds} seconds`))
+          )
+        )
+        // A person connected their own account: they are that GitHub login.
+        yield* Effect.forkScoped(
+          Stream.fromPubSub(auth.personal.changes).pipe(
+            Stream.runForEach(({ userId, viewer }) => (viewer ? adoptViewer(viewer, userId) : Effect.void))
           )
         )
         // After a sign-in: link the account, catch up on GitHub, and push what waited.

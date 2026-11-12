@@ -2,6 +2,7 @@ import * as stylex from "@stylexjs/stylex"
 import { Archive } from "lucide"
 import { useNavigate, useParams } from "@solidjs/router"
 import { createMemo, createSignal, For, Show, useContext } from "solid-js"
+import { CommentBox } from "../app/CommentBox.tsx"
 import { Sync } from "../app/context.ts"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker, useIssueActions } from "../app/properties.tsx"
@@ -79,6 +80,7 @@ const s = stylex.create({
   commentTime: { color: { default: colors.mutedForeground, ":hover": colors.foreground } },
   commentBody: { fontSize: 14, lineHeight: 1.6 },
   addComment: {
+    marginTop: 8,
     alignSelf: "flex-start",
     display: "inline-flex",
     alignItems: "center",
@@ -107,6 +109,7 @@ export const IssuePage = () => {
   const relationApis: RelationApis = {}
   let titleEl: HTMLTextAreaElement | undefined
   let descriptionEl: HTMLTextAreaElement | undefined
+  let commentEl: HTMLTextAreaElement | undefined
 
   useScope("issue.detail")
   useIssueCommands({ scope: "issue.detail", issue, apis: () => apis })
@@ -123,6 +126,15 @@ export const IssuePage = () => {
       allowInInput: true,
       when: () => editingDescription(),
       run: () => finishDescription()
+    },
+    {
+      id: "issue.comment",
+      title: "Comment",
+      group: "Issue",
+      keys: ["m"],
+      scope: "issue.detail",
+      when: () => issue()?.github != null,
+      run: () => commentEl?.focus()
     },
     { id: "issue.blockedBy", title: "Mark as blocked by…", group: "Issue", keys: ["b"], scope: "issue.detail", run: () => relationApis.blockedBy?.open() },
     { id: "issue.blocks", title: "Mark as blocking…", group: "Issue", keys: ["shift+b"], scope: "issue.detail", run: () => relationApis.blocks?.open() },
@@ -357,10 +369,16 @@ export const IssuePage = () => {
                     </For>
                     <Show when={current().github}>
                       {(gh) => (
-                        <a href={gh().url} target="_blank" rel="noreferrer" {...stylex.attrs(s.addComment)}>
-                          <GithubIcon size={13} />
-                          Comment on GitHub
-                        </a>
+                        <>
+                          <CommentBox
+                            inputRef={(el) => (commentEl = el)}
+                            onSubmit={(body) => sync.call((c) => c.GithubIssueComment({ issueId: current().id, body }))}
+                          />
+                          <a href={gh().url} target="_blank" rel="noreferrer" {...stylex.attrs(s.addComment)}>
+                            <GithubIcon size={13} />
+                            Open on GitHub
+                          </a>
+                        </>
                       )}
                     </Show>
                   </section>

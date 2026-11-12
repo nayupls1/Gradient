@@ -2,6 +2,7 @@ import type { Priority, PullRequestCheckStatus, PullRequestReviewState, PullRequ
 import {
   Archive,
   ArchiveArrowUp,
+  ArrowDownUp,
   ArrowLeft,
   ArrowUpRight,
   Bot,
@@ -159,6 +160,7 @@ export const PullRequestIcon = (props: { state: PullRequestState; size?: number 
 )
 
 export const ArrowLeftIcon = wrap(ArrowLeft)
+export const SortIcon = wrap(ArrowDownUp)
 export const FileDiffIcon = wrap(FileDiff)
 export const CommitIcon = wrap(GitCommitHorizontal)
 export const MessageIcon = wrap(MessageSquare)

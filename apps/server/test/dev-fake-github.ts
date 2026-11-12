@@ -116,6 +116,26 @@ fake.seed({
       }
     ],
     reviews: [{ login: "lead", state: "APPROVED", body: "Nice, the replay order is exactly what we need." }],
+    timeline: [
+      { event: "committed", sha: "3f9c2a1b7e", message: "Write drafts to IndexedDB first", author: { name: "dev", date: "2025-12-31T21:10:00Z" } },
+      { event: "committed", sha: "a41d8e09c2", message: "Replay queued drafts on reconnect", author: { name: "dev", date: "2025-12-31T22:40:00Z" } },
+      { event: "committed", sha: "c07be5513f", message: "Add onReconnect helper", author: { name: "dev", date: "2025-12-31T23:05:00Z" } },
+      { event: "labeled", actor: { login: "dev", avatar_url: "https://avatars/dev" }, label: { name: "bug", color: "d73a4a" }, created_at: "2026-01-01T00:00:01Z" },
+      { event: "review_requested", actor: { login: "dev", avatar_url: "https://avatars/dev" }, requested_reviewer: { login: "lead" }, created_at: "2026-01-01T00:00:02Z" },
+      { event: "renamed", actor: { login: "dev", avatar_url: "https://avatars/dev" }, rename: { from: "Offline drafts", to: "Keep drafts when offline" }, created_at: "2026-01-01T00:00:03Z" },
+      { event: "head_ref_force_pushed", actor: { login: "dev", avatar_url: "https://avatars/dev" }, created_at: "2026-01-01T00:00:04Z" },
+      { event: "committed", sha: "e2f6aa0d41", message: "Test that a draft survives going offline", author: { name: "dev", date: "2026-01-01T00:00:05Z" } },
+      {
+        event: "cross-referenced",
+        actor: { login: "someone", avatar_url: "https://avatars/someone" },
+        created_at: "2026-01-01T00:00:06Z",
+        source: { issue: { number: 1, title: "Gadget pairing fails on Linux", html_url: "https://github.com/acme/gadgets/issues/1", repository: { full_name: "acme/gadgets" } } }
+      }
+    ],
+    review_comments: [
+      { id: 7001, path: "src/drafts/store.ts", line: 13, side: "RIGHT", login: "lead", body: "Should this also flush when the tab regains focus?" },
+      { id: 7002, path: "src/drafts/store.ts", line: 13, side: "RIGHT", login: "dev", body: "Good call, I'll do that in a follow-up.", in_reply_to_id: 7001 }
+    ],
     checks: [
       { name: "test", status: "completed", conclusion: "success" },
       { name: "typecheck", status: "completed", conclusion: "success" },

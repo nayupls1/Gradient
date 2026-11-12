@@ -133,6 +133,82 @@ export const PullRequestActivity = Schema.Struct({
 })
 export type PullRequestActivity = typeof PullRequestActivity.Type
 
+/** An inline comment on a pull request's diff (a review comment). */
+export const PullRequestReviewComment = Schema.Struct({
+  id: Schema.Int,
+  path: Schema.String,
+  /** The line it is on, or null when the code moved on (outdated). */
+  line: Schema.NullOr(Schema.Int),
+  /** The first line of a multi-line comment. */
+  startLine: Schema.NullOr(Schema.Int),
+  /** LEFT is the old file (a deleted or context line), RIGHT the new one. */
+  side: Schema.Literals(["LEFT", "RIGHT"]),
+  /** The comment it answers; replies share their thread's position. */
+  inReplyTo: Schema.NullOr(Schema.Int),
+  author: Schema.NullOr(Schema.String),
+  authorAvatarUrl: Schema.NullOr(Schema.String),
+  body: Schema.String,
+  url: Schema.String,
+  createdAt: Schema.Number
+})
+export type PullRequestReviewComment = typeof PullRequestReviewComment.Type
+
+export const PullRequestTimelineKind = Schema.Literals([
+  "opened",
+  "commit",
+  "comment",
+  "review",
+  "inline",
+  "merged",
+  "closed",
+  "reopened",
+  "ready",
+  "draft",
+  "labeled",
+  "unlabeled",
+  "review_requested",
+  "review_request_removed",
+  "assigned",
+  "unassigned",
+  "force_pushed",
+  "branch_deleted",
+  "renamed",
+  "referenced"
+])
+export type PullRequestTimelineKind = typeof PullRequestTimelineKind.Type
+
+/**
+ * One thing that happened on a pull request, as GitHub's timeline lists it:
+ * its commits, comments, reviews and what people did to it. Fields beyond
+ * kind, who and when are set only for the kinds that have them.
+ */
+export const PullRequestTimelineItem = Schema.Struct({
+  kind: PullRequestTimelineKind,
+  /** GitHub login, or a commit's author name when it has no account. */
+  actor: Schema.NullOr(Schema.String),
+  actorAvatarUrl: Schema.NullOr(Schema.String),
+  at: Schema.Number,
+  /** A comment's or review's markdown, or a commit's message. */
+  body: Schema.NullOr(Schema.String),
+  url: Schema.NullOr(Schema.String),
+  /** A commit's sha. */
+  sha: Schema.NullOr(Schema.String),
+  reviewState: Schema.NullOr(PullRequestReviewState),
+  label: Schema.NullOr(Schema.Struct({ name: Schema.String, color: Schema.NullOr(Schema.String) })),
+  /**
+   * What it was about: the person or team asked to review, the assignee, the
+   * new title, the file and line of an inline comment, or the referencing
+   * issue's title.
+   */
+  subject: Schema.NullOr(Schema.String),
+  /** More about it: the old title, or the referencing issue as "owner/repo#12". */
+  detail: Schema.NullOr(Schema.String)
+})
+export type PullRequestTimelineItem = typeof PullRequestTimelineItem.Type
+
+export const MergeMethod = Schema.Literals(["merge", "squash", "rebase"])
+export type MergeMethod = typeof MergeMethod.Type
+
 /**
  * A pull request as its page shows it, read from GitHub when the page opens
  * (not synced): any pull request the connected account can see.
@@ -151,6 +227,16 @@ export const PullRequestDetail = Schema.Struct({
   headBranch: Schema.String,
   /** False when GitHub found merge conflicts with the base branch; null while it is still computing. */
   mergeable: Schema.NullOr(Schema.Boolean),
+  /**
+   * GitHub's `mergeable_state`: clean, unstable (checks failing but allowed),
+   * blocked (protection: reviews or checks required), behind, dirty
+   * (conflicts), draft, has_hooks, or unknown while it computes.
+   */
+  mergeableState: Schema.String,
+  /** The head commit; a merge is pinned to it, so new pushes are never merged unseen. */
+  headSha: Schema.String,
+  /** The merge methods the repository allows, in GitHub's order. */
+  mergeMethods: Schema.Array(MergeMethod),
   additions: Schema.Int,
   deletions: Schema.Int,
   changedFiles: Schema.Int,
@@ -166,9 +252,55 @@ export const PullRequestDetail = Schema.Struct({
   files: Schema.Array(PullRequestFile),
   checks: Schema.Array(PullRequestCheck),
   /** Reviews and comments, oldest first. */
-  activity: Schema.Array(PullRequestActivity)
+  activity: Schema.Array(PullRequestActivity),
+  /** Inline comments on the diff, oldest first. */
+  reviewComments: Schema.Array(PullRequestReviewComment),
+  /** Everything that happened on it, oldest first (at most the first 1,000 events). */
+  timeline: Schema.Array(PullRequestTimelineItem)
 })
 export type PullRequestDetail = typeof PullRequestDetail.Type
+
+/** A GitHub account and how Gradient reaches it. */
+export const GithubActing = Schema.Struct({
+  login: Schema.String,
+  avatarUrl: Schema.NullOr(Schema.String),
+  /** The person's own connected account, or the workspace connection (which is theirs). */
+  via: Schema.Literals(["personal", "workspace"])
+})
+export type GithubActing = typeof GithubActing.Type
+
+/**
+ * The signed-in person's GitHub: who their comments, reviews and merges go
+ * out as. Each person connects their own account; the workspace connection
+ * stands in only for the person it belongs to.
+ */
+export const GithubAccount = Schema.Struct({
+  /** Who you act as on GitHub, or null: connect your account to comment, review and merge. */
+  actingAs: Schema.NullOr(GithubActing),
+  /** Your own connected account. */
+  personal: Schema.NullOr(Schema.Struct({ login: Schema.String, avatarUrl: Schema.NullOr(Schema.String) })),
+  /** The code of your sign-in that is waiting for you. */
+  pending: Schema.NullOr(GithubDeviceCode),
+  /** False when no GitHub App client id is configured. */
+  signInAvailable: Schema.Boolean
+})
+export type GithubAccount = typeof GithubAccount.Type
+
+export const ReviewEvent = Schema.Literals(["approve", "request_changes", "comment"])
+export type ReviewEvent = typeof ReviewEvent.Type
+
+/** An inline comment written in Gradient, sent with a review. */
+export const DraftReviewComment = Schema.Struct({
+  path: Schema.String,
+  line: Schema.Int,
+  side: Schema.Literals(["LEFT", "RIGHT"]),
+  /** The first line of a multi-line comment, on the same side. */
+  startLine: Schema.NullOr(Schema.Int),
+  body: Schema.String
+})
+export type DraftReviewComment = typeof DraftReviewComment.Type
+
+const PullRequestRef = { owner: Schema.String, repo: Schema.String, number: Schema.Int }
 
 export const ServerInfo = Schema.Struct({
   version: Schema.String,
@@ -276,10 +408,46 @@ export class GradientRpcs extends RpcGroup.make(
   Rpc.make("GithubSyncNow", { payload: { repoId: Schema.String }, error: GithubError }),
   /** A pull request with its files, checks, reviews and comments, read from GitHub. */
   Rpc.make("GithubPullRequest", {
-    payload: { owner: Schema.String, repo: Schema.String, number: Schema.Int },
+    payload: PullRequestRef,
     success: PullRequestDetail,
     error: GithubError
   }),
+  /** Comment on a pull request's conversation, as your GitHub account. */
+  Rpc.make("GithubPullRequestComment", {
+    payload: { ...PullRequestRef, body: Schema.String },
+    success: PullRequestActivity,
+    error: GithubError
+  }),
+  /** Submit a review (approve, request changes or comment) with inline comments, as your GitHub account. */
+  Rpc.make("GithubPullRequestReview", {
+    payload: {
+      ...PullRequestRef,
+      event: ReviewEvent,
+      body: Schema.String,
+      /** The commit the inline comments were written against. */
+      commitSha: Schema.String,
+      comments: Schema.Array(DraftReviewComment)
+    },
+    error: GithubError
+  }),
+  /** Merge a pull request at `sha` (refused if the head moved), as your GitHub account. */
+  Rpc.make("GithubPullRequestMerge", {
+    payload: { ...PullRequestRef, method: MergeMethod, sha: Schema.String },
+    success: Schema.Struct({ sha: Schema.String }),
+    error: GithubError
+  }),
+  /** Comment on an issue's GitHub copy, as your GitHub account. The comment arrives through sync. */
+  Rpc.make("GithubIssueComment", {
+    payload: { issueId: Schema.String, body: Schema.String },
+    error: GithubError
+  }),
+  /** Your GitHub account: who your comments, reviews and merges go out as. */
+  Rpc.make("GithubAccountStatus", { success: GithubAccount }),
+  /** Connect your own GitHub account (device flow). Replaces your sign-in that is already waiting. */
+  Rpc.make("GithubAccountSignInStart", { success: GithubDeviceCode, error: GithubError }),
+  Rpc.make("GithubAccountSignInWait", { success: GithubAccount, error: GithubError }),
+  Rpc.make("GithubAccountSignInCancel", {}),
+  Rpc.make("GithubAccountSignOut", { success: GithubAccount }),
   /** Start a device-flow sign-in. Replaces one that is already waiting. */
   Rpc.make("GithubSignInStart", { success: GithubDeviceCode, error: GithubError }),
   /** Wait until the pending sign-in finishes. */

@@ -387,5 +387,21 @@ export const migrations = {
       UNIQUE (issue_id, url)
     )`
     yield* sql`ALTER TABLE github_repo ADD COLUMN development_synced_at INTEGER`
+  }),
+  /**
+   * Each person's own GitHub account: comments, reviews and merges made in
+   * Gradient go out as them. The workspace connection (github_auth) still
+   * syncs issues. Tokens are secrets: never synced.
+   */
+  "0011_github_user_auth": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`CREATE TABLE github_user_auth (
+      user_id TEXT PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
+      token TEXT NOT NULL,
+      login TEXT NOT NULL,
+      avatar_url TEXT,
+      expires_at INTEGER,
+      created_at INTEGER NOT NULL
+    )`
   })
 }

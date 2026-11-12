@@ -20,6 +20,7 @@ import { DbLive } from "./db/Db.ts"
 import { GithubAuth } from "./github/GithubAuth.ts"
 import { GithubClient } from "./github/GithubClient.ts"
 import { RepoFileRoute } from "./github/files.ts"
+import { GithubActions } from "./github/GithubActions.ts"
 import { GithubSync } from "./github/GithubSync.ts"
 import { WebhookRoute } from "./github/webhook.ts"
 import { localOnly } from "./http/guard.ts"
@@ -61,6 +62,7 @@ const Seed = Layer.effectDiscard(seed)
 export const AppServices = Layer.mergeAll(Seed, Layer.empty).pipe(
   Layer.provideMerge(Members.layer),
   Layer.provideMerge(Auth.layer),
+  Layer.provideMerge(GithubActions.layer),
   Layer.provideMerge(GithubSync.layer),
   Layer.provideMerge(GithubClient.layer),
   Layer.provideMerge(GithubAuth.layer),

@@ -1,9 +1,18 @@
-import { GithubError, type PullRequestCheckStatus, type PullRequestDetail, type PullRequestReviewState } from "@gradient/domain"
+import {
+  type DraftReviewComment,
+  GithubError,
+  type MergeMethod,
+  type PullRequestCheckStatus,
+  type PullRequestDetail,
+  type PullRequestReviewState,
+  type ReviewEvent
+} from "@gradient/domain"
 import { Context, Effect, Layer, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { ServerConfig } from "../config.ts"
 import { GithubAuth } from "./GithubAuth.ts"
 import type { RepoFile } from "./icons.ts"
+import { buildTimeline } from "./timeline.ts"
 
 const GhLabel = Schema.Union([
   Schema.String,
@@ -130,6 +139,7 @@ const GhPull = Schema.Struct({
   head: Schema.Struct({ ref: Schema.String, sha: Schema.String }),
   base: Schema.Struct({ ref: Schema.String }),
   mergeable: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  mergeable_state: Schema.optionalKey(Schema.NullOr(Schema.String)),
   additions: Schema.optionalKey(Schema.Int),
   deletions: Schema.optionalKey(Schema.Int),
   changed_files: Schema.optionalKey(Schema.Int),
@@ -152,6 +162,28 @@ const GhReview = Schema.Struct({
   body: Schema.optionalKey(Schema.NullOr(Schema.String)),
   html_url: Schema.String,
   submitted_at: Schema.optionalKey(Schema.NullOr(Schema.String))
+})
+const GhReviewComment = Schema.Struct({
+  id: Schema.Int,
+  path: Schema.String,
+  line: Schema.optionalKey(Schema.NullOr(Schema.Int)),
+  start_line: Schema.optionalKey(Schema.NullOr(Schema.Int)),
+  side: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  in_reply_to_id: Schema.optionalKey(Schema.NullOr(Schema.Int)),
+  user: Schema.NullOr(GhUser),
+  body: Schema.String,
+  html_url: Schema.String,
+  created_at: Schema.String
+})
+const GhRepoMerge = Schema.Struct({
+  allow_merge_commit: Schema.optionalKey(Schema.Boolean),
+  allow_squash_merge: Schema.optionalKey(Schema.Boolean),
+  allow_rebase_merge: Schema.optionalKey(Schema.Boolean)
+})
+/** GitHub's error body: a message, sometimes with details. */
+const GhErrorBody = Schema.Struct({
+  message: Schema.optionalKey(Schema.String),
+  errors: Schema.optionalKey(Schema.Array(Schema.Union([Schema.String, Schema.Struct({ message: Schema.optionalKey(Schema.String) })])))
 })
 const GhCheckRuns = Schema.Struct({
   check_runs: Schema.Array(Schema.Struct({
@@ -294,7 +326,25 @@ export class GithubClient extends Context.Service<GithubClient, {
    * any repository the token can see. Checks, reviews and comments are left
    * empty when the token may not read them; the pull request itself must load.
    */
-  getPullRequest(owner: string, repo: string, number: number): Effect.Effect<PullRequestDetail, GithubError>
+  getPullRequest(owner: string, repo: string, number: number, token?: string): Effect.Effect<PullRequestDetail, GithubError>
+  /*
+   * Writes a person makes on GitHub from Gradient. Each takes the token of the
+   * account they act as (see GithubAuth.personal), never the workspace's by default.
+   */
+  /** Comment on an issue or a pull request's conversation. */
+  createComment(token: string, owner: string, repo: string, number: number, body: string): Effect.Effect<GhComment, GithubError>
+  /** Submit a review with its inline comments. */
+  submitReview(token: string, owner: string, repo: string, number: number, review: {
+    readonly event: ReviewEvent
+    readonly body: string
+    readonly commitSha: string
+    readonly comments: ReadonlyArray<DraftReviewComment>
+  }): Effect.Effect<void, GithubError>
+  /** Merge at `sha`; GitHub refuses when the head moved, conflicts, or protection blocks it. */
+  mergePullRequest(token: string, owner: string, repo: string, number: number, merge: {
+    readonly method: MergeMethod
+    readonly sha: string
+  }): Effect.Effect<{ readonly sha: string }, GithubError>
 }>()("gradient/GithubClient") {
   static readonly layer = Layer.effect(
     GithubClient,
@@ -313,7 +363,8 @@ export class GithubClient extends Context.Service<GithubClient, {
                 "x-github-api-version": "2022-11-28",
                 "user-agent": "gradient"
               }),
-              token ? HttpClientRequest.bearerToken(token) : (r) => r
+              // A request that carries its own token (a person's write) keeps it.
+              token && !req.headers["authorization"] ? HttpClientRequest.bearerToken(token) : (r) => r
             )
           }),
           // An expired or revoked sign-in: drop it, so the UI asks to sign in again.
@@ -340,14 +391,16 @@ export class GithubClient extends Context.Service<GithubClient, {
         path: string,
         decode: (res: HttpClientResponse.HttpClientResponse) => Effect.Effect<ReadonlyArray<A>, unknown>,
         params: Record<string, string> = {},
-        maxPages = 20
+        maxPages = 20,
+        token?: string
       ) =>
         Effect.gen(function*() {
           const all: Array<A> = []
           for (let page = 1; page <= maxPages; page++) {
             const res = yield* ok.execute(
               HttpClientRequest.get(path).pipe(
-                HttpClientRequest.setUrlParams({ ...params, per_page: "100", page: String(page) })
+                HttpClientRequest.setUrlParams({ ...params, per_page: "100", page: String(page) }),
+                (req) => (token ? HttpClientRequest.bearerToken(req, token) : req)
               )
             )
             all.push(...(yield* decode(res)))
@@ -395,10 +448,34 @@ export class GithubClient extends Context.Service<GithubClient, {
       const millis = (iso: string) => Date.parse(iso)
       const optionalMillis = (iso: string | null | undefined) => (iso ? Date.parse(iso) : null)
 
-      const pullRequest = (owner: string, repo: string, number: number) =>
+      /** Send a person's own token instead of the workspace's. */
+      const as = (token: string | undefined) => (req: HttpClientRequest.HttpClientRequest) =>
+        token ? HttpClientRequest.bearerToken(req, token) : req
+
+      /** A write, with GitHub's own explanation when it refuses (protection, conflicts, validation). */
+      const write = <A>(
+        token: string,
+        req: HttpClientRequest.HttpClientRequest,
+        context: string,
+        decode: (res: HttpClientResponse.HttpClientResponse) => Effect.Effect<A, unknown>
+      ) =>
+        Effect.gen(function*() {
+          const res = yield* client.execute(as(token)(req))
+          if (res.status >= 200 && res.status < 300) return yield* decode(res)
+          const body = yield* HttpClientResponse.schemaBodyJson(GhErrorBody)(res).pipe(Effect.orElseSucceed(() => ({}) as typeof GhErrorBody.Type))
+          const details = (body.errors ?? []).map((e) => (typeof e === "string" ? e : e.message ?? "")).filter(Boolean)
+          const reason = [body.message, ...details].filter(Boolean).join(": ") || `GitHub answered ${res.status}`
+          return yield* new GithubError({
+            message: res.status === 401 || res.status === 403
+              ? `${context}: GitHub refused (${reason}). Check that your account may write to this repository.`
+              : `${context}: ${reason}`
+          })
+        }).pipe(Effect.mapError((e) => (e instanceof GithubError ? e : toError(context)(e))))
+
+      const pullRequest = (owner: string, repo: string, number: number, token?: string) =>
         Effect.gen(function*() {
           const base = `/repos/${owner}/${repo}`
-          const res = yield* client.get(`${base}/pulls/${number}`)
+          const res = yield* client.execute(as(token)(HttpClientRequest.get(`${base}/pulls/${number}`)))
           if (res.status === 404) {
             return yield* new GithubError({
               message: `${owner}/${repo}#${number} is not a pull request, or GitHub does not let Gradient see it.`
@@ -411,22 +488,29 @@ export class GithubClient extends Context.Service<GithubClient, {
           // Everything past the pull request itself is best effort: a token may lack checks or reviews.
           const optional = <A>(effect: Effect.Effect<ReadonlyArray<A>, unknown>) =>
             effect.pipe(Effect.orElseSucceed((): ReadonlyArray<A> => []))
-          const [files, checkRuns, statuses, reviews, comments] = yield* Effect.all([
-            pages(`${base}/pulls/${number}/files`, HttpClientResponse.schemaBodyJson(Schema.Array(GhPullFile)), {}, FILE_PAGES),
+          const [files, checkRuns, statuses, reviews, comments, reviewComments, repoSettings, timeline] = yield* Effect.all([
+            pages(`${base}/pulls/${number}/files`, HttpClientResponse.schemaBodyJson(Schema.Array(GhPullFile)), {}, FILE_PAGES, token),
             optional(
-              ok.get(`${base}/commits/${pr.head.sha}/check-runs`, { urlParams: { per_page: "100" } }).pipe(
+              ok.execute(as(token)(HttpClientRequest.get(`${base}/commits/${pr.head.sha}/check-runs`, { urlParams: { per_page: "100" } }))).pipe(
                 Effect.flatMap(HttpClientResponse.schemaBodyJson(GhCheckRuns)),
                 Effect.map((b) => b.check_runs)
               )
             ),
             optional(
-              ok.get(`${base}/commits/${pr.head.sha}/status`).pipe(
+              ok.execute(as(token)(HttpClientRequest.get(`${base}/commits/${pr.head.sha}/status`))).pipe(
                 Effect.flatMap(HttpClientResponse.schemaBodyJson(GhCombinedStatus)),
                 Effect.map((b) => b.statuses)
               )
             ),
-            optional(pages(`${base}/pulls/${number}/reviews`, HttpClientResponse.schemaBodyJson(Schema.Array(GhReview)))),
-            optional(pages(`${base}/issues/${number}/comments`, HttpClientResponse.schemaBodyJson(Schema.Array(GhComment))))
+            optional(pages(`${base}/pulls/${number}/reviews`, HttpClientResponse.schemaBodyJson(Schema.Array(GhReview)), {}, 20, token)),
+            optional(pages(`${base}/issues/${number}/comments`, HttpClientResponse.schemaBodyJson(Schema.Array(GhComment)), {}, 20, token)),
+            optional(pages(`${base}/pulls/${number}/comments`, HttpClientResponse.schemaBodyJson(Schema.Array(GhReviewComment)), {}, 20, token)),
+            ok.execute(as(token)(HttpClientRequest.get(base))).pipe(
+              Effect.flatMap(HttpClientResponse.schemaBodyJson(GhRepoMerge)),
+              Effect.orElseSucceed((): typeof GhRepoMerge.Type => ({}))
+            ),
+            // Events come in many shapes; timeline.ts reads the ones it shows.
+            optional(pages(`${base}/issues/${number}/timeline`, HttpClientResponse.schemaBodyJson(Schema.Array(Schema.Unknown)), {}, 10, token))
           ], { concurrency: "unbounded" })
           const activity: Array<PullRequestDetail["activity"][number]> = [
             ...reviews
@@ -465,6 +549,14 @@ export class GithubClient extends Context.Service<GithubClient, {
             baseBranch: pr.base.ref,
             headBranch: pr.head.ref,
             mergeable: pr.mergeable ?? null,
+            mergeableState: pr.mergeable_state ?? "unknown",
+            headSha: pr.head.sha,
+            // GitHub's defaults allow all three; a repository can turn each off.
+            mergeMethods: ([
+              ["merge", repoSettings.allow_merge_commit],
+              ["squash", repoSettings.allow_squash_merge],
+              ["rebase", repoSettings.allow_rebase_merge]
+            ] as const).flatMap(([method, allowed]) => (allowed === false ? [] : [method])),
             additions: pr.additions ?? files.reduce((n, f) => n + f.additions, 0),
             deletions: pr.deletions ?? files.reduce((n, f) => n + f.deletions, 0),
             changedFiles: pr.changed_files ?? files.length,
@@ -494,13 +586,66 @@ export class GithubClient extends Context.Service<GithubClient, {
               })),
               ...statuses.map((st) => ({ name: st.context, status: commitStatus(st.state), url: st.target_url ?? null }))
             ],
-            activity
+            activity,
+            reviewComments: reviewComments.map((c) => ({
+              id: c.id,
+              path: c.path,
+              line: c.line ?? null,
+              startLine: c.start_line ?? null,
+              side: c.side === "LEFT" ? "LEFT" as const : "RIGHT" as const,
+              inReplyTo: c.in_reply_to_id ?? null,
+              author: c.user?.login ?? null,
+              authorAvatarUrl: c.user?.avatar_url ?? null,
+              body: c.body,
+              url: c.html_url,
+              createdAt: millis(c.created_at)
+            })),
+            timeline: buildTimeline(
+              { author: pr.user?.login ?? null, authorAvatarUrl: pr.user?.avatar_url ?? null, at: millis(pr.created_at) },
+              timeline
+            )
           } satisfies PullRequestDetail
         }).pipe(Effect.mapError((e) => (e instanceof GithubError ? e : toError(`Reading ${owner}/${repo}#${number} failed`)(e))))
 
       return GithubClient.of({
         ready,
-        getPullRequest: (owner, repo, number) => guard(pullRequest(owner, repo, number)),
+        getPullRequest: (owner, repo, number, token) => guard(pullRequest(owner, repo, number, token)),
+        createComment: (token, owner, repo, number, body) =>
+          write(
+            token,
+            HttpClientRequest.post(`/repos/${owner}/${repo}/issues/${number}/comments`).pipe(HttpClientRequest.bodyJsonUnsafe({ body })),
+            `Commenting on ${owner}/${repo}#${number} failed`,
+            HttpClientResponse.schemaBodyJson(GhComment)
+          ),
+        submitReview: (token, owner, repo, number, review) =>
+          write(
+            token,
+            HttpClientRequest.post(`/repos/${owner}/${repo}/pulls/${number}/reviews`).pipe(
+              HttpClientRequest.bodyJsonUnsafe({
+                commit_id: review.commitSha,
+                event: review.event === "approve" ? "APPROVE" : review.event === "request_changes" ? "REQUEST_CHANGES" : "COMMENT",
+                ...(review.body.trim() !== "" ? { body: review.body } : {}),
+                comments: review.comments.map((c) => ({
+                  path: c.path,
+                  line: c.line,
+                  side: c.side,
+                  body: c.body,
+                  ...(c.startLine !== null && c.startLine !== c.line ? { start_line: c.startLine, start_side: c.side } : {})
+                }))
+              })
+            ),
+            `Reviewing ${owner}/${repo}#${number} failed`,
+            () => Effect.void
+          ),
+        mergePullRequest: (token, owner, repo, number, merge) =>
+          write(
+            token,
+            HttpClientRequest.put(`/repos/${owner}/${repo}/pulls/${number}/merge`).pipe(
+              HttpClientRequest.bodyJsonUnsafe({ merge_method: merge.method, sha: merge.sha })
+            ),
+            `Merging ${owner}/${repo}#${number} failed`,
+            HttpClientResponse.schemaBodyJson(Schema.Struct({ sha: Schema.String }))
+          ),
         availableRepos: guard(
           Effect.gen(function*() {
             if ((yield* auth.source) !== "app") {
