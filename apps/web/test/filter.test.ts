@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { Issue } from "@gradient/domain"
-import { emptyFilter, facetCount, isFiltering, matchesFilter, ME, toggle, UNASSIGNED } from "../src/lib/filter.ts"
+import { emptyFilter, facetCount, filterOptions, isFiltering, matchesFilter, ME, toggle, UNASSIGNED } from "../src/lib/filter.ts"
 import type { SyncState } from "../src/sync/engine.ts"
 
 const issue = (id: string, number: number, extra: Partial<Issue> = {}): Issue => ({
@@ -74,5 +74,21 @@ describe("issue filters", () => {
   test("toggle adds and removes a value", () => {
     expect(toggle(["a"], "b")).toEqual(["a", "b"])
     expect(toggle(["a", "b"], "a")).toEqual(["b"])
+  })
+
+  test("options come from the list's own issues: a project offers only its labels and people", () => {
+    const project = [issues.i2, issues.i3]
+    expect(filterOptions(state, project)).toEqual({ assignees: ["grace", UNASSIGNED], labels: ["perf"], priorities: [3, 0], blocked: false })
+    const all = filterOptions(state, Object.values(issues))
+    expect(all.assignees).toEqual([ME, "grace", UNASSIGNED])
+    expect(all.labels).toEqual(["bug", "perf"])
+    expect(all.priorities).toEqual([1, 3, 0])
+    expect(all.blocked).toBe(true)
+  })
+
+  test("values already picked stay offered, so they can be removed", () => {
+    const options = filterOptions(state, [issues.i2], { ...emptyFilter, labels: ["bug"], assignees: [ME] })
+    expect(options.labels).toEqual(["bug"])
+    expect(options.assignees).toEqual([ME, "grace"])
   })
 })

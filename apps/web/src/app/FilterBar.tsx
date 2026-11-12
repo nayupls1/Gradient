@@ -1,22 +1,21 @@
-import type { Priority } from "@gradient/domain"
+import type { Issue, Priority } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import type { JSX } from "@solidjs/web"
-import { createSignal, omit, Show, untrack, useContext } from "solid-js"
-import { emptyFilter, facetCount, type IssueFilter, isFiltering, ME, toggle, UNASSIGNED } from "../lib/filter.ts"
-import { teamLabels, users } from "../lib/select.ts"
+import { createMemo, createSignal, For, Show, untrack, useContext } from "solid-js"
+import { emptyFilter, facetCount, filterOptions, type IssueFilter, ME, toggle, UNASSIGNED } from "../lib/filter.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { Button, type ButtonProps } from "../ui/button.tsx"
-import { BlockedIcon, PriorityIcon, priorityLabel, SearchIcon, TagIcon, UserIcon, XIcon } from "../ui/icons.tsx"
+import { BlockedIcon, FilterIcon, PriorityIcon, priorityLabel, SearchIcon, UserIcon, XIcon } from "../ui/icons.tsx"
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "../ui/input-group.tsx"
-import { Kbd } from "../ui/kbd.tsx"
 import { Sync } from "./context.ts"
-import { Picker, type PickerApi } from "./Picker.tsx"
+import { Picker, type PickerApi, type PickerItem } from "./Picker.tsx"
 import { UserAvatar } from "./UserAvatar.tsx"
 
 /*
- * Search and filters for the issue list. Each list (a team's issues, a
- * project's) keeps its own filter for the session, so opening an issue and
- * coming back finds the list as it was left.
+ * Search and filters for the issue list: a search field and one Filter menu
+ * in the header, and the active filters as removable chips under it. Each
+ * list (a team's issues, a project's) keeps its own filter for the session,
+ * so opening an issue and coming back finds the list as it was left.
  */
 
 const filters = createSignal<Readonly<Record<string, IssueFilter>>>({})
@@ -24,201 +23,222 @@ const filters = createSignal<Readonly<Record<string, IssueFilter>>>({})
 export const filterFor = (view: string): IssueFilter => filters[0]()[view] ?? emptyFilter
 export const setFilterFor = (view: string, next: IssueFilter) => filters[1]({ ...filters[0](), [view]: next })
 
-/** Handles for keyboard commands: focus the search, open a facet's picker. */
+/** Handles for keyboard commands: focus the search, open the filter menu. */
 export interface FilterApis {
   search?: HTMLInputElement
-  assignee?: PickerApi
-  label?: PickerApi
-  priority?: PickerApi
+  menu?: PickerApi
 }
 
-const PRIORITIES: ReadonlyArray<Priority> = [1, 2, 3, 4, 0]
-
 const s = stylex.create({
-  bar: {
+  search: {
+    height: "1.75rem",
+    width: {
+      default: 180,
+      ":focus-within": 240,
+      "@media (max-width: 40rem)": { default: 112, ":focus-within": 168 }
+    },
+    flexShrink: 0,
+    transitionProperty: "width",
+    transitionDuration: "150ms"
+  },
+  chips: {
     display: "flex",
     alignItems: "center",
     flexWrap: "wrap",
     gap: 6,
-    minHeight: 40,
     flexShrink: 0,
     paddingBlock: 6,
-    paddingLeft: 12,
+    paddingLeft: 14,
     paddingRight: 20,
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: colors.border
   },
-  search: { height: "1.75rem", width: 260, maxWidth: "100%", flexShrink: 1 },
-  searchInput: { fontSize: "0.8125rem" },
-  key: { marginRight: 2 },
-  chip: { fontWeight: 400, color: colors.mutedForeground, maxWidth: 220 },
-  chipOn: { color: colors.foreground, borderStyle: "solid", backgroundColor: colors.accent },
+  chip: { fontWeight: 400, maxWidth: 240, paddingRight: 4 },
   chipText: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  spacer: { flexGrow: 1 },
-  count: { color: colors.mutedForeground, fontSize: "0.75rem", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
-  dot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 }
+  facet: { color: colors.mutedForeground },
+  remove: { display: "inline-flex", color: colors.mutedForeground, marginLeft: 2 },
+  dot: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 },
+  /** On a phone the Filter button is just its icon. */
+  filterText: { display: { default: null, "@media (max-width: 40rem)": "none" } }
 })
 
-/** A facet's trigger: muted while unset, filled once it filters. */
-const Chip = (props: { active: boolean; title: string; children: JSX.Element } & Record<string, unknown>) => {
-  const rest = omit(props, "active", "children")
+/** One menu item per filter value; the value says which facet it belongs to. */
+type Choice = `a:${string}` | `l:${string}` | `p:${Priority}` | "blocked"
+
+const pick = (f: IssueFilter, c: Choice): IssueFilter =>
+  c === "blocked"
+    ? { ...f, blocked: !f.blocked }
+    : c.startsWith("a:")
+    ? { ...f, assignees: toggle(f.assignees, c.slice(2)) }
+    : c.startsWith("l:")
+    ? { ...f, labels: toggle(f.labels, c.slice(2)) }
+    : { ...f, priorities: toggle(f.priorities, Number(c.slice(2)) as Priority) }
+
+const chosen = (f: IssueFilter): Array<Choice> => [
+  ...f.assignees.map((a) => `a:${a}` as const),
+  ...f.labels.map((l) => `l:${l}` as const),
+  ...f.priorities.map((p) => `p:${p}` as const),
+  ...(f.blocked ? ["blocked" as const] : [])
+]
+
+/** How a value reads and looks, in the menu and on its chip. */
+const useDescribe = () => {
+  const sync = useContext(Sync)
+  return (c: Choice): { facet: string; label: string; icon: () => JSX.Element; keywords?: string } => {
+    if (c === "blocked") return { facet: "Status", label: "Blocked", icon: () => <BlockedIcon size={14} /> }
+    const value = c.slice(2)
+    if (c.startsWith("a:")) {
+      if (value === UNASSIGNED) return { facet: "Assignee", label: "No assignee", icon: () => <UserIcon size={14} /> }
+      const user = sync.state.users[value === ME ? sync.state.viewerId : value]
+      const name = user?.name ?? "Unknown"
+      return {
+        facet: "Assignee",
+        label: name,
+        icon: () => <UserAvatar name={name} src={user?.avatarUrl ?? null} size={16} />,
+        keywords: [user?.githubLogin ?? "", value === ME ? "me" : ""].join(" ")
+      }
+    }
+    if (c.startsWith("l:")) {
+      const label = sync.state.labels[value]
+      return {
+        facet: "Label",
+        label: label?.name ?? "Unknown",
+        icon: () => <span {...stylex.attrs(s.dot)} style={{ "background-color": label?.color ?? "transparent" }} />
+      }
+    }
+    const p = Number(value) as Priority
+    return { facet: "Priority", label: priorityLabel[p], icon: () => <PriorityIcon priority={p} /> }
+  }
+}
+
+/** The search field. `/` focuses it; Escape clears and leaves it; ↓ or Enter goes to the first result. */
+export const SearchField = (props: { filter: IssueFilter; onChange: (next: IssueFilter) => void; apis: FilterApis }) => {
+  const apis = untrack(() => props.apis)
   return (
-    <Button
-      {...(rest as ButtonProps)}
-      variant="outline"
-      size="xs"
-      aria-pressed={props.active ? "true" : "false"}
-      xstyle={[s.chip, props.active && s.chipOn]}
-    >
-      {props.children}
-    </Button>
+    <InputGroup xstyle={s.search} role="search">
+      <InputGroupAddon>
+        <SearchIcon size={14} />
+      </InputGroupAddon>
+      <InputGroupInput
+        ref={(el: HTMLInputElement) => (apis.search = el)}
+        type="text"
+        enterkeyhint="search"
+        autocomplete="off"
+        spellcheck={false}
+        placeholder="Search"
+        aria-label="Search issues"
+        title="Search issues (/)"
+        value={props.filter.query}
+        onInput={(e: InputEvent & { currentTarget: HTMLInputElement }) =>
+          props.onChange({ ...props.filter, query: e.currentTarget.value })}
+      />
+      <Show when={props.filter.query !== ""}>
+        <InputGroupAddon align="inline-end">
+          <InputGroupButton
+            size="icon-xs"
+            title="Clear search"
+            onClick={() => {
+              props.onChange({ ...props.filter, query: "" })
+              apis.search?.focus()
+            }}
+          >
+            <XIcon size={12} />
+          </InputGroupButton>
+        </InputGroupAddon>
+      </Show>
+    </InputGroup>
   )
 }
 
-/** "Label" while unset, the value while one is picked, "Label · 3" for more. */
-const summary = (facet: string, names: ReadonlyArray<string>) =>
-  names.length === 0 ? facet : names.length === 1 ? names[0]! : `${facet} · ${names.length}`
-
-export const FilterBar = (props: {
-  teamId: string
+/**
+ * One menu for every filter: type to find a person, label or priority
+ * among those the list's issues use, pick as many as needed.
+ */
+export const FilterMenu = (props: {
+  issues: ReadonlyArray<Issue>
   filter: IssueFilter
   onChange: (next: IssueFilter) => void
-  shown: number
-  total: number
   apis: FilterApis
 }) => {
   const sync = useContext(Sync)
+  const describe = useDescribe()
   const apis = untrack(() => props.apis)
-  const set = (patch: Partial<IssueFilter>) => props.onChange({ ...props.filter, ...patch })
-  const [searchEl, setSearchEl] = createSignal<HTMLInputElement>()
-
-  const viewer = () => sync.state.users[sync.state.viewerId]
-  const personName = (id: string) =>
-    id === ME ? viewer()?.name ?? "Me" : id === UNASSIGNED ? "No assignee" : sync.state.users[id]?.name ?? "Unknown"
-  const labelName = (id: string) => sync.state.labels[id]?.name ?? "Unknown"
-
+  const items = createMemo((): Array<PickerItem<Choice>> => {
+    const o = filterOptions(sync.state, props.issues, props.filter)
+    const choices: Array<Choice> = [
+      ...o.assignees.map((a) => `a:${a}` as const),
+      ...o.labels.map((l) => `l:${l}` as const),
+      ...o.priorities.map((p) => `p:${p}` as const),
+      ...(o.blocked ? ["blocked" as const] : [])
+    ]
+    return choices.map((c) => {
+      const d = describe(c)
+      return { value: c, label: d.label, icon: d.icon, hint: d.facet, keywords: `${d.facet} ${d.keywords ?? ""}` }
+    })
+  })
+  const count = () => facetCount(props.filter)
   return (
-    <div {...stylex.attrs(s.bar)} role="search">
-      <InputGroup xstyle={s.search}>
-        <InputGroupAddon>
-          <SearchIcon size={14} />
-        </InputGroupAddon>
-        <InputGroupInput
-          ref={(el: HTMLInputElement) => {
-            apis.search = el
-            setSearchEl(el)
+    <Picker<Choice>
+      apiRef={(a) => (apis.menu = a)}
+      multiple
+      align="end"
+      placeholder="Filter by person, label, priority…"
+      emptyText="Nothing to filter by"
+      items={items()}
+      selected={chosen(props.filter)}
+      onPick={(c) => props.onChange(pick(props.filter, c))}
+      trigger={(p) => (
+        <Button
+          {...(p as ButtonProps)}
+          variant={count() > 0 ? "secondary" : "ghost"}
+          size="xs"
+          title="Filter (f)"
+        >
+          <FilterIcon size={13} />
+          <span {...stylex.attrs(s.filterText)}>Filter</span>
+        </Button>
+      )}
+    />
+  )
+}
+
+/** The active filters, each removable; shown under the header only while there are some. */
+export const ActiveFilters = (props: { filter: IssueFilter; onChange: (next: IssueFilter) => void }) => {
+  const describe = useDescribe()
+  return (
+    <Show when={facetCount(props.filter) > 0}>
+      <div {...stylex.attrs(s.chips)}>
+        <For each={chosen(props.filter)}>
+          {(c) => {
+            const d = () => describe(c)
+            return (
+              <Button
+                variant="outline"
+                size="xs"
+                xstyle={s.chip}
+                title={`Remove ${d().facet.toLowerCase()} ${d().label}`}
+                onClick={() => props.onChange(pick(props.filter, c))}
+              >
+                {d().icon()}
+                <span {...stylex.attrs(s.facet)}>{d().facet}</span>
+                <span {...stylex.attrs(s.chipText)}>{d().label}</span>
+                <span {...stylex.attrs(s.remove)}>
+                  <XIcon size={12} />
+                </span>
+              </Button>
+            )
           }}
-          type="text"
-          placeholder="Search issues"
-          aria-label="Search issues"
-          value={props.filter.query}
-          onInput={(e: InputEvent & { currentTarget: HTMLInputElement }) => set({ query: e.currentTarget.value })}
-          xstyle={s.searchInput}
-        />
-        <InputGroupAddon align="inline-end">
-          <Show when={props.filter.query !== ""} fallback={<Kbd xstyle={s.key}>/</Kbd>}>
-            <InputGroupButton
-              size="icon-xs"
-              title="Clear search"
-              onClick={() => {
-                set({ query: "" })
-                searchEl()?.focus()
-              }}
-            >
-              <XIcon size={12} />
-            </InputGroupButton>
-          </Show>
-        </InputGroupAddon>
-      </InputGroup>
-
-      <Picker<string>
-        apiRef={(a) => (apis.assignee = a)}
-        multiple
-        placeholder="Filter by assignee…"
-        items={[
-          { value: UNASSIGNED, label: "No assignee", icon: () => <UserIcon size={14} /> },
-          ...(viewer()
-            ? [{
-              value: ME,
-              label: viewer()!.name,
-              icon: () => <UserAvatar name={viewer()!.name} src={viewer()!.avatarUrl} size={16} />,
-              ...(viewer()!.githubLogin ? { hint: `@${viewer()!.githubLogin}`, keywords: `me ${viewer()!.githubLogin}` } : { keywords: "me" })
-            }]
-            : []),
-          ...users(sync.state).filter((u) => u.id !== sync.state.viewerId).map((u) => ({
-            value: u.id,
-            label: u.name,
-            icon: () => <UserAvatar name={u.name} src={u.avatarUrl} size={16} />,
-            ...(u.githubLogin ? { hint: `@${u.githubLogin}`, keywords: u.githubLogin } : {})
-          }))
-        ]}
-        selected={props.filter.assignees}
-        onPick={(v) => set({ assignees: toggle(props.filter.assignees, v) })}
-        trigger={(p) => (
-          <Chip {...p} active={props.filter.assignees.length > 0} title="Filter by assignee (f a)">
-            <UserIcon size={13} />
-            <span {...stylex.attrs(s.chipText)}>{summary("Assignee", props.filter.assignees.map(personName))}</span>
-          </Chip>
-        )}
-      />
-
-      <Picker<string>
-        apiRef={(a) => (apis.label = a)}
-        multiple
-        placeholder="Filter by label…"
-        emptyText="No labels"
-        items={teamLabels(sync.state, props.teamId).map((l) => ({
-          value: l.id,
-          label: l.name,
-          icon: () => <span {...stylex.attrs(s.dot)} style={{ "background-color": l.color }} />
-        }))}
-        selected={props.filter.labels}
-        onPick={(v) => set({ labels: toggle(props.filter.labels, v) })}
-        trigger={(p) => (
-          <Chip {...p} active={props.filter.labels.length > 0} title="Filter by label (f l)">
-            <TagIcon size={13} />
-            <span {...stylex.attrs(s.chipText)}>{summary("Label", props.filter.labels.map(labelName))}</span>
-          </Chip>
-        )}
-      />
-
-      <Picker<Priority>
-        apiRef={(a) => (apis.priority = a)}
-        multiple
-        placeholder="Filter by priority…"
-        items={PRIORITIES.map((p) => ({ value: p, label: priorityLabel[p], icon: () => <PriorityIcon priority={p} /> }))}
-        selected={props.filter.priorities}
-        onPick={(v) => set({ priorities: toggle(props.filter.priorities, v) })}
-        trigger={(p) => (
-          <Chip {...p} active={props.filter.priorities.length > 0} title="Filter by priority (f p)">
-            <PriorityIcon priority={props.filter.priorities.length === 1 ? props.filter.priorities[0]! : 2} size={13} />
-            <span {...stylex.attrs(s.chipText)}>{summary("Priority", props.filter.priorities.map((p) => priorityLabel[p]))}</span>
-          </Chip>
-        )}
-      />
-
-      <Chip active={props.filter.blocked} title="Only blocked issues (f b)" onClick={() => set({ blocked: !props.filter.blocked })}>
-        <BlockedIcon size={13} />
-        Blocked
-      </Chip>
-
-      <Show when={isFiltering(props.filter)}>
+        </For>
         <Button
           variant="ghost"
           size="xs"
-          title="Clear filters (f x)"
-          onClick={() => props.onChange(emptyFilter)}
+          title="Clear filters (shift+f)"
+          onClick={() => props.onChange({ ...emptyFilter, query: props.filter.query })}
         >
-          <XIcon size={13} />
-          {facetCount(props.filter) + (props.filter.query.trim() ? 1 : 0) > 1 ? "Clear all" : "Clear"}
+          Clear
         </Button>
-      </Show>
-
-      <span {...stylex.attrs(s.spacer)} />
-      <Show when={isFiltering(props.filter)}>
-        <span {...stylex.attrs(s.count)} aria-live="polite">{props.shown} of {props.total}</span>
-      </Show>
-    </div>
+      </div>
+    </Show>
   )
 }

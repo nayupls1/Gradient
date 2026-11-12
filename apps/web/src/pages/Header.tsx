@@ -18,7 +18,7 @@ const s = stylex.create({
     borderBottomColor: colors.border
   },
   separator: { height: 16, alignSelf: "center" },
-  title: { fontWeight: 600, display: "flex", alignItems: "center", gap: 8, minWidth: 0 },
+  title: { fontWeight: 600, display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden", whiteSpace: "nowrap" },
   spacer: { flexGrow: 1 }
 })
 
