@@ -1,6 +1,18 @@
 import { describe, expect, test } from "bun:test"
 import type { Issue } from "@gradient/domain"
-import { emptyFilter, facetCount, filterOptions, isFiltering, matchesFilter, ME, toggle, UNASSIGNED } from "../src/lib/filter.ts"
+import {
+  emptyFilter,
+  entryMatcher,
+  facetCount,
+  filterOptions,
+  indexIssues,
+  isFiltering,
+  matchesFilter,
+  ME,
+  toggle,
+  UNASSIGNED,
+  withPicked
+} from "../src/lib/filter.ts"
 import type { SyncState } from "../src/sync/engine.ts"
 
 const issue = (id: string, number: number, extra: Partial<Issue> = {}): Issue => ({
@@ -77,9 +89,9 @@ describe("issue filters", () => {
   })
 
   test("options come from the list's own issues: a project offers only its labels and people", () => {
-    const project = [issues.i2, issues.i3]
+    const project = indexIssues(state, [issues.i2, issues.i3])
     expect(filterOptions(state, project)).toEqual({ assignees: ["grace", UNASSIGNED], labels: ["perf"], priorities: [3, 0], blocked: false })
-    const all = filterOptions(state, Object.values(issues))
+    const all = filterOptions(state, indexIssues(state, Object.values(issues)))
     expect(all.assignees).toEqual([ME, "grace", UNASSIGNED])
     expect(all.labels).toEqual(["bug", "perf"])
     expect(all.priorities).toEqual([1, 3, 0])
@@ -87,8 +99,19 @@ describe("issue filters", () => {
   })
 
   test("values already picked stay offered, so they can be removed", () => {
-    const options = filterOptions(state, [issues.i2], { ...emptyFilter, labels: ["bug"], assignees: [ME] })
-    expect(options.labels).toEqual(["bug"])
-    expect(options.assignees).toEqual([ME, "grace"])
+    expect(withPicked(["perf"], ["bug", "perf"])).toEqual(["perf", "bug"])
+  })
+
+  test("the index matches like matchesFilter, and copes with thousands of issues per keystroke", () => {
+    const many = Array.from({ length: 5000 }, (_, i) =>
+      ({ ...issues.i2, id: `x${i}`, number: 100 + i, title: `Bulk ${i}`, description: "word ".repeat(300) }))
+    const entries = indexIssues(state, many)
+    const started = performance.now()
+    for (const query of ["b", "bu", "bul", "bulk", "bulk 4", "bulk 49"]) entries.filter(entryMatcher({ ...emptyFilter, query }))
+    expect(performance.now() - started).toBeLessThan(250)
+    const f = { ...emptyFilter, query: "bulk 499" }
+    const found = entries.filter(entryMatcher(f)).map((e) => e.issue.id)
+    expect(found).toEqual(many.filter((i) => matchesFilter(state, i, f)).map((i) => i.id))
+    expect(found.length).toBeGreaterThan(0)
   })
 })
