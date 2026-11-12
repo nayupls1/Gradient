@@ -94,12 +94,16 @@ export const AssigneePicker = (props: { value: string | null; onChange: (id: str
       align={props.variant === "icon" ? "end" : "start"}
       items={[
         { value: null, label: "No assignee", icon: () => <UserIcon size={14} /> },
-        ...users(sync.state).map((u) => ({
-          value: u.id,
-          label: u.id === sync.state.viewerId ? `${u.name} (you)` : u.name,
-          icon: () => <UserAvatar name={u.name} src={u.avatarUrl} size={16} />,
-          ...(u.githubLogin ? { hint: `@${u.githubLogin}` } : {})
-        }))
+        // The viewer first, as their GitHub identity once one is connected; "me" finds them too.
+        ...users(sync.state)
+          .sort((a, b) => Number(b.id === sync.state.viewerId) - Number(a.id === sync.state.viewerId))
+          .map((u) => ({
+            value: u.id,
+            label: u.name,
+            icon: () => <UserAvatar name={u.name} src={u.avatarUrl} size={16} />,
+            keywords: [u.githubLogin ?? "", u.id === sync.state.viewerId ? "me" : ""].join(" "),
+            ...(u.githubLogin ? { hint: `@${u.githubLogin}` } : {})
+          }))
       ]}
       selected={[props.value]}
       onPick={props.onChange}

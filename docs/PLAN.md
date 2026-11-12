@@ -200,7 +200,11 @@ URL is immutable. SVGs are drawn with `<img>` and served with a CSP sandbox.
 of the Gradient GitHub App, which needs only its public client id. The server
 polls github.com for the token, stores it in `github_auth`, and links the local
 user to the GitHub login. The token acts as the user, limited to repositories
-the app is installed on (listed via `/user/installations`). It wins over
+the app is installed on (listed via `/user/installations`). If issues were
+imported before the sign-in, their GitHub-only user for that login (an
+assignee or author) is the same person: it is merged into the local user (its
+issues move over, the duplicate is deleted), so the viewer appears once, as
+their GitHub identity. A login that belongs to another account stays apart. It wins over
 `GITHUB_TOKEN` and the gh CLI token, which remain as fallbacks. `GithubClient`
 reads the token per request, so sign-in and sign-out apply without a restart;
 a 401 drops an expired or revoked sign-in. Webhooks to the app would need a
@@ -406,6 +410,18 @@ blocking scope per open dialog); the highest eligible scope wins. Chords use
 the physical key under modifiers, so they work on any layout; sequences time
 out after a second; IME composition and held-key repeat are handled.
 
+## Search and filters
+
+The issue list has a search box (`/`) and filters: assignee (`f a`, with
+"me" following the viewer and "No assignee"), label (`f l`), priority (`f p`)
+and blocked (`f b`); `f m` shows my issues and `f x` clears. Search matches
+every word, in any order, in the identifier, title, description, labels,
+assignee (name or `@login`) and GitHub reference (`#42`, `acme/web`). Values in
+one filter are ORed, filters ANDed (`lib/filter.ts`, unit tested). Each list
+(a team's, a project's) keeps its own filter for the session; while one is
+active every status group starts open. Agents have the same filters in
+`list_issues`.
+
 ## Theming
 
 Color tokens are StyleX variables. Two independent settings: mode (system,
@@ -418,7 +434,7 @@ localStorage.
 
 - Writing comments from Gradient (create/edit on GitHub, an MCP tool).
 - Board view, drag to reorder (the fractional `sortOrder` is already there).
-- Issue search in ⌘K, filters, more views (deliberately left to the user's design).
+- Issue search in ⌘K, saved views, more views (deliberately left to the user's design).
 - Markdown preview while editing; toggling task list checkboxes in place.
 - Offline cache of the store in IndexedDB.
 - More sign-in methods (GitHub OAuth, passkeys), password reset by email, and

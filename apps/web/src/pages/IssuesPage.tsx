@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, flush, For, onSettled, Show, untrack, useContext } from "solid-js"
 import { ComposerContext, ProjectDialogsContext, Sync } from "../app/context.ts"
 import { github } from "../app/github.ts"
+import { FilterBar, type FilterApis, filterFor, setFilterFor } from "../app/FilterBar.tsx"
 import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { ProjectGlyph } from "../app/ProjectGlyph.tsx"
@@ -26,6 +27,7 @@ import {
 } from "../lib/select.ts"
 import { TeamBadge } from "../app/TeamBadge.tsx"
 import { KeyScope } from "../keys/solid.tsx"
+import { emptyFilter, isFiltering, matchesFilter } from "../lib/filter.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { type RowRange, rowOffsets, sameRange, scrollToReveal, visibleRows } from "../lib/window.ts"
 import { color } from "../theme/tokens.stylex.ts"
@@ -496,19 +498,46 @@ export const IssuesPage = () => {
   const missing = () => (projectId() ? (project() ? null : "This project does not exist, or was deleted.") : params.key && !team() ? "This team does not exist, or was deleted." : null)
   const [focusTarget, setFocusedId] = createSignal<string | null>(null)
   const apis = new Map<string, PickerApis>()
+  const filterApis: FilterApis = {}
 
-  const groups = createMemo(() => {
+  /** Each list keeps its own search and filters: a project's, or a team's. */
+  const view = () => projectId() ?? team()?.id ?? ""
+  const filter = () => filterFor(view())
+  const setFilter = (next: Parameters<typeof setFilterFor>[1]) => setFilterFor(view(), next)
+  const filtering = () => isFiltering(filter())
+
+  /** The list's issues before filtering. */
+  const unfiltered = createMemo(() => {
     const t = team()
     if (!t) return []
     const only = projectId()
-    const visible = Object.values(sync.state.issues).filter(
+    return Object.values(sync.state.issues).filter(
       (i) => i.teamId === t.id && i.archivedAt === null && (!only || i.projectId === only)
     )
+  })
+  const groups = createMemo(() => {
+    const t = team()
+    if (!t) return []
+    const f = filter()
+    const visible = isFiltering(f) ? unfiltered().filter((i) => matchesFilter(sync.state, i, f)) : unfiltered()
     return teamStates(sync.state, t.id)
       .map((state) => ({ state, issues: visible.filter((i) => i.stateId === state.id).sort(compareIssues) }))
       .filter((g) => g.issues.length > 0)
   })
-  const total = () => groups().reduce((n, g) => n + g.issues.length, 0)
+  const total = () => unfiltered().length
+  const shown = () => groups().reduce((n, g) => n + g.issues.length, 0)
+
+  /**
+   * While filtering, every group starts open, so a match in Done is not hidden.
+   * Toggles made then last until the filter is cleared; the remembered choices stay as they were.
+   */
+  const [filterCollapsed, setFilterCollapsed] = createSignal<Readonly<Record<string, boolean>>>({})
+  const collapsed = (state: WorkflowState) => (filtering() ? filterCollapsed()[state.id] ?? false : isCollapsed(state))
+  const toggleGroup = (state: WorkflowState) =>
+    filtering() ? setFilterCollapsed({ ...filterCollapsed(), [state.id]: !collapsed(state) }) : toggleCollapsed(state)
+  createEffect(filtering, (on) => {
+    if (!on) setFilterCollapsed({})
+  })
 
   let listEl: HTMLDivElement | undefined
   const [scrollTop, setScrollTop] = createSignal(0)
@@ -525,7 +554,7 @@ export const IssuesPage = () => {
   const rowsTop = createMemo(() => {
     const gs = groups()
     const offsets = rowOffsets(
-      gs.map((g) => ({ rows: isCollapsed(g.state) ? 0 : g.issues.length })),
+      gs.map((g) => ({ rows: collapsed(g.state) ? 0 : g.issues.length })),
       { headerHeight: HEADER_HEIGHT, rowHeight: ROW_HEIGHT }
     )
     return new Map(gs.map((g, i) => [g.state.id, offsets[i]!]))
@@ -538,7 +567,7 @@ export const IssuesPage = () => {
   const reveal = (issue: Issue) => {
     const el = listEl
     const group = groups().find((g) => g.state.id === issue.stateId)
-    if (!el || !group || isCollapsed(group.state)) return
+    if (!el || !group || collapsed(group.state)) return
     const index = group.issues.findIndex((i) => i.id === issue.id)
     const top = rowsTop().get(group.state.id)
     if (index === -1 || top === undefined) return
@@ -548,7 +577,7 @@ export const IssuesPage = () => {
     setScrollTop(el.scrollTop)
   }
   /** Rows the keyboard can reach, top to bottom. */
-  const order = createMemo(() => groups().flatMap((g) => (isCollapsed(g.state) ? [] : g.issues.map((i) => i.id))))
+  const order = createMemo(() => groups().flatMap((g) => (collapsed(g.state) ? [] : g.issues.map((i) => i.id))))
   /** The focused row, dropped automatically when that issue leaves the list. */
   const focusedId = createMemo(() => {
     const id = focusTarget()
@@ -615,10 +644,78 @@ export const IssuesPage = () => {
       when: () => focused() !== undefined,
       run: () => {
         const state = sync.state.workflowStates[focused()!.stateId]
-        if (state) toggleCollapsed(state)
+        if (state) toggleGroup(state)
       }
     },
     { id: "list.clearFocus", title: "Clear focus", group, keys: ["escape"], scope, hidden: true, when: () => focusedId() !== null, run: () => setFocusedId(null) },
+    {
+      id: "filter.search",
+      title: "Search issues",
+      group: "Filter",
+      keys: ["/"],
+      scope,
+      run: () => {
+        filterApis.search?.focus()
+        filterApis.search?.select()
+      }
+    },
+    {
+      id: "filter.leaveSearch",
+      title: "Clear the search, or leave it",
+      group: "Filter",
+      keys: ["escape"],
+      scope,
+      allowInInput: true,
+      hidden: true,
+      when: () => document.activeElement === filterApis.search,
+      run: () => (filter().query !== "" ? setFilter({ ...filter(), query: "" }) : filterApis.search?.blur())
+    },
+    {
+      id: "filter.toResults",
+      title: "Go to the first result",
+      group: "Filter",
+      keys: ["arrowdown", "enter"],
+      scope,
+      allowInInput: true,
+      hidden: true,
+      when: () => document.activeElement === filterApis.search,
+      run: () => {
+        filterApis.search?.blur()
+        setFocusedId(order()[0] ?? null)
+      }
+    },
+    {
+      id: "filter.mine",
+      title: "Show my issues",
+      group: "Filter",
+      keys: ["f m"],
+      scope,
+      run: () => {
+        const f = filter()
+        const mine = f.assignees.length === 1 && f.assignees[0] === "me"
+        setFilter({ ...f, assignees: mine ? [] : ["me"] })
+      }
+    },
+    { id: "filter.assignee", title: "Filter by assignee…", group: "Filter", keys: ["f a"], scope, run: () => filterApis.assignee?.open() },
+    { id: "filter.label", title: "Filter by label…", group: "Filter", keys: ["f l"], scope, run: () => filterApis.label?.open() },
+    { id: "filter.priority", title: "Filter by priority…", group: "Filter", keys: ["f p"], scope, run: () => filterApis.priority?.open() },
+    {
+      id: "filter.blocked",
+      title: "Show only blocked issues",
+      group: "Filter",
+      keys: ["f b"],
+      scope,
+      run: () => setFilter({ ...filter(), blocked: !filter().blocked })
+    },
+    {
+      id: "filter.clear",
+      title: "Clear search and filters",
+      group: "Filter",
+      keys: ["f x"],
+      scope,
+      when: () => filtering(),
+      run: () => setFilter(emptyFilter)
+    },
     { id: "project.edit", title: "Edit project…", group: "Project", scope, when: () => project() !== undefined, run: () => projectDialogs.edit(project()!.id) },
     {
       id: "project.icon",
@@ -693,6 +790,18 @@ export const IssuesPage = () => {
           </>
         }
       />
+      <Show when={!missing() && team()}>
+        {(t) => (
+          <FilterBar
+            teamId={t().id}
+            filter={filter()}
+            onChange={setFilter}
+            shown={shown()}
+            total={total()}
+            apis={filterApis}
+          />
+        )}
+      </Show>
       <div ref={listEl} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} {...stylex.attrs(s.list)}>
         <Show
           when={!missing()}
@@ -701,10 +810,20 @@ export const IssuesPage = () => {
         <Show
           when={groups().length > 0}
           fallback={
-            <div {...stylex.attrs(s.empty)}>
-              {project() ? `No issues in ${project()!.name} yet.` : "No issues yet."}
-              <Button onClick={() => composer.open()}>Create an issue</Button>
-            </div>
+            <Show
+              when={!filtering() || total() === 0}
+              fallback={
+                <div {...stylex.attrs(s.empty)}>
+                  No issues match.
+                  <Button variant="outline" onClick={() => setFilter(emptyFilter)}>Clear search and filters</Button>
+                </div>
+              }
+            >
+              <div {...stylex.attrs(s.empty)}>
+                {project() ? `No issues in ${project()!.name} yet.` : "No issues yet."}
+                <Button onClick={() => composer.open()}>Create an issue</Button>
+              </div>
+            </Show>
           }
         >
           <For each={groups()} keyed={(g) => g.state.id}>
@@ -713,8 +832,8 @@ export const IssuesPage = () => {
                 state={g().state}
                 issues={g().issues}
                 showProject={!projectId()}
-                collapsed={isCollapsed(g().state)}
-                onToggle={() => toggleCollapsed(g().state)}
+                collapsed={collapsed(g().state)}
+                onToggle={() => toggleGroup(g().state)}
                 focusedId={focusedId()}
                 onFocus={focusFromPointer}
                 registerApis={(id, a) => {

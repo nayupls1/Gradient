@@ -8,6 +8,7 @@ import { ServerConfig } from "../src/config.ts"
 import { Db } from "../src/db/Db.ts"
 import { GithubAuth } from "../src/github/GithubAuth.ts"
 import { GithubSync } from "../src/github/GithubSync.ts"
+import { Mutations } from "../src/sync/Mutations.ts"
 import { makeFakeGithub } from "./fake-github.ts"
 
 type Fake = ReturnType<typeof makeFakeGithub>
@@ -42,7 +43,7 @@ const start = (options: {
   })
   const runtime = ManagedRuntime.make(AppServices.pipe(Layer.provideMerge(config)))
   cleanups.push(() => runtime.dispose())
-  const run = <A, E>(effect: Effect.Effect<A, E, Db | GithubSync | GithubAuth>) => runtime.runPromise(effect)
+  const run = <A, E>(effect: Effect.Effect<A, E, Db | GithubSync | GithubAuth | Mutations>) => runtime.runPromise(effect)
   const auth = <A, E>(f: (a: GithubAuth["Service"]) => Effect.Effect<A, E>) => run(Effect.flatMap(Effect.service(GithubAuth), f))
   const github = <A, E>(f: (s: GithubSync["Service"]) => Effect.Effect<A, E>) => run(Effect.flatMap(Effect.service(GithubSync), f))
   const status = () => github((s) => s.status)
@@ -111,6 +112,43 @@ describe("Sign in with GitHub", () => {
     const [token] = fake.appTokens()
     expect(token).toStartWith("ghu_")
     expect(await app.auth((a) => Effect.sync(() => a.tokenUnsafe()))).toBe(token!)
+  })
+
+  test("signing in merges the user imported for the same GitHub login into the local user", async () => {
+    const fake = fakeGithub()
+    const app = start({ fake })
+    // An issue imported before the sign-in, created by and assigned to "octo", known only from GitHub.
+    const twinId = "twin-octo"
+    const issueId = await app.run(
+      Effect.gen(function*() {
+        const db = yield* Db
+        yield* db.putUser({ id: twinId, name: "octo", githubLogin: "octo", avatarUrl: null, role: null })
+        const team = (yield* db.teams)[0]!
+        const state = (yield* db.statesForTeam(team.id))[0]!
+        const id = "issue-octo"
+        yield* (yield* Mutations).apply({ origin: "system", actorId: twinId }, [{
+          _tag: "IssueCreate", id, teamId: team.id, projectId: null, title: "Mine", description: "",
+          stateId: state.id, priority: 0, assigneeId: twinId, labelIds: [], sortOrder: "a0"
+        }])
+        return id
+      })
+    )
+
+    await app.signIn()
+
+    const me = (await viewerUser(app))!
+    expect(me.githubLogin).toBe("octo")
+    const [issue, twin, deletes] = await app.run(
+      Effect.gen(function*() {
+        const db = yield* Db
+        const deletes = yield* db.sql`SELECT model_id FROM sync_log WHERE model = 'user' AND op = 'delete'`
+        return [yield* db.getIssue(issueId), yield* db.getUser(twinId), deletes.map((r) => r.model_id)] as const
+      })
+    )
+    expect(issue?.assigneeId).toBe(me.id)
+    expect(issue?.creatorId).toBe(me.id)
+    expect(twin).toBeUndefined()
+    expect(deletes).toEqual([twinId])
   })
 
   test("the sign-in survives a restart", async () => {
