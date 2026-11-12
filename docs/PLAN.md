@@ -418,8 +418,8 @@ and blocked (`f b`); `f m` shows my issues and `f x` clears. Search matches
 every word, in any order, in the identifier, title, description, labels,
 assignee (name or `@login`) and GitHub reference (`#42`, `acme/web`). Values in
 one filter are ORed, filters ANDed (`lib/filter.ts`, unit tested). Each list
-(a team's, a project's) keeps its own filter for the session; while one is
-active every status group starts open. Agents have the same filters in
+(a team's, a project's) keeps its own filter for the session; collapsed status
+groups stay collapsed, their headers counting the matches. Agents have the same filters in
 `list_issues`.
 
 ## Theming

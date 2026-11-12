@@ -527,18 +527,6 @@ export const IssuesPage = () => {
   const total = () => unfiltered().length
   const shown = () => groups().reduce((n, g) => n + g.issues.length, 0)
 
-  /**
-   * While filtering, every group starts open, so a match in Done is not hidden.
-   * Toggles made then last until the filter is cleared; the remembered choices stay as they were.
-   */
-  const [filterCollapsed, setFilterCollapsed] = createSignal<Readonly<Record<string, boolean>>>({})
-  const collapsed = (state: WorkflowState) => (filtering() ? filterCollapsed()[state.id] ?? false : isCollapsed(state))
-  const toggleGroup = (state: WorkflowState) =>
-    filtering() ? setFilterCollapsed({ ...filterCollapsed(), [state.id]: !collapsed(state) }) : toggleCollapsed(state)
-  createEffect(filtering, (on) => {
-    if (!on) setFilterCollapsed({})
-  })
-
   let listEl: HTMLDivElement | undefined
   const [scrollTop, setScrollTop] = createSignal(0)
   const [viewportHeight, setViewportHeight] = createSignal(window.innerHeight)
@@ -554,7 +542,7 @@ export const IssuesPage = () => {
   const rowsTop = createMemo(() => {
     const gs = groups()
     const offsets = rowOffsets(
-      gs.map((g) => ({ rows: collapsed(g.state) ? 0 : g.issues.length })),
+      gs.map((g) => ({ rows: isCollapsed(g.state) ? 0 : g.issues.length })),
       { headerHeight: HEADER_HEIGHT, rowHeight: ROW_HEIGHT }
     )
     return new Map(gs.map((g, i) => [g.state.id, offsets[i]!]))
@@ -567,7 +555,7 @@ export const IssuesPage = () => {
   const reveal = (issue: Issue) => {
     const el = listEl
     const group = groups().find((g) => g.state.id === issue.stateId)
-    if (!el || !group || collapsed(group.state)) return
+    if (!el || !group || isCollapsed(group.state)) return
     const index = group.issues.findIndex((i) => i.id === issue.id)
     const top = rowsTop().get(group.state.id)
     if (index === -1 || top === undefined) return
@@ -577,7 +565,7 @@ export const IssuesPage = () => {
     setScrollTop(el.scrollTop)
   }
   /** Rows the keyboard can reach, top to bottom. */
-  const order = createMemo(() => groups().flatMap((g) => (collapsed(g.state) ? [] : g.issues.map((i) => i.id))))
+  const order = createMemo(() => groups().flatMap((g) => (isCollapsed(g.state) ? [] : g.issues.map((i) => i.id))))
   /** The focused row, dropped automatically when that issue leaves the list. */
   const focusedId = createMemo(() => {
     const id = focusTarget()
@@ -644,7 +632,7 @@ export const IssuesPage = () => {
       when: () => focused() !== undefined,
       run: () => {
         const state = sync.state.workflowStates[focused()!.stateId]
-        if (state) toggleGroup(state)
+        if (state) toggleCollapsed(state)
       }
     },
     { id: "list.clearFocus", title: "Clear focus", group, keys: ["escape"], scope, hidden: true, when: () => focusedId() !== null, run: () => setFocusedId(null) },
@@ -832,8 +820,8 @@ export const IssuesPage = () => {
                 state={g().state}
                 issues={g().issues}
                 showProject={!projectId()}
-                collapsed={collapsed(g().state)}
-                onToggle={() => toggleGroup(g().state)}
+                collapsed={isCollapsed(g().state)}
+                onToggle={() => toggleCollapsed(g().state)}
                 focusedId={focusedId()}
                 onFocus={focusFromPointer}
                 registerApis={(id, a) => {
