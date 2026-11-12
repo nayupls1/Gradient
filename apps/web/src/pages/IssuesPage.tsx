@@ -4,7 +4,7 @@ import { useNavigate, useParams } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, flush, For, onSettled, Show, untrack, useContext } from "solid-js"
 import { ComposerContext, ProjectDialogsContext, Sync } from "../app/context.ts"
 import { github } from "../app/github.ts"
-import { ActiveFilters, type FilterApis, FilterMenu, filterFor, SearchField, setFilterFor } from "../app/FilterBar.tsx"
+import { FilterBar, type FilterApis, filterFor, setFilterFor } from "../app/FilterBar.tsx"
 import { GithubRepoPicker } from "../app/GithubRepoPicker.tsx"
 import { type PickerApis, useIssueCommands } from "../app/issueCommands.ts"
 import { ProjectGlyph } from "../app/ProjectGlyph.tsx"
@@ -27,7 +27,7 @@ import {
 } from "../lib/select.ts"
 import { TeamBadge } from "../app/TeamBadge.tsx"
 import { KeyScope } from "../keys/solid.tsx"
-import { emptyFilter, isFiltering, matchesFilter } from "../lib/filter.ts"
+import { emptyFilter, entryMatcher, indexIssues, isFiltering } from "../lib/filter.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { type RowRange, rowOffsets, sameRange, scrollToReveal, visibleRows } from "../lib/window.ts"
 import { color } from "../theme/tokens.stylex.ts"
@@ -515,13 +515,25 @@ export const IssuesPage = () => {
       (i) => i.teamId === t.id && i.archivedAt === null && (!only || i.projectId === only)
     )
   })
-  const groups = createMemo(() => {
+  /**
+   * The issues as plain entries, grouped by status and sorted. Rebuilt when the
+   * issues change, not while typing: a keystroke only filters these entries.
+   */
+  const entries = createMemo(() => indexIssues(sync.state, unfiltered()))
+  const sorted = createMemo(() => {
     const t = team()
     if (!t) return []
+    const all = entries()
+    return teamStates(sync.state, t.id).map((state) => ({
+      state,
+      entries: all.filter((e) => e.stateId === state.id).sort(compareIssues)
+    }))
+  })
+  const groups = createMemo(() => {
     const f = filter()
-    const visible = isFiltering(f) ? unfiltered().filter((i) => matchesFilter(sync.state, i, f)) : unfiltered()
-    return teamStates(sync.state, t.id)
-      .map((state) => ({ state, issues: visible.filter((i) => i.stateId === state.id).sort(compareIssues) }))
+    const keep = isFiltering(f) ? entryMatcher(f) : () => true
+    return sorted()
+      .map((g) => ({ state: g.state, issues: g.entries.filter(keep).map((e) => e.issue) }))
       .filter((g) => g.issues.length > 0)
   })
   const total = () => unfiltered().length
@@ -649,17 +661,14 @@ export const IssuesPage = () => {
     },
     {
       id: "filter.leaveSearch",
-      title: "Clear the search and leave it",
+      title: "Clear the search, or leave it",
       group: "Filter",
       keys: ["escape"],
       scope,
       allowInInput: true,
       hidden: true,
       when: () => document.activeElement === filterApis.search,
-      run: () => {
-        if (filter().query !== "") setFilter({ ...filter(), query: "" })
-        filterApis.search?.blur()
-      }
+      run: () => (filter().query !== "" ? setFilter({ ...filter(), query: "" }) : filterApis.search?.blur())
     },
     {
       id: "filter.toResults",
@@ -675,11 +684,11 @@ export const IssuesPage = () => {
         setFocusedId(order()[0] ?? null)
       }
     },
-    { id: "filter.menu", title: "Filter…", group: "Filter", keys: ["f"], scope, run: () => filterApis.menu?.open() },
     {
       id: "filter.mine",
       title: "Show my issues",
       group: "Filter",
+      keys: ["f m"],
       scope,
       run: () => {
         const f = filter()
@@ -687,11 +696,22 @@ export const IssuesPage = () => {
         setFilter({ ...f, assignees: mine ? [] : ["me"] })
       }
     },
+    { id: "filter.assignee", title: "Filter by assignee…", group: "Filter", keys: ["f a"], scope, run: () => filterApis.assignee?.open() },
+    { id: "filter.label", title: "Filter by label…", group: "Filter", keys: ["f l"], scope, run: () => filterApis.label?.open() },
+    { id: "filter.priority", title: "Filter by priority…", group: "Filter", keys: ["f p"], scope, run: () => filterApis.priority?.open() },
+    {
+      id: "filter.blocked",
+      title: "Show only blocked issues",
+      group: "Filter",
+      keys: ["f b"],
+      scope,
+      run: () => setFilter({ ...filter(), blocked: !filter().blocked })
+    },
     {
       id: "filter.clear",
       title: "Clear search and filters",
       group: "Filter",
-      keys: ["shift+f"],
+      keys: ["f x"],
       scope,
       when: () => filtering(),
       run: () => setFilter(emptyFilter)
@@ -732,7 +752,7 @@ export const IssuesPage = () => {
               <>
                 <TeamBadge team={team()} />
                 {team()?.name ?? "Issues"}
-                <Badge variant="secondary" xstyle={s.headerCount}>{filtering() ? `${shown()} / ${total()}` : total()}</Badge>
+                <Badge variant="secondary" xstyle={s.headerCount}>{total()}</Badge>
               </>
             }
           >
@@ -740,17 +760,13 @@ export const IssuesPage = () => {
               <>
                 <ProjectGlyph project={p()} size={15} />
                 {p().name}
-                <Badge variant="secondary" xstyle={s.headerCount}>{filtering() ? `${shown()} / ${total()}` : total()}</Badge>
+                <Badge variant="secondary" xstyle={s.headerCount}>{total()}</Badge>
               </>
             )}
           </Show>
         }
         actions={
           <>
-            <Show when={!missing() && team()}>
-              <SearchField filter={filter()} onChange={setFilter} apis={filterApis} />
-              <FilterMenu issues={unfiltered()} filter={filter()} onChange={setFilter} apis={filterApis} />
-            </Show>
             <Show when={project()}>
               {(p) => (
                 <>
@@ -775,7 +791,17 @@ export const IssuesPage = () => {
         }
       />
       <Show when={!missing() && team()}>
-        <ActiveFilters filter={filter()} onChange={setFilter} />
+        {(t) => (
+          <FilterBar
+            entries={entries()}
+            teamId={t().id}
+            filter={filter()}
+            onChange={setFilter}
+            shown={shown()}
+            total={total()}
+            apis={filterApis}
+          />
+        )}
       </Show>
       <div ref={listEl} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} {...stylex.attrs(s.list)}>
         <Show

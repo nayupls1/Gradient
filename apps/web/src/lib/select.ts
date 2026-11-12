@@ -143,7 +143,7 @@ export const issueHref = (state: SyncState, issue: Issue) =>
 
 const priorityRank = (p: number) => (p === 0 ? 5 : p)
 
-export const compareIssues = (a: Issue, b: Issue) =>
+export const compareIssues = (a: Pick<Issue, "priority" | "sortOrder">, b: Pick<Issue, "priority" | "sortOrder">) =>
   priorityRank(a.priority) - priorityRank(b.priority) || (a.sortOrder < b.sortOrder ? 1 : a.sortOrder > b.sortOrder ? -1 : 0)
 
 export const formatDate = (ms: number) =>
