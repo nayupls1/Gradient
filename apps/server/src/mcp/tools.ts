@@ -271,6 +271,17 @@ export const GetPullRequest = Tool.make("get_pull_request", {
       patch: Schema.optionalKey(Schema.NullOr(Schema.String))
     })),
     checks: Schema.Array(Schema.Struct({ name: Schema.String, status: Schema.String, url: Schema.NullOr(Schema.String) })),
+    /** GitHub's mergeable_state: clean, unstable, blocked, behind, dirty, draft or unknown. */
+    merge_state: Schema.String,
+    merge_methods: Schema.Array(Schema.String),
+    /** Inline comments on the diff, oldest first. */
+    review_comments: Schema.Array(Schema.Struct({
+      path: Schema.String,
+      line: Schema.NullOr(Schema.Int),
+      author: Schema.NullOr(Schema.String),
+      body: Schema.String,
+      url: Schema.String
+    })),
     /** Reviews and comments, oldest first. */
     activity: Schema.Array(Schema.Struct({
       kind: Schema.String,
@@ -288,6 +299,71 @@ export const GetPullRequest = Tool.make("get_pull_request", {
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+
+const PullRequestRefParam = Schema.String.annotate({ description: "\"owner/repo#12\" or a GitHub pull request URL." })
+const ActsAs = " It goes out as your GitHub account (the agent key owner's): connect it under Profile → GitHub in the app."
+
+export const CommentOnIssue = Tool.make("comment_on_issue", {
+  description: "Comment on an issue's GitHub copy (the issue must be synced with GitHub)." + ActsAs,
+  parameters: Schema.Struct({ id: IssueRef, body: Schema.String.annotate({ description: "Markdown." }) }),
+  success: Schema.Struct({ ok: Schema.Boolean }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+
+export const CommentOnPullRequest = Tool.make("comment_on_pull_request", {
+  description: "Comment on a pull request's conversation." + ActsAs,
+  parameters: Schema.Struct({ pull_request: PullRequestRefParam, body: Schema.String.annotate({ description: "Markdown." }) }),
+  success: Schema.Struct({ url: Schema.String }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+
+export const ReviewPullRequest = Tool.make("review_pull_request", {
+  description:
+    "Review a pull request: approve, request changes, or comment, with an optional summary and inline comments on lines of its diff " +
+    "(read them with get_pull_request and diff: true). Request changes needs a summary." + ActsAs,
+  parameters: Schema.Struct({
+    pull_request: PullRequestRefParam,
+    event: Schema.Literals(["approve", "request_changes", "comment"]),
+    body: Schema.optionalKey(Schema.String.annotate({ description: "The review summary, markdown." })),
+    comments: Schema.optionalKey(Schema.Array(Schema.Struct({
+      path: Schema.String,
+      line: Schema.Int.annotate({ description: "Line in the new file (side RIGHT) or the old one (LEFT)." }),
+      side: Schema.optionalKey(Schema.Literals(["LEFT", "RIGHT"]).annotate({ description: "Default RIGHT." })),
+      start_line: Schema.optionalKey(Schema.Int.annotate({ description: "First line of a multi-line comment." })),
+      body: Schema.String
+    })))
+  }),
+  success: Schema.Struct({ ok: Schema.Boolean }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true)
+
+export const MergePullRequest = Tool.make("merge_pull_request", {
+  description:
+    "Merge a pull request at its current head (or at `sha`). Only when the user asked for it: pass confirm: true. " +
+    "GitHub refuses when it conflicts or branch protection blocks it, and the error says why." + ActsAs,
+  parameters: Schema.Struct({
+    pull_request: PullRequestRefParam,
+    method: Schema.optionalKey(Schema.Literals(["merge", "squash", "rebase"]).annotate({
+      description: "Defaults to the first method the repository allows."
+    })),
+    sha: Schema.optionalKey(Schema.String.annotate({ description: "Refuse if the head is no longer this commit." })),
+    confirm: Schema.Literal(true).annotate({ description: "Must be true: the user asked for this merge." })
+  }),
+  success: Schema.Struct({ merged: Schema.Boolean, sha: Schema.String, method: Schema.String }),
+  failure: ToolError,
+  failureMode: "return"
+})
+  .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true)
 
 export const GithubConnection = Tool.make("github_status", {
@@ -474,6 +550,10 @@ export const GradientToolkit = Toolkit.make(
   RemoveTeamMember,
   InvitePerson,
   GetPullRequest,
+  CommentOnIssue,
+  CommentOnPullRequest,
+  ReviewPullRequest,
+  MergePullRequest,
   GithubConnection,
   GithubSignIn
 )

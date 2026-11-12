@@ -1,23 +1,43 @@
-import type { PullRequestActivity, PullRequestCheck, PullRequestCheckStatus, PullRequestDetail, PullRequestReviewState } from "@gradient/domain"
+import type {
+  DraftReviewComment,
+  MergeMethod,
+  PullRequestActivity,
+  PullRequestCheck,
+  PullRequestCheckStatus,
+  PullRequestDetail,
+  PullRequestReviewComment,
+  PullRequestReviewState,
+  ReviewEvent
+} from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import type { JSX } from "@solidjs/web"
 import { useNavigate, useParams } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, Match, Show, Switch, untrack, useContext } from "solid-js"
 import { Sync } from "../app/context.ts"
-import { DiffView, type DiffViewApi } from "../app/DiffView.tsx"
+import { CommentBox } from "../app/CommentBox.tsx"
+import { type DiffLineRange, type DiffThreadAnchor, DiffView, type DiffViewApi } from "../app/DiffView.tsx"
+import { GithubConnect } from "../app/GithubConnect.tsx"
+import { githubAccount } from "../app/githubAccount.ts"
 import { Markdown } from "../app/Markdown.tsx"
 import { UserAvatar } from "../app/UserAvatar.tsx"
-import { useCommands, useScope } from "../keys/solid.tsx"
+import { KeyScope, useCommands, useScope } from "../keys/solid.tsx"
 import { formatRelative } from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { font } from "../theme/tokens.stylex.ts"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "../ui/breadcrumb.tsx"
-import { Button } from "../ui/button.tsx"
+import { Button, type ButtonProps } from "../ui/button.tsx"
+import { ButtonGroup } from "../ui/button-group.tsx"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu.tsx"
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover.tsx"
+import { toast } from "../ui/sonner.tsx"
+import { Textarea } from "../ui/textarea.tsx"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible.tsx"
 import {
   ArrowLeftIcon,
   CheckStatusIcon,
   checkStatusLabel,
+  CheckIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   CommitIcon,
   ExternalIcon,
@@ -31,6 +51,7 @@ import {
   ReviewStateIcon,
   reviewStateLabel,
   TagIcon,
+  TrashIcon,
   UsersIcon
 } from "../ui/icons.tsx"
 import { Skeleton } from "../ui/skeleton.tsx"
@@ -202,6 +223,65 @@ const s = stylex.create({
   binary: { color: colors.mutedForeground, fontSize: "0.75rem", paddingInline: 8, paddingTop: 10 },
   diff: { minWidth: 0, minHeight: 0, height: "100%" },
   center: { display: "grid", placeItems: "center", height: "60%", color: colors.mutedForeground, textAlign: "center", gap: 12 },
+  composer: { marginTop: 4 },
+  thread: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    marginBlock: 6,
+    marginInline: 12,
+    paddingBlock: 10,
+    paddingInline: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+    fontFamily: font.sans,
+    maxWidth: 760
+  },
+  threadComment: { display: "flex", flexDirection: "column", gap: 4 },
+  threadBody: { fontSize: 13, lineHeight: 1.55 },
+  pending: {
+    fontSize: "0.6875rem",
+    fontWeight: 500,
+    paddingInline: 6,
+    borderRadius: 999,
+    color: "#b07d1a",
+    backgroundColor: "color-mix(in srgb, #e2a336 18%, transparent)"
+  },
+  reviewPopover: { width: 400 },
+  review: { display: "flex", flexDirection: "column", gap: 10 },
+  reviewTitle: { fontSize: "0.8125rem", fontWeight: 600 },
+  reviewNote: { color: colors.mutedForeground, fontSize: "0.75rem" },
+  reviewInput: { minHeight: 90, fontSize: 13 },
+  reviewEvents: { display: "flex", flexDirection: "column", gap: 2 },
+  reviewEvent: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 8,
+    paddingBlock: 6,
+    paddingInline: 8,
+    borderRadius: 6,
+    cursor: "pointer",
+    fontSize: "0.8125rem",
+    backgroundColor: { default: "transparent", ":hover": colors.accent }
+  },
+  reviewEventHint: { display: "block", color: colors.mutedForeground, fontSize: "0.75rem" },
+  reviewActions: { display: "flex", justifyContent: "flex-end", gap: 8 },
+  count: {
+    minWidth: 18,
+    height: 18,
+    paddingInline: 5,
+    borderRadius: 999,
+    fontSize: "0.6875rem",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primary,
+    color: colors.primaryForeground
+  },
+  mergeHint: { fontSize: "0.75rem", color: colors.mutedForeground, maxWidth: 260 },
   skeletons: { display: "flex", flexDirection: "column", gap: 10, padding: 24 }
 })
 
@@ -279,7 +359,11 @@ const ActivityCard = (props: { item: PullRequestActivity; repo: { owner: string;
   </article>
 )
 
-const Summary = (props: { pr: PullRequestDetail }) => {
+const Summary = (props: {
+  pr: PullRequestDetail
+  onComment: (body: string) => Promise<void>
+  commentRef: (el: HTMLTextAreaElement) => void
+}) => {
   const repo = () => ({ owner: props.pr.owner, repo: props.pr.repo })
   const reviewers = () => reviewersOf(props.pr)
   const conversation = () => props.pr.activity.filter((a) => a.kind === "comment" || a.body.trim() !== "" || a.reviewState !== "commented")
@@ -336,15 +420,109 @@ const Summary = (props: { pr: PullRequestDetail }) => {
           <For each={conversation()} fallback={<span {...stylex.attrs(s.none)}>No comments yet.</span>}>
             {(item) => <ActivityCard item={item} repo={repo()} />}
           </For>
+          <div {...stylex.attrs(s.composer)}>
+            <CommentBox onSubmit={props.onComment} inputRef={props.commentRef} />
+          </div>
         </Section>
       </div>
     </div>
   )
 }
 
-const Files = (props: { pr: PullRequestDetail; layout: "unified" | "split" }) => {
+/** A pending inline comment, sent with the review. */
+type Draft = DraftReviewComment & { readonly id: string }
+/** Where a new inline comment is being written. */
+type Composing = { readonly path: string } & DiffLineRange
+
+const threadKey = (path: string, side: "LEFT" | "RIGHT", line: number) => `${path}\u0000${side}\u0000${line}`
+
+const InlineThread = (props: {
+  comments: ReadonlyArray<PullRequestReviewComment>
+  drafts: ReadonlyArray<Draft>
+  composing: Composing | null
+  repo: { owner: string; repo: string }
+  onAdd: (body: string) => void
+  onCommentNow: (body: string) => Promise<void>
+  onCancel: () => void
+  onDiscard: (id: string) => void
+}) => (
+  <div {...stylex.attrs(s.thread)}>
+    <For each={props.comments}>
+      {(c) => (
+        <div {...stylex.attrs(s.threadComment)}>
+          <div {...stylex.attrs(s.cardMeta)}>
+            <UserAvatar name={c.author ?? "ghost"} src={c.authorAvatarUrl} size={16} />
+            <span {...stylex.attrs(s.who)}>{c.author ?? "ghost"}</span>
+            <a href={c.url} target="_blank" rel="noreferrer" {...stylex.attrs(s.cardTime)}>{formatRelative(c.createdAt)}</a>
+          </div>
+          <Markdown source={c.body} repo={props.repo} xstyle={s.threadBody} />
+        </div>
+      )}
+    </For>
+    <For each={props.drafts}>
+      {(d) => (
+        <div {...stylex.attrs(s.threadComment)}>
+          <div {...stylex.attrs(s.cardMeta)}>
+            <span {...stylex.attrs(s.pending)}>Pending</span>
+            <Show when={d.startLine !== null}>lines {d.startLine}–{d.line}</Show>
+            <Button size="icon-xs" variant="ghost" title="Discard" onClick={() => props.onDiscard(d.id)} xstyle={s.cardTime}>
+              <TrashIcon size={12} />
+            </Button>
+          </div>
+          <Markdown source={d.body} repo={props.repo} xstyle={s.threadBody} />
+        </div>
+      )}
+    </For>
+    <Show when={props.composing}>
+      <CommentBox
+        autofocus
+        placeholder="Comment on this line… (markdown)"
+        submitLabel="Add to review"
+        secondary={{ label: "Comment now", run: props.onCommentNow }}
+        onSubmit={props.onAdd}
+        onCancel={props.onCancel}
+      />
+    </Show>
+  </div>
+)
+
+const Files = (props: {
+  pr: PullRequestDetail
+  layout: "unified" | "split"
+  drafts: ReadonlyArray<Draft>
+  composing: Composing | null
+  onPickLines: (path: string, range: DiffLineRange) => void
+  onAdd: (body: string) => void
+  onCommentNow: (body: string) => Promise<void>
+  onCancel: () => void
+  onDiscard: (id: string) => void
+}) => {
   let api: DiffViewApi | undefined
   const binary = () => props.pr.files.filter((f) => f.patch === null)
+  /** Inline comments on lines still in the diff, by thread; replies sit under their first comment. */
+  const byKey = createMemo(() => {
+    const roots = new Map(props.pr.reviewComments.map((c) => [c.id, c]))
+    const map = new Map<string, Array<PullRequestReviewComment>>()
+    for (const c of props.pr.reviewComments) {
+      const root = c.inReplyTo !== null ? roots.get(c.inReplyTo) ?? c : c
+      if (root.line === null) continue
+      const key = threadKey(root.path, root.side, root.line)
+      map.set(key, [...(map.get(key) ?? []), c])
+    }
+    return map
+  })
+  const commentsAt = (key: string) => byKey().get(key) ?? []
+  const threadsOf = (path: string): ReadonlyArray<DiffThreadAnchor> => {
+    const anchors = new Map<string, DiffThreadAnchor>()
+    const add = (side: "LEFT" | "RIGHT", line: number) => anchors.set(threadKey(path, side, line), { side, line, key: threadKey(path, side, line) })
+    for (const key of byKey().keys()) {
+      const [p, side, line] = key.split("\u0000")
+      if (p === path) add(side as "LEFT" | "RIGHT", Number(line))
+    }
+    for (const d of props.drafts) if (d.path === path) add(d.side, d.line)
+    if (props.composing?.path === path) add(props.composing.side, props.composing.line)
+    return [...anchors.values()]
+  }
   return (
     <div {...stylex.attrs(s.files)}>
       <nav {...stylex.attrs(s.fileList)} aria-label="Changed files">
@@ -380,9 +558,23 @@ const Files = (props: { pr: PullRequestDetail; layout: "unified" | "split" }) =>
       <div {...stylex.attrs(s.diff)}>
         <DiffView
           files={props.pr.files}
-          cacheKey={`${props.pr.owner}/${props.pr.repo}#${props.pr.number}@${props.pr.updatedAt}`}
+          cacheKey={`${props.pr.owner}/${props.pr.repo}#${props.pr.number}@${props.pr.headSha}`}
           layout={props.layout}
           apiRef={(a) => (api = a)}
+          threads={threadsOf}
+          renderThread={(key) => (
+            <InlineThread
+              comments={commentsAt(key)}
+              drafts={props.drafts.filter((d) => threadKey(d.path, d.side, d.line) === key)}
+              composing={props.composing && threadKey(props.composing.path, props.composing.side, props.composing.line) === key ? props.composing : null}
+              repo={{ owner: props.pr.owner, repo: props.pr.repo }}
+              onAdd={props.onAdd}
+              onCommentNow={props.onCommentNow}
+              onCancel={props.onCancel}
+              onDiscard={props.onDiscard}
+            />
+          )}
+          onPickLines={props.pr.state === "open" || props.pr.state === "draft" ? props.onPickLines : undefined}
         />
       </div>
     </div>
@@ -402,6 +594,15 @@ export const PullRequestPage = () => {
   const [tab, setTab] = createSignal<Tab>("summary")
   const [layout, setLayout] = createSignal<"unified" | "split">("unified")
   const [copied, setCopied] = createSignal(false)
+  const [drafts, setDrafts] = createSignal<ReadonlyArray<Draft>>([])
+  const [composing, setComposing] = createSignal<Composing | null>(null)
+  const [reviewOpen, setReviewOpen] = createSignal(false)
+  const [reviewEvent, setReviewEvent] = createSignal<ReviewEvent>("comment")
+  const [reviewBody, setReviewBody] = createSignal("")
+  const [submitting, setSubmitting] = createSignal(false)
+  const [mergeMethod, setMergeMethod] = createSignal<MergeMethod | null>(null)
+  const [merging, setMerging] = createSignal(false)
+  let commentEl: HTMLTextAreaElement | undefined
   let generation = 0
 
   const load = (c: { owner: string; repo: string; number: number }) => {
@@ -422,12 +623,100 @@ export const PullRequestPage = () => {
     )
   }
 
-  // A new pull request starts on its summary, without the previous one's data.
+  // A new pull request starts on its summary, without the previous one's data or drafts.
   createEffect(coords, (c) => {
     setDetail(null)
     setTab("summary")
+    setDrafts([])
+    setComposing(null)
     load(c)
   })
+
+  const acting = () => githubAccount.account()?.actingAs ?? null
+  const ref = () => coords()
+  const live = () => detail()?.state === "open" || detail()?.state === "draft"
+
+  const comment = async (body: string) => {
+    const added = await sync.call((c) => c.GithubPullRequestComment({ ...ref(), body }))
+    setDetail((d) => (d ? { ...d, activity: [...d.activity, added] } : d))
+  }
+
+  /** A review with what is pending; "Comment now" on a line sends just that one. */
+  const submitReview = async (event: ReviewEvent, body: string, comments: ReadonlyArray<DraftReviewComment>) => {
+    const pr = detail()
+    if (!pr) return
+    await sync.call((c) => c.GithubPullRequestReview({ ...ref(), event, body, commitSha: pr.headSha, comments: comments.map(({ path, line, side, startLine, body }) => ({ path, line, side, startLine, body })) }))
+  }
+  const sendReview = async () => {
+    setSubmitting(true)
+    try {
+      await submitReview(reviewEvent(), reviewBody(), drafts())
+      setDrafts([])
+      setReviewBody("")
+      setReviewOpen(false)
+      toast.success(reviewEvent() === "approve" ? "Approved" : reviewEvent() === "request_changes" ? "Changes requested" : "Review sent")
+      load(ref())
+    } catch (e) {
+      toast.error(errorText(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  const addDraft = (body: string) => {
+    const at = composing()
+    if (!at) return
+    setDrafts((list) => [...list, { id: crypto.randomUUID(), path: at.path, line: at.line, side: at.side, startLine: at.startLine, body }])
+    setComposing(null)
+  }
+  const commentNow = async (body: string) => {
+    const at = composing()
+    if (!at) return
+    await submitReview("comment", "", [{ path: at.path, line: at.line, side: at.side, startLine: at.startLine, body }])
+    setComposing(null)
+    load(ref())
+  }
+
+  const methodLabel: Record<MergeMethod, string> = { merge: "Create a merge commit", squash: "Squash and merge", rebase: "Rebase and merge" }
+  const chosenMethod = (): MergeMethod => {
+    const allowed = detail()?.mergeMethods ?? []
+    const picked = mergeMethod()
+    return picked && allowed.includes(picked) ? picked : allowed[0] ?? "merge"
+  }
+  /** Why merging is off, or null when GitHub may accept it (protection is still GitHub's call). */
+  const mergeBlocked = (): string | null => {
+    const pr = detail()
+    if (!pr) return "Loading"
+    if (pr.state === "draft") return "Draft pull requests cannot be merged. Mark it ready on GitHub first."
+    if (pr.mergeable === false || pr.mergeableState === "dirty") return `Conflicts with ${pr.baseBranch}: resolve them first.`
+    if (pr.mergeMethods.length === 0) return "The repository allows no merge method."
+    return null
+  }
+  const mergeNote = () => {
+    const state = detail()?.mergeableState
+    return state === "blocked"
+      ? "Branch protection may block this: required reviews or checks."
+      : state === "unstable"
+      ? "Some checks are failing."
+      : state === "behind"
+      ? "The branch is behind its base."
+      : null
+  }
+  const merge = async () => {
+    const pr = detail()
+    if (!pr || mergeBlocked() || merging()) return
+    const method = chosenMethod()
+    if (!confirm(`${methodLabel[method]}: ${pr.owner}/${pr.repo}#${pr.number} into ${pr.baseBranch}?`)) return
+    setMerging(true)
+    try {
+      await sync.call((c) => c.GithubPullRequestMerge({ ...ref(), method, sha: pr.headSha }))
+      toast.success(`Merged #${pr.number} into ${pr.baseBranch}`)
+      load(ref())
+    } catch (e) {
+      toast.error(errorText(e))
+    } finally {
+      setMerging(false)
+    }
+  }
 
   const openOnGithub = () => {
     const url = detail()?.url ?? `https://github.com/${coords().owner}/${coords().repo}/pull/${coords().number}`
@@ -451,7 +740,20 @@ export const PullRequestPage = () => {
       when: () => tab() === "files",
       run: () => setLayout((l) => (l === "split" ? "unified" : "split"))
     },
-    { id: "pr.refresh", title: "Refresh pull request", group: "Pull request", keys: ["r"], scope: "pr.detail", run: () => load(coords()) }
+    { id: "pr.refresh", title: "Refresh pull request", group: "Pull request", keys: ["r"], scope: "pr.detail", run: () => load(coords()) },
+    {
+      id: "pr.comment",
+      title: "Comment on pull request",
+      group: "Pull request",
+      keys: ["m"],
+      scope: "pr.detail",
+      run: () => {
+        setTab("summary")
+        requestAnimationFrame(() => commentEl?.focus())
+      }
+    },
+    { id: "pr.review", title: "Review pull request…", group: "Pull request", keys: ["shift+r"], scope: "pr.detail", when: live, run: () => setReviewOpen(true) },
+    { id: "pr.merge", title: "Merge pull request", group: "Pull request", keys: ["shift+m"], scope: "pr.detail", when: live, run: () => void merge() }
   ])
 
   const copyHead = (branch: string) => {
@@ -493,6 +795,118 @@ export const PullRequestPage = () => {
             <Button variant="outline" size="sm" title="Open on GitHub (O)" onClick={openOnGithub}>
               <GithubIcon size={14} /> Open on GitHub <ExternalIcon size={12} />
             </Button>
+            <Show when={live()}>
+              <Popover open={reviewOpen()} onOpenChange={(next: boolean) => setReviewOpen(next)}>
+                <PopoverTrigger
+                  render={(p) => (
+                    <Button {...(p as ButtonProps)} variant="outline" size="sm" title="Review (⇧R)">
+                      Review
+                      <Show when={drafts().length > 0}><span {...stylex.attrs(s.count)}>{drafts().length}</span></Show>
+                      <ChevronDownIcon size={12} />
+                    </Button>
+                  )}
+                />
+                <PopoverContent align="end" xstyle={s.reviewPopover} onClick={(e: MouseEvent) => e.stopPropagation()}>
+                  <KeyScope name="review" blocking>
+                    <div {...stylex.attrs(s.review)}>
+                      <div {...stylex.attrs(s.reviewTitle)}>Finish your review</div>
+                      <Show when={acting()} fallback={<GithubConnect label="Connect GitHub to review" compact />}>
+                        <Textarea
+                          aria-label="Review summary"
+                          placeholder="Leave a summary… (markdown)"
+                          value={reviewBody()}
+                          onInput={(e) => setReviewBody(e.currentTarget.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                              e.preventDefault()
+                              void sendReview()
+                            }
+                          }}
+                          xstyle={s.reviewInput}
+                        />
+                        <div {...stylex.attrs(s.reviewEvents)} role="radiogroup" aria-label="Review outcome">
+                          <For each={[
+                            { value: "comment" as const, label: "Comment", hint: "General feedback, no verdict." },
+                            { value: "approve" as const, label: "Approve", hint: "Ready to merge." },
+                            { value: "request_changes" as const, label: "Request changes", hint: "Must be addressed before merging." }
+                          ]}>
+                            {(option) => (
+                              <label {...stylex.attrs(s.reviewEvent)}>
+                                <input
+                                  type="radio"
+                                  name="review-event"
+                                  checked={reviewEvent() === option.value}
+                                  onChange={() => setReviewEvent(option.value)}
+                                />
+                                <span>
+                                  {option.label}
+                                  <span {...stylex.attrs(s.reviewEventHint)}>{option.hint}</span>
+                                </span>
+                              </label>
+                            )}
+                          </For>
+                        </div>
+                        <div {...stylex.attrs(s.reviewNote)}>
+                          {drafts().length === 0
+                            ? "Add inline comments from the + beside a line in Files."
+                            : `${drafts().length} pending inline ${drafts().length === 1 ? "comment" : "comments"} will be sent.`}
+                        </div>
+                        <div {...stylex.attrs(s.reviewActions)}>
+                          <Button size="sm" variant="ghost" onClick={() => setReviewOpen(false)}>Cancel</Button>
+                          <Button size="sm" disabled={submitting()} onClick={() => void sendReview()}>
+                            {submitting() ? "Sending…" : "Submit review"}
+                          </Button>
+                        </div>
+                      </Show>
+                    </div>
+                  </KeyScope>
+                </PopoverContent>
+              </Popover>
+              <Show
+                when={acting()}
+                fallback={
+                  <Button size="sm" title={mergeBlocked() ?? "Connect your GitHub account to merge (Profile → GitHub)"} onClick={() => navigate("/profile")}>
+                    <PullRequestIcon state="merged" size={13} /> Merge
+                  </Button>
+                }
+              >
+                <ButtonGroup>
+                  <Button
+                    size="sm"
+                    disabled={mergeBlocked() !== null || merging()}
+                    title={mergeBlocked() ?? mergeNote() ?? `${methodLabel[chosenMethod()]} (⇧M)`}
+                    onClick={() => void merge()}
+                  >
+                    <PullRequestIcon state="merged" size={13} />
+                    {merging() ? "Merging…" : methodLabel[chosenMethod()]}
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={(p) => (
+                        <Button {...(p as ButtonProps)} size="icon-sm" disabled={mergeBlocked() !== null || merging()} title="Merge method">
+                          <ChevronDownIcon size={13} />
+                        </Button>
+                      )}
+                    />
+                    <DropdownMenuContent align="end">
+                      <KeyScope name="menu" blocking>
+                        <For each={detail()?.mergeMethods ?? []}>
+                          {(method) => (
+                            <DropdownMenuItem onClick={() => setMergeMethod(method)}>
+                              <span style={{ width: "14px", display: "inline-flex" }}>
+                                <Show when={chosenMethod() === method}><CheckIcon size={13} /></Show>
+                              </span>
+                              {methodLabel[method]}
+                            </DropdownMenuItem>
+                          )}
+                        </For>
+                        <Show when={mergeNote()}>{(note) => <div {...stylex.attrs(s.mergeHint)} style={{ padding: "6px 8px" }}>{note()}</div>}</Show>
+                      </KeyScope>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </ButtonGroup>
+              </Show>
+            </Show>
           </>
         }
       />
@@ -598,8 +1012,23 @@ export const PullRequestPage = () => {
                 </div>
               </nav>
               <div {...stylex.attrs(s.body)}>
-                <Show when={tab() === "summary"} fallback={<Files pr={pr()} layout={layout()} />}>
-                  <Summary pr={pr()} />
+                <Show
+                  when={tab() === "summary"}
+                  fallback={
+                    <Files
+                      pr={pr()}
+                      layout={layout()}
+                      drafts={drafts()}
+                      composing={composing()}
+                      onPickLines={(path, range) => setComposing({ path, ...range })}
+                      onAdd={addDraft}
+                      onCommentNow={commentNow}
+                      onCancel={() => setComposing(null)}
+                      onDiscard={(id) => setDrafts((list) => list.filter((d) => d.id !== id))}
+                    />
+                  }
+                >
+                  <Summary pr={pr()} onComment={comment} commentRef={(el) => (commentEl = el)} />
                 </Show>
               </div>
             </>

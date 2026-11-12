@@ -3,13 +3,15 @@ import { createEffect, createSignal, For, onSettled, Show, useContext } from "so
 import { agentCommands, useMcpUrl } from "../app/agents.ts"
 import { auth, authClient, authErrorMessage } from "../app/auth.ts"
 import { Sync } from "../app/context.ts"
+import { GithubConnect } from "../app/GithubConnect.tsx"
+import { githubAccount } from "../app/githubAccount.ts"
 import { UserAvatar } from "../app/UserAvatar.tsx"
 import { formatRelative } from "../lib/select.ts"
 import { color, font, radius } from "../theme/tokens.stylex.ts"
 import { Badge } from "../ui/badge.tsx"
 import { Button } from "../ui/button.tsx"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card.tsx"
-import { CheckIcon, CopyIcon, DeviceIcon, KeyIcon, LockIcon, SignOutIcon, TrashIcon, UserIcon } from "../ui/icons.tsx"
+import { CheckIcon, CopyIcon, DeviceIcon, GithubIcon, KeyIcon, LockIcon, SignOutIcon, TrashIcon, UserIcon } from "../ui/icons.tsx"
 import { Input } from "../ui/input.tsx"
 import { Label } from "../ui/label.tsx"
 import { PageHeader } from "./Header.tsx"
@@ -454,6 +456,42 @@ const AgentKeys = () => {
   )
 }
 
+/**
+ * Your own GitHub account: comments, reviews and merges you make in Gradient
+ * go out as it. The workspace's connection only syncs issues (and stands in
+ * for you when it is yours).
+ */
+const Github = () => {
+  const acting = () => githubAccount.account()?.actingAs ?? null
+  return (
+    <section {...stylex.attrs(s.section)} id="github">
+      <h2 {...stylex.attrs(s.h2)}><GithubIcon size={16} /> GitHub</h2>
+      <Card size="sm">
+        <CardHeader>
+          <CardTitle>Your GitHub account</CardTitle>
+          <CardDescription>
+            Comments, reviews and merges you make in Gradient go out as this account, so GitHub shows they are yours
+            and applies your permissions. Agents with your keys act as it too.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div {...stylex.attrs(s.form)}>
+            <Show when={acting()?.via === "workspace" ? acting() : null}>
+              {(who) => (
+                <span {...stylex.attrs(s.muted)}>
+                  You act as @{who().login} through the workspace's GitHub connection, which is yours. Connect an account
+                  here to use a different one.
+                </span>
+              )}
+            </Show>
+            <GithubConnect />
+          </div>
+        </CardContent>
+      </Card>
+    </section>
+  )
+}
+
 export const ProfilePage = () => (
   <>
     <PageHeader
@@ -468,6 +506,7 @@ export const ProfilePage = () => (
     <div {...stylex.attrs(s.page)}>
       <div {...stylex.attrs(s.column)}>
         <Account />
+        <Github />
         <Password />
         <Sessions />
         <AgentKeys />

@@ -116,6 +116,10 @@ fake.seed({
       }
     ],
     reviews: [{ login: "lead", state: "APPROVED", body: "Nice, the replay order is exactly what we need." }],
+    review_comments: [
+      { id: 7001, path: "src/drafts/store.ts", line: 13, side: "RIGHT", login: "lead", body: "Should this also flush when the tab regains focus?" },
+      { id: 7002, path: "src/drafts/store.ts", line: 13, side: "RIGHT", login: "dev", body: "Good call, I'll do that in a follow-up.", in_reply_to_id: 7001 }
+    ],
     checks: [
       { name: "test", status: "completed", conclusion: "success" },
       { name: "typecheck", status: "completed", conclusion: "success" },

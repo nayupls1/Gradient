@@ -101,7 +101,8 @@ apps/web/src
 `label`, `project`, `issue` (label ids stored as JSON, optional `project_id`),
 `issue_relation`, `pull_request`, `issue_comment`, `sync_log`, `invite` (not
 synced; see Teams and invites), the accounts tables (`auth_user`, `auth_session`, `auth_account`,
-`auth_verification`, `auth_api_key`; see Accounts), plus `github_repo`, `github_issue_link` (with the shadows and the
+`auth_verification`, `auth_api_key`; see Accounts), `github_user_auth` (each person's own GitHub token;
+not synced), plus `github_repo`, `github_issue_link` (with the shadows and the
 issue's GitHub id), `github_outbox`, `github_delivery` and `github_blob`
 (cached repository images, such as project icons). Timestamps are
 epoch milliseconds.
@@ -149,9 +150,23 @@ Summary (reviewers, labels, description, checks, conversation) and Files
 `/pull/` URL keeps `pull: true`, so even a pull request Gradient does not know
 opens its page.
 
-**Comments** are read-only copies of the comments on an issue's GitHub copy
-(author login and avatar, markdown body, link). The issue page shows them under
-the description, with a "Comment on GitHub" link (`o` opens the issue there).
+The page also writes, as the viewer's own GitHub account (see Acting as
+yourself): a comment box under the conversation (`m`), inline comments from
+the + beside a line in Files (Pierre's gutter button; drag for several lines),
+kept as pending drafts and sent with a review (approve, request changes or
+comment; `shift+r`), and a merge button with the methods the repository allows
+(`shift+m`), pinned to the head commit the page showed, so a later push is
+never merged unseen. Existing inline comments show under their lines (Pierre
+annotations; their contents are Solid, portalled into the slot Pierre places).
+GitHub decides: branch protection, required reviews and permissions come back
+as its own message. Drafts live in the page and are dropped on leaving it.
+
+**Comments** are copies of the comments on an issue's GitHub copy (author
+login and avatar, markdown body, link). The issue page shows them under the
+description, with a comment box (`m`) when the issue is on GitHub: the comment
+is posted as the viewer's GitHub account and stored at once through the same
+ingest path the poller uses, so it does not wait for the next poll. Editing and
+deleting stay on GitHub (`o` opens the issue there).
 
 **Mentions** are the other way round: the issues and pull requests an issue's
 description and comments refer to (see Markdown below), in reading order, each
@@ -228,6 +243,19 @@ reads the token per request, so sign-in and sign-out apply without a restart;
 a 401 drops an expired or revoked sign-in. Webhooks to the app would need a
 public URL, so a local install keeps polling.
 
+**Acting as yourself** (`github/GithubActions.ts`). That connection is the
+workspace's: it syncs issues. What a person does on GitHub from Gradient
+(comments, reviews, merges) goes out as them, so GitHub shows who did it and
+applies their permissions. Each person connects their own account on their
+profile, through the same device flow (`GithubAuth.personal`, stored in
+`github_user_auth` by Gradient user, read on every write). Without one, the
+workspace connection stands in only for its owner: the workspace's original
+user, or the person whose GitHub login it is. Anyone else is asked to connect.
+Connecting links the person to that login (an imported GitHub-only user for it
+is merged in, as above); a login another person already has is refused. A 401
+drops a personal token like the workspace's. The pull request page reads with
+the viewer's token too, so their private repositories show.
+
 | Gradient | GitHub |
 |---|---|
 | title, description | title, body |
@@ -239,8 +267,8 @@ public URL, so a local install keeps polling.
 | priority, sort order | Gradient only |
 | `blocks` relations | issue dependencies ("blocked by"), when both issues are on GitHub |
 | `related` relations | Gradient only |
-| pull requests | read from GitHub (the issues endpoint lists them), never written |
-| comments | read from GitHub, never written |
+| pull requests | read from GitHub (the issues endpoint lists them); reviews and merges from Gradient go out as the person who made them |
+| comments | read from GitHub; new ones from Gradient go out as the person who wrote them (no edits or deletes) |
 | linked pull requests ("Development") | read from GitHub (GraphQL), never written |
 
 **Shadows stop echo loops.** Each linked issue stores the last version of its
@@ -359,7 +387,10 @@ through 2026-07-28). Tools: `describe_workspace`, `list_issues`, `get_issue`,
 `create_issue`, `update_issue`, `link_issues`, `unlink_issues`, `create_project`,
 `update_project` (name, key, color, icon: "auto", "none" or a repo path),
 `get_pull_request` (any pull request the connection can see: files, checks,
-reviews, comments; patches with `diff: true`),
+reviews, inline comments, merge state; patches with `diff: true`),
+`comment_on_issue`, `comment_on_pull_request`, `review_pull_request` (with
+inline comments), `merge_pull_request` (needs `confirm: true`: only when the
+user asked), all as the key owner's own GitHub account,
 `create_team`, `update_team`, `add_team_member`, `remove_team_member`,
 `invite_person` (admins; returns the link), `github_status`, `github_sign_in`.
 Tools work in the caller's first team unless given `team` (a name or key); tools

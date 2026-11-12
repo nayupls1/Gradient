@@ -56,6 +56,8 @@ describe("MCP", () => {
     const tools = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
     expect(Object.keys(tools).sort()).toEqual([
       "add_team_member",
+      "comment_on_issue",
+      "comment_on_pull_request",
       "create_issue",
       "create_project",
       "create_team",
@@ -67,7 +69,9 @@ describe("MCP", () => {
       "invite_person",
       "link_issues",
       "list_issues",
+      "merge_pull_request",
       "remove_team_member",
+      "review_pull_request",
       "unlink_issues",
       "update_issue",
       "update_project",
@@ -76,6 +80,7 @@ describe("MCP", () => {
     expect(tools.github_status.annotations.readOnlyHint).toBe(true)
     expect(tools.list_issues.annotations.readOnlyHint).toBe(true)
     expect(tools.create_issue.annotations.destructiveHint).toBe(false)
+    expect(tools.merge_pull_request.annotations.destructiveHint).toBe(true)
   })
 
   test("describes the workspace in names, not ids", async () => {
@@ -248,6 +253,14 @@ describe("GitHub tools", () => {
     expect(status.data.connected).toBe(false)
     expect(status.data.sign_in_available).toBe(false)
     expect(status.data.hint).toContain("GITHUB_TOKEN")
+    // Merging needs the explicit confirm: true, and every write needs a GitHub account.
+    const unconfirmed = await rpc("tools/call", { name: "merge_pull_request", arguments: { pull_request: "acme/web#1" } })
+    expect(unconfirmed.result?.isError === true || unconfirmed.error !== undefined).toBe(true)
+    const comment = await call("comment_on_pull_request", { pull_request: "acme/web#1", body: "Hi" })
+    expect(comment.isError).toBe(true)
+    expect(comment.text).toContain("Connect your GitHub account")
+    const bad = await call("review_pull_request", { pull_request: "not a ref", event: "approve" })
+    expect(bad.text).toContain("is not a pull request")
     const signIn = await call("github_sign_in")
     expect(signIn.isError).toBe(true)
     expect(signIn.text).toContain("disabled")
