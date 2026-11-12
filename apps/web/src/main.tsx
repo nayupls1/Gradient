@@ -34,9 +34,14 @@ const Root = () => {
       <Match when={auth.session() === null}>
         <AuthPage />
       </Match>
-      {/* Switching accounts always passes through null, so the app remounts per session. */}
-      <Match when={auth.session()?.user.id}>
-        {() => <App />}
+      {/*
+        Keyed, so the app remounts per account. The child must be plain JSX: a
+        zero-argument function child is not called by Match but handed to the
+        renderer, which builds the whole app inside an effect callback, where
+        nothing is tracked (dialogs, for one, never open).
+      */}
+      <Match when={auth.session()?.user.id} keyed>
+        <App />
       </Match>
     </Switch>
   )
