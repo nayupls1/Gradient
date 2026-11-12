@@ -1,0 +1,9 @@
+{
+  "name": "@gradient/cli",
+  "private": true,
+  "type": "module",
+  "bin": { "gradient": "./src/main.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  }
+}

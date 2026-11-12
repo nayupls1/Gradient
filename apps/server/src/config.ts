@@ -1,4 +1,5 @@
 import { Config, Context, Effect, Layer, Option, Redacted } from "effect"
+import { fileURLToPath } from "node:url"
 
 export interface ServerConfigShape {
   readonly port: number
@@ -59,7 +60,7 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
       const host = yield* Config.String("GRADIENT_HOST").pipe(Config.withDefault("127.0.0.1"))
       const dbPath = yield* Config.String("GRADIENT_DB").pipe(Config.withDefault("./gradient.db"))
       const webDist = yield* Config.String("GRADIENT_WEB_DIST").pipe(
-        Config.withDefault(new URL("../../web/dist", import.meta.url).pathname)
+        Config.withDefault(fileURLToPath(new URL("../../web/dist", import.meta.url)))
       )
       const seedSampleData = yield* Config.Boolean("GRADIENT_SEED_SAMPLE").pipe(Config.withDefault(true))
       const authSecret = yield* Config.option(

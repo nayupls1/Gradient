@@ -82,8 +82,23 @@ bun run start   # http://localhost:4200, like dev
 
 `start` runs the server bundle and `vite preview` of the built app, which
 proxies to the server just as dev does. The server also serves the built UI
-itself on http://localhost:4100, so `bun run --filter '@gradient/server' start`
-alone is enough for a single process.
+itself on http://localhost:4100, so `gradient start` (below) alone is enough
+for a single process. Ctrl+C stops both, on Windows too.
+
+### The `gradient` command
+
+`bun link` in the repository root puts `gradient` on your PATH. It always
+works on the checkout it was linked from, wherever you run it.
+
+```bash
+gradient run         # pull the latest master, install, build, start the server (http://localhost:4100)
+gradient run --web   # the same, plus the web app (http://localhost:4200)
+gradient start       # start the last build (--web for both)
+gradient dev         # server and Vite with live reload, like `bun run dev`
+```
+
+`gradient run` needs the checkout on `master` and only fast-forwards it;
+`--no-pull` builds and starts what is checked out instead.
 
 ## GitHub sync
 
@@ -174,6 +189,7 @@ Remap any command in localStorage under `gradient.keymap`, for example
 | Variable | Default | |
 |---|---|---|
 | `GRADIENT_PORT` | `4100` | API server port |
+| `GRADIENT_WEB_PORT` | `4200` | Web app port (`bun run dev`, `bun run start`, `--web`) |
 | `GRADIENT_HOST` | `127.0.0.1` | Bind address. Requests from browser origins other than loopback and `GRADIENT_URL` are refused. |
 | `GRADIENT_URL` | none | Public URL when Gradient is reached through a domain (e.g. behind a TLS proxy). Its origin is trusted, and cookies are `Secure` when it is https. |
 | `GRADIENT_AUTH_SECRET` | generated | Signs session cookies (`BETTER_AUTH_SECRET` works too). Without one, a random secret is created once and kept in the database. |
@@ -192,6 +208,7 @@ Remap any command in localStorage under `gradient.keymap`, for example
 packages/domain   Schemas, mutations, RPC contract, shared by both sides
 apps/server       Bun + Effect: SQLite, sync engine, GitHub sync, accounts (Better Auth)
 apps/web          Solid 2 + StyleX: client sync store, shadcn-solid components, views
+apps/cli          The `gradient` command: runs, builds and supervises the other two
 ```
 
 See [docs/PLAN.md](docs/PLAN.md) for the architecture,
