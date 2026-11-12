@@ -198,7 +198,8 @@ const EDITABLE: ReadonlyArray<{ key: keyof ColorTokens; label: string }> = [
   { key: "fg", label: "Text" },
   { key: "fgMuted", label: "Muted text" },
   { key: "accent", label: "Accent" },
-  { key: "accentFg", label: "Text on accent" }
+  { key: "accentFg", label: "Text on accent" },
+  { key: "link", label: "Links" }
 ]
 
 const MODES: ReadonlyArray<{ value: Mode; label: string; icon: () => JSX.Element }> = [

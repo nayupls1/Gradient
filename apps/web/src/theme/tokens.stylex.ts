@@ -18,6 +18,7 @@ export const color = stylex.defineVars({
   fgSubtle: "#9b9b97",
   accent: "#1c1c1b",
   accentFg: "#ffffff",
+  link: "#2563c9",
   ring: "rgba(28, 28, 27, 0.18)",
   danger: "#d93f3f",
   shadow: "rgba(0, 0, 0, 0.08)",
