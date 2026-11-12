@@ -24,6 +24,7 @@ import {
   Keyboard,
   KeyRound,
   Laptop,
+  ListFilter,
   LockKeyhole,
   LogIn,
   LogOut,
@@ -110,6 +111,7 @@ export const ArchiveIcon = wrap(Archive)
 export const RestoreIcon = wrap(ArchiveArrowUp)
 export const TrashIcon = wrap(Trash)
 export const SearchIcon = wrap(Search)
+export const FilterIcon = wrap(ListFilter)
 export const PaletteIcon = wrap(Palette)
 export const CommandIcon = wrap(Command)
 export const KeyboardIcon = wrap(Keyboard)

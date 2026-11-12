@@ -412,15 +412,18 @@ out after a second; IME composition and held-key repeat are handled.
 
 ## Search and filters
 
-The issue list has a search box (`/`) and filters: assignee (`f a`, with
-"me" following the viewer and "No assignee"), label (`f l`), priority (`f p`)
-and blocked (`f b`); `f m` shows my issues and `f x` clears. Search matches
-every word, in any order, in the identifier, title, description, labels,
-assignee (name or `@login`) and GitHub reference (`#42`, `acme/web`). Values in
-one filter are ORed, filters ANDed (`lib/filter.ts`, unit tested). Each list
-(a team's, a project's) keeps its own filter for the session; collapsed status
-groups stay collapsed, their headers counting the matches. Agents have the same filters in
-`list_issues`.
+The issue list's header has a search field (`/`) and one Filter menu (`f`):
+type to find a person, label or priority, pick as many as needed. The menu
+offers only what the list's own issues use, so a project page lists its own
+labels and assignees, not the whole team's (`filterOptions`). Active filters
+show as removable chips under the header (`shift+f` clears); the header count
+reads "shown / total" while filtering. Search matches every word, in any order,
+in the identifier, title, description, labels, assignee (name or `@login`) and
+GitHub reference (`#42`, `acme/web`); Escape clears and leaves it, ↓ or Enter
+goes to the first result. Values of one kind are ORed, kinds ANDed
+(`lib/filter.ts`, unit tested). Each list (a team's, a project's) keeps its
+own filter for the session; collapsed status groups stay collapsed, their
+headers counting the matches. Agents have the same filters in `list_issues`.
 
 ## Theming
 
