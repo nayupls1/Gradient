@@ -9,7 +9,7 @@ import { AssigneePicker, LabelPicker, PriorityPicker, ProjectPicker, StatePicker
 import { IssueMentions, IssuePullRequests, IssueRelations, type RelationApis } from "../app/relations.tsx"
 import { KeyScope, useCommands, useScope } from "../keys/solid.tsx"
 import { Markdown } from "../app/Markdown.tsx"
-import { commentsFor, findIssue, formatRelative, issueKey, issueRepo, projectHref, teamHref } from "../lib/select.ts"
+import { findIssue, formatRelative, issueKey, issueRepo, projectHref, teamHref } from "../lib/select.ts"
 import { bareTextarea } from "../app/styles.ts"
 import { UserAvatar } from "../app/UserAvatar.tsx"
 import { colors } from "../lib/tokens.stylex.ts"
@@ -95,16 +95,13 @@ export const IssuePage = () => {
   const params = useParams()
   const navigate = useNavigate()
   const actions = useIssueActions()
-  const issue = () => findIssue(sync.state, params.ref ?? "")
+  const issue = createMemo(() => findIssue(sync.state, params.ref ?? "", sync.index.lookup()))
   /** The issues of the issue's team. */
   const backHref = () => {
     const team = sync.state.teams[issue()?.teamId ?? ""]
     return team ? teamHref(team) : "/"
   }
-  const comments = () => {
-    const current = issue()
-    return current ? commentsFor(sync.state, current.id) : []
-  }
+  const comments = () => sync.index.comments().get(issue()?.id ?? "") ?? []
   const apis: PickerApis = {}
   const relationApis: RelationApis = {}
   let titleEl: HTMLTextAreaElement | undefined

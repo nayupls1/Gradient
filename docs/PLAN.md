@@ -81,11 +81,13 @@ apps/server/src
   seed.ts, app.ts, main.ts
 apps/web/src
   sync/replica.ts      pure client copy: base + pending transactions, confirm/rollback (unit tested)
-  sync/engine.ts       network loop around the replica, mirrored into a Solid store
+  sync/engine.ts       network loop around the replica, mirrored into a Solid store and plain per-table maps (`rows`),
+                       with lazily built indexes over them (`index`: pull requests and blockers per issue, lookups)
   keys/                command registry: chords, sequences, scopes, remaps (core.ts), Solid hooks
   theme/               tokens (StyleX vars), palettes (also feed shadcn's tokens), mode + palette switching
   ui/                  shadcn-solid components (Button, Dialog, Popover, Command, Sidebar…), icons
-  lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts), list windowing (window.ts), markdown tree (markdown.ts)
+  lib/                 shadcn-solid helpers and tokens, plus selectors (select.ts), whole-table indexes (indexes.ts), list windowing and row recycling (window.ts),
+                       markdown tree (markdown.ts)
   app/                 Shell (Sidebar), Composer, CommandMenu (⌘K and ?), Picker, issue commands, relations, Markdown, router,
                        TeamDialog, InviteDialog, TeamBadge
   app/auth.ts          Better Auth client and the session signal (main.tsx shows AuthPage without one)

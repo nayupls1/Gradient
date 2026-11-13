@@ -19,8 +19,9 @@ import {
 import { Cause, Effect, Layer, ManagedRuntime, Queue, Schedule, Stream } from "effect"
 import { RpcClient, RpcSerialization } from "effect/rpc"
 import { Socket } from "effect/socket"
-import { createStore, reconcile } from "solid-js"
-import { type Changes, createReplica, type PendingTx } from "./replica.ts"
+import { createMemo, createSignal, createStore, reconcile } from "solid-js"
+import { blockerIndex, commentIndex, type IssueKeys, issueKeysOf, issueLookup, pullRequestIndex, sameIssueKeys } from "../lib/indexes.ts"
+import { type Changes, createReplica, type PendingTx, TABLES, type TableName, type Tables } from "./replica.ts"
 
 export type ConnectionState = "connecting" | "online" | "offline"
 
@@ -86,22 +87,90 @@ export const createSyncEngine = (options: SyncEngineOptions = {}) => {
   })
 
   const replica = createReplica()
+
+  /**
+   * The same rows as the store, as plain objects, with one version signal per
+   * table. Derived data over a whole table (which pull requests mention which
+   * issue, what blocks what) reads these: no proxy per field read, and it is
+   * rebuilt once per change to its tables rather than per row that shows it.
+   */
+  const plain = Object.fromEntries(TABLES.map((t) => [t, new Map()])) as { [K in TableName]: Map<string, Tables[K]> }
+  const versions = Object.fromEntries(TABLES.map((t) => [t, createSignal(0)])) as unknown as Record<
+    TableName,
+    ReturnType<typeof createSignal<number>>
+  >
+  /** Every visible row of a table, untracked per row: reading it subscribes to the whole table. */
+  const rows = <T extends TableName>(table: T): ReadonlyMap<string, Tables[T]> => {
+    versions[table][0]()
+    return plain[table]
+  }
+
+  const issueKeys = createMemo(
+    () => {
+      const out = new Map<string, IssueKeys>()
+      for (const issue of rows("issues").values()) out.set(issue.id, issueKeysOf(issue))
+      return out
+    },
+    { lazy: true, equals: sameIssueKeys }
+  )
+
+  /** Whole-table lookups for lists (see lib/indexes.ts). Built when first read, again after a change. */
+  const index = {
+    pullRequests: createMemo(
+      () =>
+        pullRequestIndex({
+          teams: rows("teams"),
+          projects: rows("projects"),
+          issues: issueKeys(),
+          githubRepos: rows("githubRepos"),
+          pullRequests: rows("pullRequests"),
+          linkedPullRequests: rows("linkedPullRequests")
+        }),
+      { lazy: true, equals: false }
+    ),
+    lookup: createMemo(
+      () =>
+        issueLookup({
+          teams: rows("teams"),
+          projects: rows("projects"),
+          issues: issueKeys(),
+          githubRepos: rows("githubRepos"),
+          pullRequests: rows("pullRequests"),
+          linkedPullRequests: rows("linkedPullRequests")
+        }),
+      { lazy: true, equals: false }
+    ),
+    comments: createMemo(() => commentIndex(rows("issueComments")), { lazy: true, equals: false }),
+    blockers: createMemo(
+      () => blockerIndex({ issues: rows("issues"), workflowStates: rows("workflowStates"), issueRelations: rows("issueRelations") }),
+      { lazy: true, equals: false }
+    )
+  }
   const runtime = ManagedRuntime.make(ProtocolLive)
   const outbox = Effect.runSync(Queue.unbounded<PendingTx>())
 
   /** Copy the replica's visible value of each changed row into the reactive store. */
-  const write = (changes: Changes) =>
+  const write = (changes: Changes) => {
+    if (changes.size === 0) return
     setState((s) => {
       for (const [table, ids] of changes) {
         const target = s[table] as Record<string, any>
+        const mirror = plain[table] as Map<string, unknown>
         for (const id of ids) {
           const value = replica.view(table, id)
-          if (value === undefined) delete target[id]
-          else if (target[id]) reconcile(value, "id")(target[id])
-          else target[id] = value
+          if (value === undefined) {
+            delete target[id]
+            mirror.delete(id)
+          } else {
+            if (target[id]) reconcile(value, "id")(target[id])
+            else target[id] = value
+            mirror.set(id, value)
+          }
         }
       }
     })
+    for (const table of changes.keys()) versions[table][1]((v) => v + 1)
+  }
 
   const applySnapshot = (snap: Snapshot) => {
     const changes = replica.applySnapshot(snap)
@@ -200,7 +269,7 @@ export const createSyncEngine = (options: SyncEngineOptions = {}) => {
       }).pipe(Effect.scoped)
     )
 
-  return { state, start, mutate, call, dismissError, dispose: () => runtime.dispose() }
+  return { state, rows, index, start, mutate, call, dismissError, dispose: () => runtime.dispose() }
 }
 
 export type SyncEngine = ReturnType<typeof createSyncEngine>

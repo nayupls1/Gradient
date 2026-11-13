@@ -23,6 +23,11 @@
     height: 100%;
   }
 
+  /* Thin scrollbars everywhere; their colors come from the theme (theme/theme.ts). */
+  * {
+    scrollbar-width: thin;
+  }
+
   body {
     font-family: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     font-size: 13px;

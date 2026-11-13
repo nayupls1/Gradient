@@ -2,16 +2,13 @@ import { type Issue, uuidv7, wouldCycle } from "@gradient/domain"
 import * as stylex from "@stylexjs/stylex"
 import { createMemo, For, Match, Show, Switch, untrack, useContext } from "solid-js"
 import {
-  commentsFor,
   issueHref,
   issueKey,
   issueReferences,
   issueRepo,
-  openBlockers,
   pullRequestHref,
   pullRequestHrefFromUrl,
   pullRequestLabelFor,
-  pullRequestsFor,
   relationsOf,
   type RelatedIssue,
   resolveMentions
@@ -71,7 +68,7 @@ const Section = (props: {
 }) => {
   const sync = useContext(Sync)
   const title = untrack(() => TITLES[props.kind])
-  const holding = () => props.kind === "blockedBy" && openBlockers(sync.state, props.issue.id).length > 0
+  const holding = () => props.kind === "blockedBy" && (sync.index.blockers().get(props.issue.id)?.length ?? 0) > 0
 
   /** Issues this one can relate to: same team, not itself, not related yet, and no blocking loop. */
   const candidates = () => {
@@ -170,7 +167,7 @@ const Section = (props: {
 /** Blocked by, blocking and related issues, each with a picker to add one. */
 export const IssueRelations = (props: { issue: Issue; apis: RelationApis }) => {
   const sync = useContext(Sync)
-  const relations = () => relationsOf(sync.state, props.issue.id)
+  const relations = createMemo(() => relationsOf(sync.state, props.issue.id))
   return (
     <>
       <Section issue={props.issue} kind="blockedBy" items={relations().blockedBy} apiRef={(a) => (props.apis.blockedBy = a)} />
@@ -187,7 +184,7 @@ export const IssueRelations = (props: { issue: Issue; apis: RelationApis }) => {
  */
 export const IssuePullRequests = (props: { issue: Issue }) => {
   const sync = useContext(Sync)
-  const pullRequests = () => pullRequestsFor(sync.state, props.issue)
+  const pullRequests = () => sync.index.pullRequests().get(props.issue.id) ?? []
   return (
     <Show when={pullRequests().length > 0}>
       <div {...stylex.attrs(s.section)}>
@@ -222,14 +219,20 @@ export const IssueMentions = (props: { issue: Issue }) => {
   const sync = useContext(Sync)
   // Parse only when the text changes; resolve against the store on every change.
   const refs = createMemo(() =>
-    issueReferences(props.issue.description, commentsFor(sync.state, props.issue.id), issueRepo(sync.state, props.issue))
+    issueReferences(props.issue.description, sync.index.comments().get(props.issue.id) ?? [], issueRepo(sync.state, props.issue))
   )
   const mentions = () => {
     const related = relationsOf(sync.state, props.issue.id)
-    return resolveMentions(sync.state, props.issue, refs(), {
-      issueIds: [...related.blockedBy, ...related.blocks, ...related.related].map((r) => r.issue.id),
-      pullRequests: pullRequestsFor(sync.state, props.issue)
-    })
+    return resolveMentions(
+      sync.state,
+      props.issue,
+      refs(),
+      {
+        issueIds: [...related.blockedBy, ...related.blocks, ...related.related].map((r) => r.issue.id),
+        pullRequests: sync.index.pullRequests().get(props.issue.id) ?? []
+      },
+      sync.index.lookup()
+    )
   }
   return (
     <Show when={mentions().length > 0}>

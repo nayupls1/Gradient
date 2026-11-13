@@ -7,7 +7,8 @@ import type { JSX } from "@solidjs/web"
 import { allTeams, membership, projectRepo, suggestProjectKey, teamLabels, teamProjects, teamStates, users } from "../lib/select.ts"
 import { colors } from "../lib/tokens.stylex.ts"
 import { PriorityIcon, priorityLabel, ProjectIcon, StateIcon, TagIcon, UserIcon } from "../ui/icons.tsx"
-import { Button, type ButtonProps } from "../ui/button.tsx"
+import { buttonStyles } from "../ui/button.tsx"
+import { cx } from "../lib/utils.ts"
 import { Picker, type PickerApi } from "./Picker.tsx"
 import { ProjectGlyph } from "./ProjectGlyph.tsx"
 import { TeamBadge } from "./TeamBadge.tsx"
@@ -23,17 +24,24 @@ const s = stylex.create({
 
 type Variant = "chip" | "row" | "icon"
 
-/** A picker's trigger: an outline chip (composer), a full-width row (issue sidebar) or an icon (list rows). */
+/**
+ * A picker's trigger: an outline chip (composer), a full-width row (issue sidebar) or an icon (list rows).
+ *
+ * A native `<button>` with the Button's styles rather than the Button itself:
+ * a list row draws three of these, and base-ui's Button adds nothing a native
+ * button needs while costing several times as much to render.
+ */
 const Trigger = (props: HTMLProps & { variant: Variant; title: string; children: JSX.Element }) => {
-  const rest = omit(props, "variant")
-  return (
-    <Button
-      {...(rest as ButtonProps)}
-      variant={props.variant === "chip" ? "outline" : "ghost"}
-      size={props.variant === "icon" ? "icon-xs" : props.variant === "chip" ? "xs" : "sm"}
-      {...(props.variant === "row" ? { xstyle: s.row } : {})}
-    />
-  )
+  const rest = omit(props, "variant", "class")
+  const attrs = () =>
+    stylex.attrs(
+      ...buttonStyles({
+        variant: props.variant === "chip" ? "outline" : "ghost",
+        size: props.variant === "icon" ? "icon-xs" : props.variant === "chip" ? "xs" : "sm"
+      }),
+      props.variant === "row" && s.row
+    )
+  return <button type="button" data-slot="button" {...(rest as JSX.ButtonHTMLAttributes<HTMLButtonElement>)} class={cx(attrs().class, props.class as string | undefined)} />
 }
 
 export const StatePicker = (props: { teamId: string; value: string; onChange: (id: string) => void; variant: Variant; apiRef?: (api: PickerApi) => void }) => {

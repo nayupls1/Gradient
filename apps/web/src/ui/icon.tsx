@@ -1,5 +1,5 @@
-import { For, omit } from "solid-js"
-import { Dynamic, type JSX } from "@solidjs/web"
+import { omit } from "solid-js"
+import type { JSX } from "@solidjs/web"
 import type { IconNode } from "lucide"
 
 export type { IconNode }
@@ -9,6 +9,23 @@ export type IconProps = JSX.SvgSVGAttributes<SVGSVGElement> & {
   icon: IconNode
   size?: number | string
   "stroke-width"?: number | string
+}
+
+// Gradient edit: the shapes are set as markup built once per icon, instead of a
+// `<For>` of `<Dynamic>` elements per shape. Lists draw several icons per row, and
+// those components made each row noticeably slower to render. Lucide's data is
+// static and trusted; attribute values are escaped all the same.
+const markup = new WeakMap<IconNode, string>()
+const escape = (v: unknown) => String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")
+const shapes = (icon: IconNode) => {
+  let html = markup.get(icon)
+  if (html === undefined) {
+    html = icon
+      .map(([tag, attrs]) => `<${tag}${Object.entries(attrs ?? {}).map(([k, v]) => ` ${k}="${escape(v)}"`).join("")}></${tag}>`)
+      .join("")
+    markup.set(icon, html)
+  }
+  return html
 }
 
 /**
@@ -33,10 +50,7 @@ export function Icon(props: IconProps) {
       stroke-linejoin="round"
       aria-hidden="true"
       {...rest}
-    >
-      <For each={props.icon}>
-        {(node) => <Dynamic component={node[0]} {...(node[1] as Record<string, string>)} />}
-      </For>
-    </svg>
+      innerHTML={shapes(props.icon)}
+    />
   )
 }
