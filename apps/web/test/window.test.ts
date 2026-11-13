@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { rowOffsets, scrollToReveal, visibleRows } from "../src/lib/window.ts"
+import { assignSlots, rowOffsets, scrollToReveal, type Slotted, visibleRows } from "../src/lib/window.ts"
 
 const m = { headerHeight: 36, rowHeight: 40 }
 
@@ -51,5 +51,35 @@ describe("scrollToReveal", () => {
   })
   test("never scrolls above the top", () => {
     expect(scrollToReveal(10, 400, 20, 40, 36)).toBe(0)
+  })
+})
+
+describe("assignSlots", () => {
+  const items = (keys: string, value = 0) => [...keys].map((key) => ({ key, value }))
+  const same = (a: number, b: number) => a === b
+  const slots = (m: Map<string, Slotted<number>>) => Object.fromEntries([...m].map(([k, v]) => [k, v.slot]))
+
+  test("first render numbers the slots in order", () => {
+    expect(slots(assignSlots(new Map(), items("abc"), same))).toEqual({ a: 0, b: 1, c: 2 })
+  })
+  test("an item that comes into view takes the slot of one that left", () => {
+    const first = assignSlots(new Map(), items("abc"), same)
+    const next = assignSlots(first, items("bcd"), same)
+    expect(slots(next)).toEqual({ b: 1, c: 2, d: 0 })
+    expect([...next.keys()]).toEqual(["b", "c", "d"])
+  })
+  test("unchanged items keep their exact object; changed values get a new one in the same slot", () => {
+    const first = assignSlots(new Map(), items("ab"), same)
+    const next = assignSlots(first, [{ key: "a", value: 0 }, { key: "b", value: 5 }], same)
+    expect(next.get("a")).toBe(first.get("a")!)
+    expect(next.get("b")).not.toBe(first.get("b")!)
+    expect(next.get("b")!.slot).toBe(first.get("b")!.slot)
+  })
+  test("more items than before get fresh slots that do not collide", () => {
+    const first = assignSlots(new Map(), items("ab"), same)
+    const next = assignSlots(first, items("xbyz"), same)
+    const used = Object.values(slots(next))
+    expect(new Set(used).size).toBe(4)
+    expect(next.get("b")!.slot).toBe(1)
   })
 })

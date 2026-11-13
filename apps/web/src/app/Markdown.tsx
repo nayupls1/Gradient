@@ -177,10 +177,10 @@ const Reference = (props: { node: MdRef }) => {
   const target = createMemo((): { issue?: Issue; pullRequest?: IssuePullRequest; url?: string } | null => {
     const ref = props.node.ref
     if (ref.kind === "identifier") {
-      const issue = findIssue(sync.state, `${ref.key}-${ref.number}`)
+      const issue = findIssue(sync.state, `${ref.key}-${ref.number}`, sync.index.lookup())
       return issue ? { issue } : null
     }
-    return resolveGithubRef(sync.state, ref) ??
+    return resolveGithubRef(sync.state, ref, sync.index.lookup()) ??
       { url: `https://github.com/${ref.owner}/${ref.repo}/${ref.pull ? "pull" : "issues"}/${ref.number}` }
   })
   return (

@@ -18,9 +18,7 @@ import {
   formatRelative,
   issueHref,
   issueKey,
-  openBlockers,
   projectRepo,
-  pullRequestsFor,
   teamHref,
   teamSettingsHref,
   teamStates
@@ -29,9 +27,9 @@ import { TeamBadge } from "../app/TeamBadge.tsx"
 import { KeyScope } from "../keys/solid.tsx"
 import { emptyFilter, entryMatcher, indexIssues, isFiltering } from "../lib/filter.ts"
 import { colors } from "../lib/tokens.stylex.ts"
-import { type RowRange, rowOffsets, sameRange, scrollToReveal, visibleRows } from "../lib/window.ts"
+import { assignSlots, rowOffsets, sameRange, scrollToReveal, type Slotted, visibleRows } from "../lib/window.ts"
 import { color } from "../theme/tokens.stylex.ts"
-import { Badge } from "../ui/badge.tsx"
+import { Badge, badgeStyles } from "../ui/badge.tsx"
 import { Button, type ButtonProps } from "../ui/button.tsx"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible.tsx"
 import {
@@ -62,9 +60,11 @@ import {
 import { PageHeader } from "./Header.tsx"
 
 /**
- * The list is virtualized: each group renders only the rows near the viewport,
- * with spacers for the rest. That needs fixed heights, so these two are the
- * source of truth for the header and row styles below.
+ * The list is virtualized: groups are a header plus the height of their rows,
+ * and only the rows near the viewport are drawn, in one layer over all groups,
+ * at their offsets. Row elements are recycled as the list scrolls (see
+ * `assignSlots`). That needs fixed heights, so these two are the source of
+ * truth for the header and row styles below.
  */
 const HEADER_HEIGHT = 36
 const ROW_HEIGHT = 40
@@ -95,8 +95,15 @@ const s = stylex.create({
   chevron: { color: colors.mutedForeground, display: "inline-flex" },
   count: { color: colors.mutedForeground, fontWeight: 400 },
   spacer: { flexGrow: 1 },
+  // Rows are laid over the groups at their offsets (see IssuesPage). `contain: strict` keeps a
+  // row's layout and paint to itself, which made scrolling markedly cheaper to render.
+  rowLayer: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 0 },
+  rowsArea: { position: "relative" },
   row: {
-    position: "relative",
+    position: "absolute",
+    left: 0,
+    right: 0,
+    contain: "strict",
     display: "flex",
     alignItems: "center",
     gap: 10,
@@ -200,22 +207,31 @@ const fromControl = (e: MouseEvent) =>
 
 const IssueRow = (props: {
   issue: Issue
+  /** Where the row sits in the list, in pixels. */
+  top: number
   showProject: boolean
   focused: boolean
   onFocus: () => void
-  /** Registers the row's picker handles; the returned function drops them when the row unmounts. */
-  apis: (apis: PickerApis) => () => void
+  /** Registers the row's picker handles for an issue; the returned function drops them. */
+  apis: (issueId: string, apis: PickerApis) => () => void
 }) => {
   const sync = useContext(Sync)
   const actions = useIssueActions()
   const navigate = useNavigate()
   const apis: PickerApis = {}
-  const release = untrack(() => props.apis(apis))
-  onSettled(() => release)
+  // Rows are recycled while scrolling (see Group), so the issue can change under a row: its
+  // picker handles follow the issue, and a picker left open closes rather than edit the next one.
+  createEffect(
+    () => props.issue.id,
+    (id, previous) => {
+      if (previous !== undefined) for (const api of Object.values(apis)) api?.close()
+      return props.apis(id, apis)
+    }
+  )
   const labels = () => props.issue.labelIds.map((id) => sync.state.labels[id]).filter((l) => l !== undefined)
-  const blockers = () => openBlockers(sync.state, props.issue.id)
+  const blockers = () => sync.index.blockers().get(props.issue.id) ?? []
   /** The most relevant pull request that refers to the issue: an open one before a merged or closed one. */
-  const pullRequest = () => pullRequestsFor(sync.state, props.issue)[0]
+  const pullRequest = () => sync.index.pullRequests().get(props.issue.id)?.[0]
   return (
     <div
       role="link"
@@ -224,6 +240,7 @@ const IssueRow = (props: {
       onClick={(e) => !fromControl(e) && navigate(issueHref(sync.state, props.issue))}
       onMouseMove={() => !props.focused && props.onFocus()}
       {...stylex.attrs(s.row, props.focused && s.rowFocused)}
+      style={{ top: `${props.top}px` }}
     >
       <PriorityPicker
         variant="icon"
@@ -252,10 +269,11 @@ const IssueRow = (props: {
       <div {...stylex.attrs(s.labels)}>
         <For each={labels()}>
           {(label) => (
-            <Badge variant="outline" xstyle={s.label}>
+            // The Badge's look on a plain span: base-ui's render machinery costs more than the rest of a label.
+            <span data-slot="badge" {...stylex.attrs(...badgeStyles({ variant: "outline" }), s.label)}>
               <span {...stylex.attrs(s.dot)} style={{ "background-color": label.color }} />
               {label.name}
-            </Badge>
+            </span>
           )}
         </For>
       </div>
@@ -292,27 +310,18 @@ const IssueRow = (props: {
   )
 }
 
-const Group = (props: {
+/**
+ * A status group's header and the space its rows take. The rows themselves are
+ * drawn in one layer over all the groups (see IssuesPage), so they can be
+ * recycled across groups; the header sticks while its section is in view.
+ */
+const GroupHeader = (props: {
   state: WorkflowState
-  issues: ReadonlyArray<Issue>
-  showProject: boolean
+  count: number
   collapsed: boolean
   onToggle: () => void
-  focusedId: string | null
-  onFocus: (id: string) => void
-  registerApis: (id: string, apis: PickerApis) => () => void
-  /** Where the group's first row sits in the list. */
-  rowsTop: number
-  /** The part of the list to render rows for: the viewport plus overscan. */
-  viewTop: number
-  viewBottom: number
 }) => {
   const composer = useContext(ComposerContext)
-  const range = createMemo(
-    (): RowRange => visibleRows(props.rowsTop, props.issues.length, ROW_HEIGHT, props.viewTop, props.viewBottom),
-    { equals: sameRange }
-  )
-  const shown = createMemo(() => props.issues.slice(range().start, range().end))
   return (
     <Collapsible render={<section />} open={!props.collapsed} onOpenChange={() => props.onToggle()}>
       <div {...stylex.attrs(s.group)}>
@@ -324,7 +333,7 @@ const Group = (props: {
           </span>
           <StateIcon type={props.state.type} color={props.state.color} />
           {props.state.name}
-          <span {...stylex.attrs(s.count)}>{props.issues.length}</span>
+          <span {...stylex.attrs(s.count)}>{props.count}</span>
         </CollapsibleTrigger>
         <span {...stylex.attrs(s.spacer)} />
         <Button variant="ghost" size="icon-xs" title={`New issue in ${props.state.name}`} onClick={() => composer.open({ stateId: props.state.id })}>
@@ -332,23 +341,18 @@ const Group = (props: {
         </Button>
       </div>
       <CollapsibleContent>
-        <div aria-hidden="true" style={{ height: `${range().start * ROW_HEIGHT}px` }} />
-        <For each={shown()}>
-          {(issue) => (
-            <IssueRow
-              issue={issue}
-              showProject={props.showProject}
-              focused={props.focusedId === issue.id}
-              onFocus={() => props.onFocus(issue.id)}
-              apis={(apis) => props.registerApis(issue.id, apis)}
-            />
-          )}
-        </For>
-        <div aria-hidden="true" style={{ height: `${(props.issues.length - range().end) * ROW_HEIGHT}px` }} />
+        <div aria-hidden="true" style={{ height: `${props.count * ROW_HEIGHT}px` }} />
       </CollapsibleContent>
     </Collapsible>
   )
 }
+
+/** What a recycled row element shows: an issue, at a position in the list. */
+interface PlacedRow {
+  readonly issue: Issue
+  readonly top: number
+}
+const samePlace = (a: PlacedRow, b: PlacedRow) => a.issue === b.issue && a.top === b.top
 
 /** The repository a project syncs with: link one from a dropdown, or see its state and unlink. */
 const ProjectRepo = (props: { projectId: string }) => {
@@ -542,6 +546,16 @@ export const IssuesPage = () => {
   let listEl: HTMLDivElement | undefined
   const [scrollTop, setScrollTop] = createSignal(0)
   const [viewportHeight, setViewportHeight] = createSignal(window.innerHeight)
+  /**
+   * Rows rendered beyond the viewport. None on the first render, so the list
+   * shows sooner (opening a team, coming back from an issue); the margin for
+   * fast scrolling follows right after the first frame.
+   */
+  const [overscan, setOverscan] = createSignal(0)
+  onSettled(() => {
+    const frame = requestAnimationFrame(() => setOverscan(OVERSCAN))
+    return () => cancelAnimationFrame(frame)
+  })
   onSettled(() => {
     if (!listEl) return
     const el = listEl
@@ -558,6 +572,40 @@ export const IssuesPage = () => {
       { headerHeight: HEADER_HEIGHT, rowHeight: ROW_HEIGHT }
     )
     return new Map(gs.map((g, i) => [g.state.id, offsets[i]!]))
+  })
+
+  /**
+   * The rows near the viewport, across all groups, each in a recycled element
+   * slot (see `assignSlots`): scrolling hands the elements of rows that leave
+   * to rows that come into view, also from one group to the next.
+   */
+  const visible = createMemo(
+    () => {
+      const top = scrollTop() - overscan()
+      const bottom = scrollTop() + viewportHeight() + overscan()
+      const offsets = rowsTop()
+      return groups().map((g) =>
+        isCollapsed(g.state) ? { start: 0, end: 0 } : visibleRows(offsets.get(g.state.id) ?? 0, g.issues.length, ROW_HEIGHT, top, bottom)
+      )
+    },
+    { equals: (a, b) => a.length === b.length && a.every((r, i) => sameRange(r, b[i]!)) }
+  )
+  let slots = new Map<string, Slotted<PlacedRow>>()
+  const rows = createMemo(() => {
+    const offsets = rowsTop()
+    const ranges = visible()
+    const placed: Array<{ key: string; value: PlacedRow }> = []
+    groups().forEach((g, i) => {
+      const range = ranges[i]
+      const top = offsets.get(g.state.id) ?? 0
+      if (!range) return
+      for (let n = range.start; n < range.end; n++) {
+        const issue = g.issues[n]!
+        placed.push({ key: issue.id, value: { issue, top: top + n * ROW_HEIGHT } })
+      }
+    })
+    slots = assignSlots(slots, placed, samePlace)
+    return [...slots.values()]
   })
 
   /**
@@ -616,6 +664,13 @@ export const IssuesPage = () => {
     const index = ids.indexOf(focusedId() ?? "")
     const next = index === -1 ? (delta > 0 ? 0 : ids.length - 1) : Math.min(Math.max(index + delta, 0), ids.length - 1)
     setFocusedId(ids[next]!)
+  }
+
+  const registerApis = (id: string, a: PickerApis) => {
+    apis.set(id, a)
+    return () => {
+      if (apis.get(id) === a) apis.delete(id)
+    }
   }
 
   useScope("issues.list")
@@ -827,28 +882,37 @@ export const IssuesPage = () => {
             </Show>
           }
         >
-          <For each={groups()} keyed={(g) => g.state.id}>
-            {(g) => (
-              <Group
-                state={g().state}
-                issues={g().issues}
-                showProject={!projectId()}
-                collapsed={isCollapsed(g().state)}
-                onToggle={() => toggleCollapsed(g().state)}
-                focusedId={focusedId()}
-                onFocus={focusFromPointer}
-                registerApis={(id, a) => {
-                  apis.set(id, a)
-                  return () => {
-                    if (apis.get(id) === a) apis.delete(id)
-                  }
+          <div {...stylex.attrs(s.rowsArea)}>
+            <For each={groups()} keyed={(g) => g.state.id}>
+              {(g) => (
+                <GroupHeader
+                  state={g().state}
+                  count={g().issues.length}
+                  collapsed={isCollapsed(g().state)}
+                  onToggle={() => toggleCollapsed(g().state)}
+                />
+              )}
+            </For>
+            <div {...stylex.attrs(s.rowLayer)}>
+              <For each={rows()} keyed={(row) => row.slot}>
+                {(row) => {
+                  // Memos, so a recycled row only updates what changed: its issue, or its position.
+                  const issue = createMemo(() => row().value.issue)
+                  const top = createMemo(() => row().value.top)
+                  return (
+                    <IssueRow
+                      issue={issue()}
+                      top={top()}
+                      showProject={!projectId()}
+                      focused={focusedId() === issue().id}
+                      onFocus={() => focusFromPointer(issue().id)}
+                      apis={registerApis}
+                    />
+                  )
                 }}
-                rowsTop={rowsTop().get(g().state.id) ?? 0}
-                viewTop={scrollTop() - OVERSCAN}
-                viewBottom={scrollTop() + viewportHeight() + OVERSCAN}
-              />
-            )}
-          </For>
+              </For>
+            </div>
+          </div>
         </Show>
         </Show>
       </div>

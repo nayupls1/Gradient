@@ -69,3 +69,51 @@ export const scrollToReveal = (
   if (itemTop + itemHeight > scrollTop + viewportHeight) return itemTop + itemHeight - viewportHeight
   return null
 }
+
+/** An item placed in a recycled element: `slot` keys the element, `value` is what it shows. */
+export interface Slotted<T> {
+  readonly key: string
+  readonly value: T
+  readonly slot: number
+}
+
+/**
+ * Element slots for the items about to be rendered, so a keyed list reuses
+ * elements while it scrolls: an item still on screen keeps its slot, and an
+ * item that comes into view takes the slot of one that left. Keyed by slot,
+ * the list then updates the few elements that changed hands instead of
+ * building new ones. An item whose value is `same` as before keeps its exact
+ * object, so nothing downstream sees a change. The result is in item order.
+ */
+export const assignSlots = <T>(
+  previous: ReadonlyMap<string, Slotted<T>>,
+  items: ReadonlyArray<{ readonly key: string; readonly value: T }>,
+  same: (a: T, b: T) => boolean
+): Map<string, Slotted<T>> => {
+  const kept = new Map<string, Slotted<T>>()
+  const taken = new Set<number>()
+  for (const item of items) {
+    const before = previous.get(item.key)
+    if (before === undefined) continue
+    kept.set(item.key, same(before.value, item.value) ? before : { key: item.key, value: item.value, slot: before.slot })
+    taken.add(before.slot)
+  }
+  const freed: Array<number> = []
+  for (const before of previous.values()) if (!taken.has(before.slot)) freed.push(before.slot)
+  const next = new Map<string, Slotted<T>>()
+  let fresh = 0
+  for (const item of items) {
+    let entry = kept.get(item.key)
+    if (entry === undefined) {
+      let slot = freed.pop()
+      if (slot === undefined) {
+        while (taken.has(fresh)) fresh++
+        slot = fresh
+      }
+      taken.add(slot)
+      entry = { key: item.key, value: item.value, slot }
+    }
+    next.set(item.key, entry)
+  }
+  return next
+}

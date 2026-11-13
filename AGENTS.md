@@ -99,6 +99,27 @@ Read `node_modules/solid-js/CHEATSHEET.md`. The traps we hit:
   inside its owner.
 - `JSX` types come from `@solidjs/web`.
 
+## Performance
+
+The app has to stay smooth on slow machines (check with Chrome's 4× CPU
+throttling) and with hundreds of issues. What we learned:
+
+- **No whole-table scans per row.** `Object.values(sync.state.x)` reads every
+  row through a store proxy and subscribes to all of them. In anything
+  rendered per item, use `sync.index` (built once per change from the plain
+  `sync.rows`, see `lib/indexes.ts`) or add an index there, with a test that
+  it agrees with the scanning selector.
+- **Memoize derived values that are read more than once** (`createMemo`): a
+  plain function re-runs its scan on every read.
+- **List rows stay light.** The issue list recycles row elements while
+  scrolling (`assignSlots`), so a row must follow `props.issue` changing
+  under it. Pickers mount their popover on first open; row triggers are
+  native buttons with the Button's styles. Prefer plain elements with a
+  component's styles (`buttonStyles`, `badgeStyles`) over base-ui components
+  inside rows.
+- **Scrollbars are native** (thin, themed in `theme.ts`), not a JS scroll
+  area, which moves its thumb on the main thread.
+
 ## Keymap
 
 `apps/web/src/keys/core.ts` is framework free and unit tested

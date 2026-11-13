@@ -105,30 +105,48 @@ export const PickerList = <V,>(props: PickerListProps<V>) => {
   )
 }
 
-/** A trigger plus a PickerList in a popover: the building block for property pickers. */
+/**
+ * A trigger plus a PickerList in a popover: the building block for property pickers.
+ *
+ * The popover mounts the first time the picker opens. Until then the trigger
+ * is a plain button: a list row carries three pickers, and mounting a full
+ * Popover for each made every row slow to render while scrolling.
+ */
 export const Picker = <V,>(props: Omit<PickerListProps<V>, "close" | "inputRef"> & {
   trigger: PickerTrigger
   align?: "start" | "end"
   apiRef?: (api: PickerApi) => void
 }) => {
+  const [armed, setArmed] = createSignal(false)
   const [open, setOpen] = createSignal(false)
+  const show = () => {
+    setArmed(true)
+    setOpen(true)
+  }
   const input: { current: HTMLElement | null } = { current: null }
-  untrack(() => props.apiRef?.({ open: () => setOpen(true), close: () => setOpen(false) }))
+  untrack(() => props.apiRef?.({ open: show, close: () => setOpen(false) }))
   const listProps = omit(props, "trigger", "align", "apiRef")
   return (
-    <Popover open={open()} onOpenChange={(next) => setOpen(next)}>
-      <PopoverTrigger render={props.trigger} />
-      <PopoverContent
-        align={props.align ?? "start"}
-        initialFocus={input}
-        xstyle={s.content}
-        // The popup is portalled, but Solid still bubbles its clicks to the trigger's ancestors (a list row).
-        onClick={(e: MouseEvent) => e.stopPropagation()}
-      >
-        <KeyScope name="picker" blocking>
-          <PickerList {...merge(listProps, { close: () => setOpen(false), inputRef: (el: HTMLInputElement) => (input.current = el) })} />
-        </KeyScope>
-      </PopoverContent>
-    </Popover>
+    <Show
+      when={armed()}
+      fallback={untrack(() =>
+        props.trigger({ type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", onClick: show } as HTMLProps, {})
+      )}
+    >
+      <Popover open={open()} onOpenChange={(next) => setOpen(next)}>
+        <PopoverTrigger render={props.trigger} />
+        <PopoverContent
+          align={props.align ?? "start"}
+          initialFocus={input}
+          xstyle={s.content}
+          // The popup is portalled, but Solid still bubbles its clicks to the trigger's ancestors (a list row).
+          onClick={(e: MouseEvent) => e.stopPropagation()}
+        >
+          <KeyScope name="picker" blocking>
+            <PickerList {...merge(listProps, { close: () => setOpen(false), inputRef: (el: HTMLInputElement) => (input.current = el) })} />
+          </KeyScope>
+        </PopoverContent>
+      </Popover>
+    </Show>
   )
 }

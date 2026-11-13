@@ -1,7 +1,7 @@
 import * as stylex from "@stylexjs/stylex"
 import { useLocation, useNavigate } from "@solidjs/router"
 import type { JSX } from "@solidjs/web"
-import { createEffect, createSignal, For, onSettled, Show, useContext } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onSettled, Show, useContext } from "solid-js"
 import { Shortcut, useCommands } from "../keys/solid.tsx"
 import {
   allTeams,
@@ -132,16 +132,18 @@ export const Shell = (props: { children: JSX.Element }) => {
   const sync = useContext(Sync)
   const navigate = useNavigate()
   const location = useLocation()
+  /** Only an issue page needs the issue lookup to find its team; elsewhere, do not keep it built. */
+  const lookupFor = (path: string) => (path.startsWith("/issue/") ? sync.index.lookup() : undefined)
   const [composer, setComposer] = createSignal<{ open: boolean; defaults: ComposerDefaults }>({ open: false, defaults: {} })
   // New issues land in the team and project being viewed, unless the caller says otherwise.
   const openComposer = (defaults: ComposerDefaults = {}) => {
-    const team = teamFromPath(sync.state, location.pathname)
+    const team = teamFromPath(sync.state, location.pathname, lookupFor(location.pathname))
     setComposer({
       open: true,
       defaults: { projectId: projectIdFromPath(location.pathname) ?? null, ...(team ? { teamId: team.id } : {}), ...defaults }
     })
   }
-  const team = () => currentTeam(sync.state, location.pathname)
+  const team = createMemo(() => currentTeam(sync.state, location.pathname, lookupFor(location.pathname)))
   const viewer = () => sync.state.users[sync.state.viewerId]
   const teams = () => myTeams(sync.state)
   const [projectDialog, setProjectDialog] = createSignal<ProjectDialogMode | null>(null)

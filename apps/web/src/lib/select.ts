@@ -14,6 +14,7 @@ import {
   type WorkflowState
 } from "@gradient/domain"
 import type { SyncState } from "../sync/engine.ts"
+import type { IssueLookup } from "./indexes.ts"
 import { collectReferences, type MdRef, parseMarkdown } from "./markdown.ts"
 
 /** Every team, by name. Teams are visible to the whole workspace. */
@@ -43,18 +44,19 @@ export const teamHref = (team: Pick<Team, "key">) => `/team/${team.key}`
 export const teamSettingsHref = (team: Pick<Team, "key">) => `/team/${team.key}/settings`
 
 /** The team the current URL is about: /team/KEY, a project's or an issue's. */
-export const teamFromPath = (state: SyncState, path: string): Team | undefined => {
+export const teamFromPath = (state: SyncState, path: string, lookup?: IssueLookup): Team | undefined => {
   const key = path.match(/^\/team\/([^/]+)/)?.[1]
   if (key) return findTeam(state, decodeURIComponent(key))
   const projectId = projectIdFromPath(path)
   if (projectId) return state.teams[state.projects[projectId]?.teamId ?? ""]
   const ref = path.match(/^\/issue\/([^/]+)/)?.[1]
-  const issue = ref ? findIssue(state, decodeURIComponent(ref)) : undefined
+  const issue = ref ? findIssue(state, decodeURIComponent(ref), lookup) : undefined
   return issue ? state.teams[issue.teamId] : undefined
 }
 
 /** The team of the current page, else the default one. */
-export const currentTeam = (state: SyncState, path: string) => teamFromPath(state, path) ?? defaultTeam(state)
+export const currentTeam = (state: SyncState, path: string, lookup?: IssueLookup) =>
+  teamFromPath(state, path, lookup) ?? defaultTeam(state)
 
 /** People with an account (members of the workspace), by name. */
 export const workspaceMembers = (state: SyncState) => users(state).filter((u) => u.role !== null)
@@ -120,9 +122,12 @@ export const issueKey = (state: SyncState, issue: Issue) => {
  * Any key of the team or its projects works with the team-wide number, so old
  * links survive moving an issue to another project or renaming a key.
  */
-export const findIssue = (state: SyncState, ref: string): Issue | undefined => {
+export const findIssue = (state: SyncState, ref: string, lookup?: IssueLookup): Issue | undefined => {
   const parsed = parseIdentifier(ref)
-  if (parsed) {
+  if (parsed && lookup) {
+    const id = lookup.issueByIdentifier(parsed.key, parsed.number)
+    if (id && state.issues[id]) return state.issues[id]
+  } else if (parsed) {
     const team =
       Object.values(state.teams).find((t) => t.key.toUpperCase() === parsed.key) ??
       state.teams[Object.values(state.projects).find((p) => p.key === parsed.key)?.teamId ?? ""]
@@ -146,8 +151,10 @@ const priorityRank = (p: number) => (p === 0 ? 5 : p)
 export const compareIssues = (a: Pick<Issue, "priority" | "sortOrder">, b: Pick<Issue, "priority" | "sortOrder">) =>
   priorityRank(a.priority) - priorityRank(b.priority) || (a.sortOrder < b.sortOrder ? 1 : a.sortOrder > b.sortOrder ? -1 : 0)
 
+/** Building an Intl.DateTimeFormat is slow (a list row formats a date each time it renders), so build it once. */
+let shortDate: Intl.DateTimeFormat | undefined
 export const formatDate = (ms: number) =>
-  new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(ms)
+  (shortDate ??= new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" })).format(ms)
 
 export const formatRelative = (ms: number) => {
   const diff = Date.now() - ms
@@ -216,7 +223,7 @@ export const pullRequestHrefFromUrl = (url: string): string | null => {
 }
 
 /** "acme/web#12", lower case: one pull request however it was found. */
-const pullRequestKey = (pr: { owner: string; repo: string; number: number }) => `${pr.owner}/${pr.repo}#${pr.number}`.toLowerCase()
+export const pullRequestKey = (pr: { owner: string; repo: string; number: number }) => `${pr.owner}/${pr.repo}#${pr.number}`.toLowerCase()
 
 /**
  * Pull requests of the issue, each once: the ones that close its GitHub copy or
@@ -242,10 +249,12 @@ export const pullRequestsFor = (state: SyncState, issue: Issue): Array<IssuePull
     const known = knownPullRequest(state, linked)
     byKey.set(key, known ? { ...known, owner: linked.owner, repo: linked.repo } : linked)
   }
-  return [...byKey.values()].sort((a, b) =>
-    pullRequestRank[a.state] - pullRequestRank[b.state] || b.updatedAt - a.updatedAt || b.number - a.number
-  )
+  return [...byKey.values()].sort(comparePullRequests)
 }
+
+/** Live pull requests first, then the newest. */
+export const comparePullRequests = (a: IssuePullRequest, b: IssuePullRequest) =>
+  pullRequestRank[a.state] - pullRequestRank[b.state] || b.updatedAt - a.updatedAt || b.number - a.number
 
 /** The copy of a pull request in a linked repository, if Gradient has one. */
 const knownPullRequest = (state: SyncState, ref: { owner: string; repo: string; number: number }) => {
@@ -276,8 +285,17 @@ export const issueRepo = (state: SyncState, issue: Issue): { owner: string; repo
  */
 export const resolveGithubRef = (
   state: SyncState,
-  ref: { owner: string; repo: string; number: number }
+  ref: { owner: string; repo: string; number: number },
+  lookup?: IssueLookup
 ): { issue: Issue } | { pullRequest: IssuePullRequest } | null => {
+  if (lookup) {
+    const issue = state.issues[lookup.issueByGithub(ref.owner, ref.repo, ref.number) ?? ""]
+    if (issue) return { issue }
+    const known = lookup.pullRequest(ref.owner, ref.repo, ref.number)
+    if (known) return { pullRequest: { ...known, owner: ref.owner, repo: ref.repo } }
+    const linked = lookup.linkedPullRequest(ref.owner, ref.repo, ref.number)
+    return linked ? { pullRequest: linked } : null
+  }
   const issue = Object.values(state.issues).find((i) =>
     i.github !== null && i.github.number === ref.number && sameRepo(i.github, ref.owner, ref.repo)
   )
@@ -293,7 +311,9 @@ export const resolveGithubRef = (
 export const commentsFor = (state: SyncState, issueId: string): Array<IssueComment> =>
   Object.values(state.issueComments)
     .filter((c) => c.issueId === issueId)
-    .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
+    .sort(compareComments)
+
+export const compareComments = (a: IssueComment, b: IssueComment) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)
 
 /** Every reference in an issue's description and comments, in reading order, each once. */
 export const issueReferences = (
@@ -326,7 +346,8 @@ export const resolveMentions = (
   state: SyncState,
   issue: Issue,
   refs: ReadonlyArray<MdRef>,
-  exclude: { readonly issueIds?: Iterable<string>; readonly pullRequests?: Iterable<IssuePullRequest> } = {}
+  exclude: { readonly issueIds?: Iterable<string>; readonly pullRequests?: Iterable<IssuePullRequest> } = {},
+  lookup?: IssueLookup
 ): Array<Mention> => {
   const out: Array<Mention> = []
   const seen = new Set<string>([`issue:${issue.id}`])
@@ -339,11 +360,11 @@ export const resolveMentions = (
   }
   for (const { ref } of refs) {
     if (ref.kind === "identifier") {
-      const found = findIssue(state, `${ref.key}-${ref.number}`)
+      const found = findIssue(state, `${ref.key}-${ref.number}`, lookup)
       if (found) add(`issue:${found.id}`, { kind: "issue", issue: found })
       continue
     }
-    const target = resolveGithubRef(state, ref)
+    const target = resolveGithubRef(state, ref, lookup)
     const key = `gh:${pullRequestKey(ref)}`
     const label = pullRequestLabelFor(state, issue, ref)
     if (target && "issue" in target) add(`issue:${target.issue.id}`, { kind: "issue", issue: target.issue })

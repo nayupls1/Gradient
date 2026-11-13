@@ -64,6 +64,15 @@ const apply = (theme: Theme) => {
   root.dataset.scheme = scheme
 }
 
+/*
+ * Scrollbars: the browser's own, thin (global.css) and in the palette's colors.
+ * `scrollbar-color` is inherited, so one rule on <html> covers every scroller,
+ * and it follows theme changes through the variable. Native scrollbars move on
+ * the compositor; a JS scroll area (base-ui's) repositions its thumb on every
+ * scroll event, which lags on slow devices exactly when the page is busy.
+ */
+document.documentElement.style.setProperty("scrollbar-color", `${color.borderStrong} transparent`)
+
 const [theme, setThemeSignal] = createSignal<Theme>(load())
 const [systemDark, setSystemDark] = createSignal(media.matches)
 apply(theme())
